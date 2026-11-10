@@ -145,7 +145,7 @@ def test_enable_skill_injects_into_system_prompt_and_context(tmp_path: Path) -> 
     context = collect_context(tmp_path, project)
     assert "Enabled skills:" in context
     assert "debug, explore, implement, research" in context
-    assert "review, security, polloco, tdd, ui, kiwi" in context
+    assert "review, security, polloco, tdd, ui, style, kiwi, rules" in context
     save_enabled_skills(tmp_path, [])
     assert enabled_skill_names(tmp_path) == []
     assert "Enabled skills" not in compose_system_prompt(tmp_path)

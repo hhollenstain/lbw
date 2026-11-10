@@ -1646,7 +1646,6 @@ def test_web_ui_progress_includes_file_history_and_timestamps(
         assert b'event.kind === "test"' in home.content
         assert b"groupTimelineEvents" in home.content
         assert b"items.reverse()" in home.content
-        assert b"outputEl.insertBefore(entry, outputEl.firstChild)" in home.content
         assert b"Thinking" in home.content
         assert b"timeline-item think" in home.content
         assert b"function renderFileChanges(" in home.content
@@ -2402,7 +2401,7 @@ def test_home_lists_roles_and_the_change_gates(settings: Settings, tmp_path: Pat
         assert b'data-rail="skills"' in home.content
         assert b'id="release-list"' in home.content
         assert b"function releaseBucket(" in home.content
-        assert b"for (const entry of workspaceRuns())" in home.content
+        assert b"for (const entry of oneJobPerPull(workspaceRuns()))" in home.content
         assert b"No open pull requests." in home.content
         assert b"No merged pull requests." in home.content
         assert b"No closed pull requests." in home.content

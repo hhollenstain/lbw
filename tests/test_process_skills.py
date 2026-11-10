@@ -23,6 +23,7 @@ DEFAULT_ENABLED = [
     "polloco",
     "tdd",
     "ui",
+    "style",
     "kiwi",
     "rules",
 ]
