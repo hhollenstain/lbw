@@ -16,7 +16,7 @@ def _skip_workspace_palace(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep cycle tests off Chroma and the embedding model."""
     monkeypatch.setattr(
         "agent_lbw.runtime.palace.open_palace",
-        lambda root: NullPalace(),
+        lambda root, **_kwargs: NullPalace(),
     )
 
 

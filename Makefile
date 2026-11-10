@@ -1,4 +1,4 @@
-.PHONY: sync test lint doctor run watch certs up-local restart-local restart-agent restart-crossing wipe up-mac up-nvidia pull-model openapi openapi-check
+.PHONY: sync test lint doctor run watch certs up-local restart-local restart-agent restart-crossing wipe export-github hydrate up-mac up-nvidia pull-model openapi openapi-check
 
 WORKSPACE ?= examples/demo-project
 GOAL ?= Make the test suite pass.
@@ -69,6 +69,14 @@ restart-crossing:
 wipe:
 	$(COMPOSE_ENV) $(COMPOSE) down --volumes --remove-orphans
 	$(COMPOSE_ENV) docker compose -f docker-compose.yml -f docker-compose.nvidia.yml down --volumes --remove-orphans
+
+export-github:
+	LBW_DATABASE_URL=postgresql://lbw:lbw@127.0.0.1:$(LBW_POSTGRES_PORT)/lbw \
+		uv run lbw export-github --workspace workspaces --file github.local.yaml
+
+hydrate:
+	LBW_DATABASE_URL=postgresql://lbw:lbw@127.0.0.1:$(LBW_POSTGRES_PORT)/lbw \
+		uv run lbw hydrate --workspace workspaces --file github.local.yaml
 
 up-mac:
 	docker compose -f docker-compose.yml -f docker-compose.mac.yml up --build

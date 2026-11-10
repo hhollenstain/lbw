@@ -81,13 +81,14 @@ def sqlite_path(root: Path, database_url: str = "") -> Path | None:
     return path
 
 
+_SCHEMA_LOCK = 834271901
+
+
 @contextmanager
 def database(root: Path, database_url: str = "") -> Iterator[Database]:
     db = _open(Path(root), database_url)
     try:
-        from agent_lbw.runtime.store.schema import apply_schema
-
-        apply_schema(db)
+        ensure_schema(db)
         yield db
         db.commit()
     except Exception:
@@ -95,6 +96,57 @@ def database(root: Path, database_url: str = "") -> Iterator[Database]:
         raise
     finally:
         db.close()
+
+
+def ensure_schema(db: Database) -> None:
+    """Apply the schema once. Later requests only read the saved version.
+
+    Running the migration on every request deadlocks Postgres: one connection
+    holds a lock from CREATE INDEX while another waits to alter a table, and
+    the first waits for a lock the second already holds.
+    """
+    from agent_lbw.runtime.store.schema import (
+        SCHEMA_VERSION,
+        apply_schema,
+        read_schema_version,
+        write_schema_version,
+    )
+
+    for attempt in range(3):
+        try:
+            _ensure_schema_once(
+                db,
+                SCHEMA_VERSION,
+                read_schema_version,
+                write_schema_version,
+                apply_schema,
+            )
+            return
+        except Exception as exc:
+            db.rollback()
+            if db.kind != "postgres" or "deadlock" not in str(exc).lower() or attempt == 2:
+                raise
+
+
+def _ensure_schema_once(db, version, read_version, write_version, migrate) -> None:
+    if read_version(db) >= version:
+        return
+    locked = False
+    if db.kind == "postgres":
+        db.execute("SELECT pg_advisory_lock(?)", (_SCHEMA_LOCK,))
+        locked = True
+    try:
+        if read_version(db) >= version:
+            return
+        migrate(db)
+        write_version(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        if locked:
+            db.execute("SELECT pg_advisory_unlock(?)", (_SCHEMA_LOCK,))
 
 
 def _open(root: Path, database_url: str) -> Database:

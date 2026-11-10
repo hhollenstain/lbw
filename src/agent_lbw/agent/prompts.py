@@ -53,8 +53,9 @@ Rules:
   open a feature-branch pull request only after tests pass AND a separate
   review confirms the goal is actually done. Tests passing is not enough.
 - Never push to main or master.
-- Never commit on main, master, or trunk. Leave commits to the cycle after
-  review. Use git_commit only on a feature branch; never `git commit` via the shell.
+- Do not commit during the run, on any branch. Do not call git_commit and do
+  not run git commit. Leave every edit in the working tree. The cycle makes
+  one commit after review, then pushes that branch.
 - Do not invent dependencies, APIs, or files you have not seen.
 - If you cannot complete the goal safely, stop and explain what blocked you.
   Stopping is for a real blocker, not for leaving a stub.
@@ -131,7 +132,7 @@ def user_prompt(goal: str, context: str) -> str:
             "different task you notice in the repo. Test your changes. If you "
             "edited UI, call review_ui and click the new control. If you edited "
             "Docker or docs, call run_tests; documented commands must run. "
-            "Do not commit on main/master; the cycle commits after review. "
+            "Do not call git_commit. The cycle makes one commit after review. "
             "A later review will reject a PR if the diff does not fulfill this goal.",
         ]
     )

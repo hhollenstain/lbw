@@ -304,6 +304,11 @@ def register_org(app: FastAPI) -> None:
                 scope_id=payload.scope_id,
                 granted=payload.granted,
             )
+            state = "granted" if payload.granted else "removed"
+            request.state.audit_action = "model.grant"
+            request.state.audit_summary = f"Model grant {state} for a {payload.scope_type}"
+            request.state.audit_target_type = "model"
+            request.state.audit_target_id = model_id
             return _settings(db, root)
 
         return _act(request, apply)
@@ -399,9 +404,19 @@ def _settings(db, root: Path) -> dict:
             )
         ],
         "projects": [
-            {"id": row["id"], "name": row["name"]}
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "locator": row["locator"] or "",
+                "archived": row["archived_at"] is not None,
+            }
             for row in db.fetchall(
-                "SELECT id, name FROM projects WHERE tenant_id = ? ORDER BY name, id",
+                """
+                SELECT id, name, locator, archived_at
+                FROM projects
+                WHERE tenant_id = ?
+                ORDER BY name, id
+                """,
                 (account["org"]["id"],),
             )
         ],

@@ -30,6 +30,31 @@ export type OrgModel = {
   enabled: boolean;
 };
 
+export type CatalogPerson = {
+  id: string;
+  name: string;
+};
+
+export type CatalogTeam = {
+  id: string;
+  name: string;
+};
+
+export type CatalogProject = {
+  id: string;
+  name: string;
+  locator?: string;
+  archived?: boolean;
+};
+
+export type CatalogGrant = {
+  id: string;
+  resource_id: string;
+  scope_type: string;
+  scope_id: string;
+  label: string;
+};
+
 export type OrgAgent = {
   id: string;
   name: string;
@@ -45,5 +70,9 @@ export type OrgCatalog = {
   agent_kinds?: AgentKind[];
   endpoints?: Endpoint[];
   models?: OrgModel[];
+  model_grants?: CatalogGrant[];
   agents?: OrgAgent[];
+  people?: CatalogPerson[];
+  teams?: CatalogTeam[];
+  projects?: CatalogProject[];
 };

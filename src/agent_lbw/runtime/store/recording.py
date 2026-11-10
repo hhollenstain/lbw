@@ -26,6 +26,8 @@ from agent_lbw.runtime.store.tasks import (
     tenant_dek,
     touch_task,
 )
+from agent_lbw.sandbox import Workspace
+from agent_lbw.tools.git import github_owner_repo
 
 _DIFF_CAP = 500_000
 _FILE_CAP = 80_000
@@ -129,6 +131,17 @@ def sync_task(root: Path, database_url: str, task) -> None:
         log.warning("task %s result was not stored: %s", task.id, exc)
 
 
+def runs_come_from_database(root: Path, database_url: str = "") -> bool:
+    """An account stores runs in the task table. A file log is not the record."""
+    if not database_configured(root, database_url):
+        return False
+    try:
+        with database(root, database_url) as db:
+            return read_account(db) is not None
+    except (OSError, ValueError):
+        return False
+
+
 def recorded_history(root: Path, database_url: str, workspace: Path) -> list[dict]:
     """Jobs for this project. File history is not required."""
     rows = _project_tasks(root, database_url, workspace)
@@ -210,6 +223,7 @@ def _job_payload(task) -> dict:
         "model_base_url": str(getattr(task, "model_base_url", "") or ""),
         "criteria": criteria[:40],
         "evidence": evidence[:20],
+        "review_notes": str(getattr(task, "review_notes", "") or "")[:4000],
         "steps": _steps(getattr(task, "events", None) or []),
         "diff": _final_diff(task),
     }
@@ -323,6 +337,7 @@ def _project_tasks(root: Path, database_url: str, workspace: Path) -> list[dict]
     if not database_configured(root, database_url):
         return []
     keys = _path_keys(workspace)
+    remote = _github_remote(workspace)
     try:
         with database(root, database_url) as db:
             account = read_account(db)
@@ -342,7 +357,7 @@ def _project_tasks(root: Path, database_url: str, workspace: Path) -> list[dict]
             )
     except (OSError, ValueError):
         return []
-    return [dict(row) for row in rows if _matches(str(row["locator"]), keys)]
+    return [dict(row) for row in rows if _matches(str(row["locator"]), keys, remote)]
 
 
 def open_jobs(root: Path, database_url: str) -> list[dict]:
@@ -502,6 +517,7 @@ def _open_record(root: Path, database_url: str, row: dict) -> dict | None:
         "created_at": created_at,
         "model_name": str(result.get("model_name") or ""),
         "model_base_url": str(result.get("model_base_url") or ""),
+        "review_notes": str(result.get("review_notes") or ""),
         **_people(root, database_url, row),
     }
 
@@ -519,7 +535,9 @@ def _people(root: Path, database_url: str, row: dict) -> dict:
             name = person_name(db, requester)
             if requester or name:
                 started_by = {"id": requester, "name": name}
-            gates = gates_for_tasks(db, [str(row.get("id") or "")]).get(str(row.get("id") or ""), [])
+            gates = gates_for_tasks(db, [str(row.get("id") or "")]).get(
+                str(row.get("id") or ""), []
+            )
     except (OSError, ValueError):
         return {"started_by": started_by, "gates": gates}
     return {"started_by": started_by, "gates": gates}
@@ -585,8 +603,10 @@ def _path_keys(workspace: Path) -> set[str]:
     return {key for key in keys if key}
 
 
-def _matches(locator: str, keys: set[str]) -> bool:
-    if locator in keys:
+def _matches(locator: str, keys: set[str], remote: str = "") -> bool:
+    if remote and locator.casefold() == remote.casefold():
+        return True
+    if locator in keys or locator.casefold() in {key.casefold() for key in keys}:
         return True
     path = Path(locator).expanduser()
     if str(path) in keys:
@@ -599,12 +619,86 @@ def _matches(locator: str, keys: set[str]) -> bool:
     return False
 
 
-def _project(db: Database, account: dict, workspace: Path, name: str) -> dict:
-    kind = "git" if (workspace / ".git").exists() else "folder"
-    return ensure_project(
-        db,
-        account["org"]["id"],
-        name=name,
-        kind=kind,
-        locator=str(workspace),
+def _github_remote(workspace: Path) -> str:
+    if not (workspace / ".git").exists():
+        return ""
+    try:
+        origin = github_owner_repo(Workspace(workspace))
+    except (OSError, ValueError):
+        return ""
+    if origin is None:
+        return ""
+    return f"{origin[0]}/{origin[1]}"
+
+
+def project_id_for_checkout(db: Database, tenant_id: str, workspace: Path) -> str | None:
+    """The project row for this checkout or owner/repo value."""
+    remote = _github_remote(workspace) if workspace.is_dir() else ""
+    keys = _path_keys(workspace)
+    rows = db.fetchall(
+        "SELECT id, locator FROM projects WHERE tenant_id = ?",
+        (tenant_id,),
     )
+    for row in rows:
+        if _matches(str(row["locator"]), keys, remote):
+            return str(row["id"])
+    return None
+
+
+def project_for_workspace(db: Database, account: dict, workspace: Path, name: str) -> dict:
+    """The project for this checkout. A GitHub repository is owner/repo."""
+    tenant_id = account["org"]["id"]
+    from agent_lbw.runtime.store.github_sync import collapse_repo_projects
+
+    collapse_repo_projects(db, tenant_id)
+    remote = _github_remote(workspace)
+    keys = _path_keys(workspace)
+    rows = db.fetchall(
+        "SELECT id, name, kind, locator FROM projects WHERE tenant_id = ?",
+        (tenant_id,),
+    )
+    for row in rows:
+        locator = str(row["locator"])
+        if not _matches(locator, keys, remote):
+            continue
+        if remote and (locator != remote or row["kind"] != "github"):
+            clash = next(
+                (
+                    other
+                    for other in rows
+                    if str(other["locator"]).casefold() == remote.casefold()
+                    and other["id"] != row["id"]
+                ),
+                None,
+            )
+            if clash is None:
+                db.execute(
+                    "UPDATE projects SET kind = 'github', locator = ? WHERE id = ?",
+                    (remote, row["id"]),
+                )
+                locator = remote
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "kind": "github" if remote else row["kind"],
+            "locator": locator,
+        }
+    if remote:
+        return ensure_project(
+            db,
+            tenant_id,
+            name=remote.split("/", 1)[1],
+            kind="github",
+            locator=remote,
+        )
+    kind = "git" if (workspace / ".git").exists() else "folder"
+    place = str(workspace.expanduser())
+    try:
+        place = str(workspace.expanduser().resolve())
+    except OSError:
+        pass
+    return ensure_project(db, tenant_id, name=name, kind=kind, locator=place)
+
+
+def _project(db: Database, account: dict, workspace: Path, name: str) -> dict:
+    return project_for_workspace(db, account, workspace, name)

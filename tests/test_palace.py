@@ -180,6 +180,19 @@ def test_fit_prompt_trims_without_memory() -> None:
     assert "add logout" in fitted[1]["content"]
 
 
+def test_palace_cache_is_outside_the_checkout(tmp_path: Path, monkeypatch) -> None:
+    from agent_lbw.runtime.palace import palace_cache_path
+
+    home = tmp_path / "home"
+    monkeypatch.setattr(
+        "agent_lbw.runtime.palace.Path.home",
+        classmethod(lambda cls: home),
+    )
+    path = palace_cache_path(tmp_path / "repo", tenant_id="org_1", project_id="proj_1")
+    assert path == home / ".cache" / "lbw" / "palace" / "org_1" / "proj_1"
+    assert ".lbw" not in path.parts
+
+
 def test_sibling_task_records_skip_the_current_task(settings: Settings, tmp_path: Path) -> None:
     manager = TaskManager(settings, max_concurrent=1)
     try:
@@ -221,7 +234,10 @@ def test_cycle_recalls_history_from_the_same_workspace(
         encoding="utf-8",
     )
     palace = RecordingPalace()
-    monkeypatch.setattr("agent_lbw.runtime.palace.open_palace", lambda root: palace)
+    monkeypatch.setattr(
+        "agent_lbw.runtime.palace.open_palace",
+        lambda root, **_kwargs: palace,
+    )
     llm = ScriptedClient([AssistantTurn(text="I looked around and stopped.")])
     run_cycle(tmp_path, settings, llm, goal="Add logout")
     assert "bearer token" in llm.calls[0][1]["content"]

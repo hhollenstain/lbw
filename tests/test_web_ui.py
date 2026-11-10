@@ -14,6 +14,7 @@ from agent_lbw.llm.client import model_ids_from_payload, normalize_model_base_ur
 from agent_lbw.runtime.improve import CycleResult
 from agent_lbw.runtime.servers import remember_server
 from agent_lbw.runtime.tasks import Task, TaskManager
+from agent_lbw.runtime.workspaces import remember_workspace
 from agent_lbw.web_ui import (
     _PR_STATE_CACHE,
     _PR_STATE_LOCK,
@@ -336,6 +337,10 @@ def test_web_ui_queues_and_lists_tasks(settings: Settings, tmp_path: Path) -> No
         assert b"-webkit-line-clamp: 3" in home.content
         assert b"/api/pulls/status" in home.content
         assert b"/rerun" in home.content
+        assert b"/rework" in home.content
+        assert b"function activityLogHtml(" in home.content
+        assert b"function oneJobPerPull(" in home.content
+        assert b"function reworkTask(" in home.content
         assert b"GITHUB_MARK" in home.content
         assert b'event.kind === "pr"' in home.content
         assert b'event.kind === "ui"' in home.content
@@ -745,6 +750,54 @@ def test_list_models_skips_local_default_for_other_host(settings: Settings) -> N
         manager.shutdown(wait=False)
 
 
+def test_history_uses_the_stored_job_when_a_database_is_configured(
+    settings: Settings, tmp_path: Path
+) -> None:
+    from agent_lbw.runtime.store.recording import record_task, sync_task
+
+    runs = tmp_path / ".lbw" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "disk-only.json").write_text(
+        json.dumps(
+            {"id": "disk-only", "status": "success", "goal": "Only on disk", "summary": "disk"}
+        ),
+        encoding="utf-8",
+    )
+    job = type("Job", (), {})()
+    job.id = "job-kept"
+    job.workspace = str(tmp_path)
+    job.goal = "Stored goal"
+    job.status = "success"
+    job.branch = ""
+    job.pr_url = ""
+    job.requester_id = ""
+    job.summary = "stored summary"
+    job.reason = ""
+    job.plan = "Do the work"
+    job.events = []
+    job.evidence = []
+    job.criteria = []
+    job.decision = ""
+    job.tests_passed = True
+    job.committed = False
+    job.published = False
+    job.stage = ""
+    job.model_name = ""
+    job.model_base_url = ""
+    record_task(tmp_path, "", job)
+    sync_task(tmp_path, "", job)
+    manager = TaskManager(settings, runner=lambda task: _ok_result(task.goal))
+    app = create_app(manager, default_workspace=tmp_path)
+    client = TestClient(app)
+    try:
+        items = client.get("/api/history").json()["items"]
+        assert [item["id"] for item in items] == ["job-kept"]
+        assert items[0]["goal"] == "Stored goal"
+        assert items[0]["plan"] == "Do the work"
+    finally:
+        manager.shutdown(wait=False)
+
+
 def test_history_endpoint_reads_run_logs(settings: Settings, tmp_path: Path) -> None:
     runs = tmp_path / ".lbw" / "runs"
     runs.mkdir(parents=True)
@@ -950,7 +1003,9 @@ def test_task_and_history_polls_omit_llm_transcripts(settings: Settings, tmp_pat
         assert "messages" not in body["events"][0]
         history = client.get("/api/history").json()
         assert "SECRET_TRANSCRIPT" not in json.dumps(history)
-        assert "messages" not in history["items"][0]["events"][0]
+        for item in history["items"]:
+            for event in item.get("events") or []:
+                assert "messages" not in event
     finally:
         gate.set()
         manager.shutdown(wait=False)
@@ -1069,18 +1124,14 @@ def test_web_ui_workspace_picker_browse_select_create(settings: Settings, tmp_pa
     try:
         home = client.get("/")
         assert home.status_code == 200
-        assert b'id="open-workspace-picker"' in home.content
-        assert b'aria-label="Add project"' in home.content
-        assert b'aria-label="Archive project"' in home.content
-        assert home.content.index(b'class="project-bar"') < home.content.index(
-            b'id="open-workspace-picker"'
-        )
-        assert home.content.index(b'<section class="tasks">') < home.content.index(
-            b'id="archive-project"'
-        )
+        assert b'id="open-workspace-picker"' not in home.content
+        assert b'aria-label="Add project"' not in home.content
+        assert b'aria-label="Archive project"' not in home.content
+        assert b'id="archive-project"' not in home.content
         assert b'id="workspace-picker"' in home.content
         assert b'id="project-select"' in home.content
-        assert b'id="archive-project"' in home.content
+        assert b'id="project-search"' in home.content
+        assert b"function writePageUrl(" in home.content
         assert b'id="archived-workspaces"' in home.content
         assert b'id="workspace-tabs"' not in home.content
         assert b'id="guidelines"' in home.content
@@ -1089,7 +1140,9 @@ def test_web_ui_workspace_picker_browse_select_create(settings: Settings, tmp_pa
         assert b'id="settings-dock"' in sidebar
         assert b'id="open-profile"' in sidebar
         assert b'id="theme-toggle"' in sidebar
-        assert b'id="workspace-location"' in home.content
+        assert b'id="open-workspace-page"' not in home.content
+        assert b'id="settings-panel"' not in home.content
+        assert b"main.collapsed button.rail-item" in home.content
         assert b'id="workspace-summary"' in home.content
         assert b'class="icon-github"' in home.content
         assert b'class="icon-folder"' in home.content
@@ -1098,7 +1151,10 @@ def test_web_ui_workspace_picker_browse_select_create(settings: Settings, tmp_pa
         assert b'id="github-owner"' not in home.content
         assert b'id="github-repo"' not in home.content
         assert b'id="load-goals"' not in home.content
-        assert b'id="settings-kind-label"' in home.content
+        personal = home.content.split(b'id="personal-view"', 1)[1].split(
+            b'id="organization-view"', 1
+        )[0]
+        assert b'id="editor-scheme"' in personal
         assert b'id="save-guidelines"' in home.content
         assert b'id="project-skills-root"' in home.content
         assert home.content.count(b'id="project-skills-root"') == 1
@@ -1121,11 +1177,9 @@ def test_web_ui_workspace_picker_browse_select_create(settings: Settings, tmp_pa
         listed = client.get("/api/workspaces")
         assert listed.status_code == 200
         body = listed.json()
-        assert body["current"] == str(tmp_path.resolve())
+        assert body["current"] == ""
+        assert body["workspaces"] == []
         assert body["home"]
-        assert any(item["path"] == str(tmp_path.resolve()) for item in body["workspaces"])
-        assert "is_git" in body["workspaces"][0]
-        assert "git_remote" in body["workspaces"][0]
 
         browse = client.get("/api/workspaces/browse", params={"path": str(tmp_path)})
         assert browse.status_code == 200
@@ -1159,6 +1213,7 @@ def test_web_ui_workspace_picker_browse_select_create(settings: Settings, tmp_pa
 
 
 def test_web_ui_workspace_guidelines_and_tabs(settings: Settings, tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
     manager = TaskManager(settings, runner=lambda task: _ok_result(task.goal))
     app = create_app(manager, default_workspace=tmp_path)
     client = TestClient(app)
@@ -1194,15 +1249,14 @@ def test_web_ui_workspace_guidelines_and_tabs(settings: Settings, tmp_path: Path
         assert payload["custom_guidelines"] is True
         assert "Use Go modules" in payload["guidelines"]
         paths = [item["path"] for item in payload["workspaces"]]
-        assert paths[0] == str(tmp_path.resolve())
+        assert str(tmp_path.resolve()) in paths
         assert str(fresh.resolve()) in paths
         switched = client.post("/api/workspaces/select", json={"path": str(tmp_path)})
         assert switched.status_code == 200
         assert switched.json()["current"] == str(tmp_path.resolve())
-        assert [item["path"] for item in switched.json()["workspaces"]][:2] == [
-            str(tmp_path.resolve()),
-            str(fresh.resolve()),
-        ]
+        switched_paths = [item["path"] for item in switched.json()["workspaces"]]
+        assert str(tmp_path.resolve()) in switched_paths
+        assert str(fresh.resolve()) in switched_paths
         assert switched.json()["custom_guidelines"] is True
         reset = client.put(
             "/api/workspaces/guidelines",
@@ -1214,30 +1268,95 @@ def test_web_ui_workspace_guidelines_and_tabs(settings: Settings, tmp_path: Path
         manager.shutdown(wait=False)
 
 
-def test_web_ui_restores_last_workspace(settings: Settings, tmp_path: Path) -> None:
-    last = tmp_path / "picked"
-    last.mkdir()
+def test_the_checkout_volume_is_not_a_project_for_each_organization(
+    settings: Settings, tmp_path: Path
+) -> None:
+    shelf = tmp_path / "workspaces"
+    shelf.mkdir()
+    project = shelf / "demo"
+    project.mkdir()
+    (project / "README.md").write_text("hello\n", encoding="utf-8")
+    book = shelf / ".lbw" / "schedule-files" / "abc"
+    book.mkdir(parents=True)
+    remember_workspace(shelf, shelf)
+    remember_workspace(shelf, project)
+    remember_workspace(shelf, book)
+    manager = TaskManager(settings, runner=lambda task: _ok_result(task.goal))
+    app = create_app(manager, default_workspace=shelf)
+    client = TestClient(app)
+    try:
+        listed = client.get("/api/workspaces")
+        assert listed.status_code == 200
+        assert listed.json()["workspaces"] == []
+        assert listed.json()["current"] == ""
+        from agent_lbw.runtime.account import load_account
+        from agent_lbw.runtime.db import database
+        from agent_lbw.runtime.store.projects import ensure_project, grant_project
+
+        account = load_account(shelf)
+        with database(shelf) as db:
+            saved = ensure_project(
+                db,
+                account["org"]["id"],
+                name="demo",
+                kind="github",
+                locator="acme/demo",
+            )
+            grant_project(
+                db,
+                saved["id"],
+                subject_type="identity",
+                subject_id=account["current_user_id"],
+                access="use",
+            )
+        listed = client.get("/api/workspaces")
+        paths = [item["path"] for item in listed.json()["workspaces"]]
+        assert paths == ["acme/demo"]
+        assert listed.json()["current"] == "acme/demo"
+        assert str(project.resolve()) not in paths
+        home = client.get("/")
+        assert b'id="project-empty" hidden' in home.content
+        assert b">acme/demo<" in home.content
+    finally:
+        manager.shutdown(wait=False)
+
+
+def test_web_ui_lists_a_project_row_not_a_remembered_folder(
+    settings: Settings, tmp_path: Path
+) -> None:
+    remembered = tmp_path / "picked"
+    remembered.mkdir()
+    kept = tmp_path / "kept"
+    kept.mkdir()
     lbw = tmp_path / ".lbw"
     lbw.mkdir()
     (lbw / "workspaces.json").write_text(
-        json.dumps(
-            {
-                "last": str(last.resolve()),
-                "workspaces": [{"path": str(last.resolve())}],
-            }
-        )
+        json.dumps({"last": str(remembered.resolve()), "workspaces": [{"path": str(remembered)}]})
         + "\n",
         encoding="utf-8",
     )
+    from agent_lbw.runtime.account import load_account
+    from agent_lbw.runtime.db import database
+    from agent_lbw.runtime.store.projects import ensure_project
+
+    account = load_account(tmp_path)
+    with database(tmp_path) as db:
+        ensure_project(
+            db,
+            account["org"]["id"],
+            name="kept",
+            kind="folder",
+            locator=str(kept.resolve()),
+        )
     manager = TaskManager(settings, runner=lambda task: _ok_result(task.goal))
     app = create_app(manager, default_workspace=tmp_path)
     client = TestClient(app)
     try:
         listed = client.get("/api/workspaces")
         assert listed.status_code == 200
-        assert listed.json()["current"] == str(last.resolve())
-        home = client.get("/")
-        assert str(last.resolve()).encode() in home.content
+        paths = [item["path"] for item in listed.json()["workspaces"]]
+        assert paths == [str(kept.resolve())]
+        assert str(remembered.resolve()) not in paths
     finally:
         manager.shutdown(wait=False)
 
@@ -1291,7 +1410,10 @@ def test_web_ui_queues_and_stops_keep_improving(settings: Settings, tmp_path: Pa
         manager.shutdown(wait=False)
 
 
-def test_web_ui_archives_and_forgets_workspaces(settings: Settings, tmp_path: Path) -> None:
+def test_the_workspace_does_not_archive_or_remove_a_project(
+    settings: Settings, tmp_path: Path
+) -> None:
+    (tmp_path / ".git").mkdir()
     extra = tmp_path / "extra-app"
     extra.mkdir()
     manager = TaskManager(settings, runner=lambda task: _ok_result(task.goal))
@@ -1303,25 +1425,15 @@ def test_web_ui_archives_and_forgets_workspaces(settings: Settings, tmp_path: Pa
         selected = client.post("/api/workspaces/select", json={"path": str(extra)})
         assert selected.status_code == 200
         archived = client.post("/api/workspaces/archive", json={"path": str(extra)})
-        assert archived.status_code == 200
-        body = archived.json()
-        assert body["current"] == str(tmp_path.resolve())
-        assert [item["path"] for item in body["workspaces"]] == [str(tmp_path.resolve())]
-        assert [item["path"] for item in body["archived"]] == [str(extra.resolve())]
-        refused = client.post("/api/workspaces/archive", json={"path": str(tmp_path)})
-        assert refused.status_code == 400
-        restored = client.post("/api/workspaces/restore", json={"path": str(extra)})
-        assert restored.status_code == 200
-        assert restored.json()["current"] == str(extra.resolve())
-        assert restored.json()["archived"] == []
-        client.post("/api/workspaces/archive", json={"path": str(extra)})
+        assert archived.status_code == 400
+        assert "Organization" in archived.json()["error"]
         forgotten = client.post("/api/workspaces/forget", json={"path": str(extra)})
-        assert forgotten.status_code == 200
-        assert forgotten.json()["archived"] == []
+        assert forgotten.status_code == 400
+        listed = client.get("/api/workspaces")
+        paths = [item["path"] for item in listed.json()["workspaces"]]
+        assert str(extra.resolve()) in paths
+        assert str(tmp_path.resolve()) in paths
         assert extra.exists()
-        assert [item["path"] for item in forgotten.json()["workspaces"]] == [
-            str(tmp_path.resolve())
-        ]
     finally:
         manager.shutdown(wait=False)
 
@@ -1754,6 +1866,76 @@ def _failed_result(goal: str | None = "do the thing", branch: str | None = None)
     )
 
 
+def test_requesting_changes_reopens_the_same_job(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("agent_lbw.web_ui.pull_request_state", lambda _url, token=None: "open")
+    notes: list[str] = []
+
+    def runner(task: Task) -> CycleResult:
+        notes.append(task.review_notes)
+        return CycleResult(
+            status="success",
+            goal=task.goal,
+            summary="done",
+            tests_passed=True,
+            committed=True,
+            published=True,
+            commit_sha="abc123",
+            pr_url="https://github.com/acme/job-finder-agent/pull/2",
+            branch="lbw/write-up-the-agents-md-file",
+            reason="completed",
+        )
+
+    manager = TaskManager(settings, runner=runner)
+    app = create_app(manager, default_workspace=tmp_path)
+    client = TestClient(app)
+    try:
+        created = client.post(
+            "/api/tasks",
+            json={
+                "workspace": str(tmp_path),
+                "goal": "Write the agents file",
+                "auto_commit": False,
+            },
+        )
+        assert created.status_code == 201
+        task_id = created.json()["id"]
+        body = None
+        for _ in range(50):
+            listed = client.get("/api/tasks").json()
+            match = next((item for item in listed if item["id"] == task_id), None)
+            if match and match["status"] not in {"queued", "running"}:
+                body = match
+                break
+            time.sleep(0.05)
+        assert body is not None
+        assert body["status"] == "success"
+        empty = client.post(f"/api/tasks/{task_id}/rework", json={"note": "  "})
+        assert empty.status_code == 400
+        again = client.post(
+            f"/api/tasks/{task_id}/rework",
+            json={"note": "Tighten the lifecycle section"},
+        )
+        assert again.status_code == 200
+        reopened = again.json()
+        assert reopened["id"] == task_id
+        assert reopened["goal"] == "Write the agents file"
+        assert reopened["status"] in {"queued", "running"}
+        assert "Tighten the lifecycle section" in reopened["review_notes"]
+        deadline = time.time() + 3
+        while time.time() < deadline and len(notes) < 2:
+            time.sleep(0.05)
+        assert len(notes) >= 2
+        assert "Tighten the lifecycle section" in notes[1]
+        listed = client.get("/api/tasks").json()
+        pulls = [item for item in listed if "pull/2" in str(item.get("pr_url") or "")]
+        assert len(pulls) == 1
+        assert pulls[0]["id"] == task_id
+    finally:
+        manager.shutdown(wait=False)
+
+
 def test_web_ui_reruns_failed_task(settings: Settings, tmp_path: Path) -> None:
     statuses = iter(["failed", "success"])
 
@@ -1836,13 +2018,14 @@ def test_web_ui_updates_successful_task_on_its_branch(
         assert body["status"] == "success"
         assert body["branch"] == "lbw/feature"
         updated = client.post(
-            f"/api/tasks/{task_id}/rerun",
-            json={"goal": "Ship the panel\n\nAlso leave room for the PR link"},
+            f"/api/tasks/{task_id}/rework",
+            json={"note": "Also leave room for the PR link"},
         )
-        assert updated.status_code == 201
+        assert updated.status_code == 200
         payload = updated.json()
-        assert payload["id"] != task_id
-        assert "PR link" in payload["goal"]
+        assert payload["id"] == task_id
+        assert payload["goal"] == "Ship the panel"
+        assert "PR link" in payload["review_notes"]
         assert payload["create_pr"] is True
         follow = None
         for _ in range(50):
@@ -1851,6 +2034,7 @@ def test_web_ui_updates_successful_task_on_its_branch(
                 break
             time.sleep(0.05)
         assert follow is not None
+        assert follow.id == task_id
         assert follow.resume_branch == "lbw/feature"
         assert follow.resume_sha == "abc123"
     finally:
@@ -1895,8 +2079,8 @@ def test_web_ui_refuses_update_when_pull_request_is_not_open(
             time.sleep(0.05)
         assert body is not None
         refused = client.post(
-            f"/api/tasks/{task_id}/rerun",
-            json={"goal": "Ship the panel\n\nMore context"},
+            f"/api/tasks/{task_id}/rework",
+            json={"note": "More context"},
         )
         assert refused.status_code == 409
         queued = client.post(
@@ -2232,7 +2416,8 @@ def test_home_lists_roles_and_the_change_gates(settings: Settings, tmp_path: Pat
         assert b"In progress" in home.content
         assert b"function jobSection(" in home.content
         assert b"function inboxFolded(" in home.content
-        assert f'id="workspace-summary-repo">{tmp_path.name}<'.encode() in home.content
+        assert b"No projects yet" in home.content
+        assert b"Add the agent integration" in home.content
         assert b'id="workspace-summary-repo"' in home.content
         assert b'id="workspace-summary-branch"' in home.content
         assert b"function repoLabel(" in home.content
@@ -2257,7 +2442,8 @@ def test_home_lists_roles_and_the_change_gates(settings: Settings, tmp_path: Pat
         assert b"function sentBackText(" in home.content
         assert b"function stepMetrics(" in home.content
         assert b" tok" in home.content
-        assert b"${stepPill(chosen.pill[0], chosen.pill[1])}${usage}" in home.content
+        assert b'class="step-rail"' in home.content
+        assert b'${usage}<div class="step-body">' in home.content
         assert b'id="open-profile"' in home.content
         assert b'id="org-name"' in home.content
         assert b"Why it was sent back" in home.content

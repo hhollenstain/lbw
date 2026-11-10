@@ -581,7 +581,7 @@ def test_a_scheduled_run_uses_a_granted_model_and_refuses_a_missing_one(
         ):
             missed = client.post(f"/api/schedules/{bare.json()['id']}/run")
         assert missed.status_code == 200
-        assert missed.json()["runs"][0]["error"] == "Choose a model granted to this project."
+        assert missed.json()["runs"][0]["error"] == "Choose a model turned on for this project."
         assert seen == []
 
         with patch(

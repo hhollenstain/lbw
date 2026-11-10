@@ -82,6 +82,33 @@ Paste the App ID, the private key, and the client secret, and save. They
 are sealed with the install key. They are not shown again, and they do
 not go in git, in `.lbw/`, or on an organization's page.
 
+## Keep a local copy
+
+`make wipe` deletes the database, so the sealed app is gone. After the
+app is saved once, export it to `github.local.yaml` in this repository.
+That file is gitignored. It holds the app id, the private key, the client
+id, the client secret, and the chosen installation. It does not hold an
+installation token.
+
+```bash
+make export-github
+```
+
+Bring the stack back with `make up-local`, then restore the app:
+
+```bash
+make hydrate
+```
+
+Hydrate seals the file onto the install. It does not call GitHub. When
+the database is empty it creates the local organization first. The setup
+page still asks for the admin password. The store root for the Docker
+stack is `./workspaces`, because that folder holds `.lbw/master.key`.
+
+`lbw export-github` and `lbw hydrate` take `--workspace` and `--file`
+when the database is not the local Postgres port. The file must stay
+untracked, and it must not live under `.lbw/`.
+
 After the save, an organization installs the app from its own GitHub tab.
 The install link has the form
 `https://github.com/apps/<slug>/installations/new`. Send them

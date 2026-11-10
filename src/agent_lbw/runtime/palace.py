@@ -1,9 +1,10 @@
 """Workspace memory backed by MemPalace.
 
-Each workspace keeps a palace under `.lbw/palace`. Tasks in that workspace
-share one wing. Finished tasks are filed in the `tasks` room so a later run
-can recall them. Turns that no longer fit in the model window are filed in
-the `transcript` room and pulled back by meaning.
+The palace is a cache, outside the checkout, keyed by tenant and project.
+Finished tasks are filed in the `tasks` room so a later run can recall them.
+That room is rebuilt from the task rows. Turns that no longer fit in the
+model window are filed in the `transcript` room for this run and are not
+stored in the database.
 """
 
 from __future__ import annotations
@@ -67,12 +68,12 @@ class NullPalace:
 
 
 class MemPalaceStore:
-    """Verbatim drawers in a per-workspace MemPalace, keyed so refiling replaces."""
+    """Verbatim drawers in a cache, keyed so refiling replaces."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, tenant_id: str = "", project_id: str = "") -> None:
         self.root = Path(root)
-        self.path = self.root / ".lbw" / "palace"
-        self.wing = wing_name(self.root)
+        self.path = palace_cache_path(root, tenant_id=tenant_id, project_id=project_id)
+        self.wing = wing_name(project_id) if project_id else wing_name(self.root)
         self._broken = False
 
     def file(self, content: str, *, room: str, source: str) -> None:
@@ -149,15 +150,28 @@ class MemPalaceStore:
         )
 
 
-def open_palace(root: Path) -> MemPalaceStore | NullPalace:
-    """Open the workspace palace, or a no-op when MemPalace cannot be used."""
+def palace_cache_path(root: Path, *, tenant_id: str = "", project_id: str = "") -> Path:
+    """A cache directory. It is not under the checkout."""
+    base = Path.home() / ".cache" / "lbw" / "palace"
+    tenant = tenant_id.strip()
+    project = project_id.strip()
+    if tenant and project:
+        return base / _cache_part(tenant) / _cache_part(project)
+    digest = hashlib.sha256(str(Path(root).expanduser()).encode()).hexdigest()[:16]
+    return base / "local" / digest
+
+
+def open_palace(
+    root: Path, *, tenant_id: str = "", project_id: str = ""
+) -> MemPalaceStore | NullPalace:
+    """Open the cache for this project, or a no-op when MemPalace cannot be used."""
     try:
         import mempalace  # noqa: F401
     except ImportError:
         log.info("mempalace is not installed; workspace memory is off")
         return NullPalace()
     try:
-        return MemPalaceStore(root)
+        return MemPalaceStore(root, tenant_id=tenant_id, project_id=project_id)
     except Exception as exc:
         log.warning("could not open mempalace at %s: %s", root, exc)
         return NullPalace()
@@ -167,8 +181,8 @@ def palace_enabled(palace: Palace | None) -> bool:
     return palace is not None and not isinstance(palace, NullPalace)
 
 
-def wing_name(root: Path) -> str:
-    """Stable MemPalace wing for every task in this workspace."""
+def wing_name(root: Path | str) -> str:
+    """Stable MemPalace wing for every task in this project."""
     raw = re.sub(r"[^0-9A-Za-z .'-]+", " ", Path(root).name).strip(" .'-")
     raw = re.sub(r"\s+", " ", raw)
     if not raw or not raw[0].isalnum():
@@ -235,15 +249,21 @@ def seed_workspace(
     palace: Palace | None,
     *,
     siblings: list[dict] | None = None,
+    include_files: bool = True,
 ) -> int:
-    """File saved cycles and in-memory sibling tasks into the workspace palace."""
+    """File task rows, and local history when this install has no database."""
     if not palace_enabled(palace):
         return 0
     count = 0
-    for record in [*load_history_records(root), *(siblings or [])]:
+    saved = load_history_records(root) if include_files else []
+    for record in [*saved, *(siblings or [])]:
         if remember_record(palace, record):
             count += 1
     return count
+
+
+def _cache_part(value: str) -> str:
+    return re.sub(r"[^0-9A-Za-z._-]+", "-", value).strip(".-")[:80] or "project"
 
 
 def format_memory(hits: list[MemoryHit], *, limit_chars: int = 3500) -> str:

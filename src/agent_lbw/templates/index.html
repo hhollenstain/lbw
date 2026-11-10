@@ -78,8 +78,45 @@
     }
     main.collapsed .sidebar-title,
     main.collapsed .sidebar-tools,
-    main.collapsed .sidebar-stack {
+    main.collapsed .project-switch {
       display: none;
+    }
+    main.collapsed .sidebar-stack {
+      display: flex;
+      padding: 0.35rem 0.15rem 0.4rem;
+      overflow: auto;
+    }
+    main.collapsed .rail-nav {
+      margin-top: 0.2rem;
+      align-items: center;
+    }
+    main.collapsed button.rail-item {
+      position: relative;
+      width: 2.15rem;
+      height: 2.15rem;
+      padding: 0;
+      justify-content: center;
+      gap: 0;
+    }
+    main.collapsed button.rail-item > span:not(.rail-count) {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    main.collapsed .rail-count {
+      position: absolute;
+      top: 0;
+      right: 0;
+      margin: 0;
+      min-width: 0.85rem;
+      padding: 0 0.2rem;
+      font-size: 0.62rem;
     }
     main.collapsed .settings-dock {
       flex-direction: column;
@@ -121,6 +158,7 @@
     @media (max-width: 840px) {
       main, main.collapsed { grid-template-columns: 1fr; }
       main.collapsed .sidebar { min-height: 0; }
+      main.collapsed .sidebar-stack { display: none; }
       main.collapsed .settings-dock {
         flex-direction: row;
         align-items: center;
@@ -250,7 +288,7 @@
       gap: 0.55rem;
       overflow: hidden;
       border-right: 1px solid var(--line);
-      background: var(--bg);
+      background: var(--bg-subtle);
       padding: 0.9rem 0.85rem 1rem;
     }
     .changes-board-head {
@@ -338,9 +376,9 @@
       border-color: var(--pr-closed);
       background: color-mix(in srgb, var(--pr-closed) 16%, transparent);
     }
-    .release-open .inbox-item { box-shadow: inset 3px 0 0 var(--pr-open); }
-    .release-merged .inbox-item { box-shadow: inset 3px 0 0 var(--pr-merged); }
-    .release-closed .inbox-item { box-shadow: inset 3px 0 0 var(--pr-closed); }
+    .release-open .inbox-item { box-shadow: inset 3px 0 0 var(--pr-open), var(--card-lift); }
+    .release-merged .inbox-item { box-shadow: inset 3px 0 0 var(--pr-merged), var(--card-lift); }
+    .release-closed .inbox-item { box-shadow: inset 3px 0 0 var(--pr-closed), var(--card-lift); }
     .project-bar {
       display: flex;
       align-items: center;
@@ -2591,42 +2629,49 @@
       </div>
       <div class="sidebar-stack" id="sidebar-stack">
       <div class="project-switch">
-        <label class="project-switch-label" for="project-select">Project</label>
-        <select id="project-select" aria-label="Project">
+        <label class="project-switch-label" for="project-search">Project</label>
+        <div class="project-finder">
+          <input id="project-search" class="project-search" type="search" placeholder="Find a project" aria-label="Find a project" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="project-menu">
+          <div id="project-menu" class="project-menu" role="listbox" hidden></div>
+        </div>
+        <select id="project-select" aria-label="Project" hidden>
           {% for ws in known_workspaces %}
           <option value="{{ ws.path }}" {% if ws.path == default_workspace %}selected{% endif %}>{{ ws.name }}{% if ws.missing %} (no checkout){% endif %}</option>
+          {% else %}
+          <option value="" disabled selected>No projects yet</option>
           {% endfor %}
         </select>
+        <p class="hint project-empty" id="project-empty"{% if known_workspaces %} hidden{% endif %}>No projects yet. Add the agent integration in Organization, then turn a repository on.</p>
       </div>
       <input id="workspace" name="workspace" type="hidden" form="task-form" required value="{{ default_workspace }}">
 
       <nav class="rail-nav" aria-label="Project">
-        <button type="button" class="rail-item" data-rail="proposals" aria-pressed="true">
+        <button type="button" class="rail-item" data-rail="proposals" aria-pressed="true" title="Proposals">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h7.2L19 8.2V20.5H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3.8V8.4h4.4M9.5 12.5h5.5M9.5 16h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           <span>Proposals</span>
         </button>
-        <button type="button" class="rail-item" data-rail="changes" aria-pressed="false">
+        <button type="button" class="rail-item" data-rail="changes" aria-pressed="false" title="Changes">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7h11M8 12h11M8 17h11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="4.8" cy="7" r="1.05" fill="currentColor"/><circle cx="4.8" cy="12" r="1.05" fill="currentColor"/><circle cx="4.8" cy="17" r="1.05" fill="currentColor"/></svg>
           <span>Changes</span>
           <span class="rail-count" id="inbox-count" hidden>0</span>
         </button>
-        <button type="button" class="rail-item" data-rail="releases" aria-pressed="false">
+        <button type="button" class="rail-item" data-rail="releases" aria-pressed="false" title="Releases">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.4 3.6h6.1v6.1L10.2 18a2.1 2.1 0 0 1-3 0l-1.2-1.2a2.1 2.1 0 0 1 0-3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="16.3" cy="7.7" r="1.05" fill="currentColor"/></svg>
           <span>Releases</span>
         </button>
-        <button type="button" class="rail-item" data-rail="rules" aria-pressed="false">
+        <button type="button" class="rail-item" data-rail="rules" aria-pressed="false" title="Rules">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" fill="currentColor"/></svg>
           <span>Rules</span>
         </button>
-        <button type="button" class="rail-item" data-rail="schedules" aria-pressed="false">
+        <button type="button" class="rail-item" data-rail="schedules" aria-pressed="false" title="Schedules">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5 8.2 7M19 4.5 15.8 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="13" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 13V9.8M12 13l2.4 1.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           <span>Schedules</span>
         </button>
-        <button type="button" class="rail-item" data-rail="skills" aria-pressed="false">
+        <button type="button" class="rail-item" data-rail="skills" aria-pressed="false" title="Skills">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="8" width="14" height="11" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7 8V6.4A1.9 1.9 0 0 1 8.9 4.5h11.1A1.9 1.9 0 0 1 21.9 6.4V16" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
           <span>Skills</span>
         </button>
-        <button type="button" class="rail-item" data-rail="roles" aria-pressed="false">
+        <button type="button" class="rail-item" data-rail="roles" aria-pressed="false" title="Roles">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="8" cy="8" r="2.6" fill="none" stroke="currentColor" stroke-width="1.8"/>
             <circle cx="16" cy="9" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/>
@@ -2634,6 +2679,13 @@
             <path d="M13.2 19.2c.35-1.7 1.5-2.7 3-2.7 1.4 0 2.5.9 3 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
           </svg>
           <span>Roles</span>
+        </button>
+        <button type="button" class="rail-item" data-rail="models" aria-pressed="false" title="Models">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/>
+            <path d="M8 9.5h8M8 14.5h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          <span>Models</span>
         </button>
       </nav>
       </div>
@@ -2647,7 +2699,6 @@
       <div class="account-menu" id="account-menu" hidden>
         <button type="button" id="open-personal-page">Personal</button>
         <button type="button" id="open-organization-page">Organization</button>
-        <button type="button" id="open-workspace-page">Workspace</button>
         <button type="button" id="open-crossing" data-crossing-url="{{ crossing_url }}" hidden>Crossing guard</button>
       </div>
       <button type="button" class="secondary" id="theme-toggle" aria-label="Switch to dark theme" aria-pressed="false" title="Dark theme">
@@ -2665,34 +2716,6 @@
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
         </svg>
       </button>
-      <div class="settings-panel" id="settings-panel" hidden>
-        <div class="settings-panel-head">
-          <h2>Workspace settings</h2>
-          <button type="button" class="secondary" id="close-settings">Close</button>
-        </div>
-        <div class="settings-panel-content">
-          <label>Location</label>
-          <div class="settings-location" id="workspace-location">
-            <span class="workspace-kind" id="settings-kind" data-kind="{{ ws_kind }}" title="{{ ws_kind_label }}" aria-hidden="true">
-              <svg class="icon-github" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg>
-              <svg class="icon-git" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M23.546 10.93 13.067.452a1.55 1.55 0 0 0-2.188 0L8.548 2.783l2.762 2.762a1.838 1.838 0 0 1 2.327 2.341l2.658 2.658a1.838 1.838 0 1 1-1.1 1.1L12.45 8.9v6.897a1.838 1.838 0 1 1-1.51-.055v-6.97a1.838 1.838 0 0 1-.997-2.414L7.43 3.902.452 10.88a1.55 1.55 0 0 0 0 2.188l10.48 10.477a1.55 1.55 0 0 0 2.188 0l10.425-10.425a1.55 1.55 0 0 0 0-2.188"/></svg>
-              <svg class="icon-folder" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.31 5.55 1 5 1H1.75Z"/></svg>
-            </span>
-            <div class="settings-location-text">
-              <p class="settings-kind-label" id="settings-kind-label">{{ ws_kind_label }}</p>
-              <p class="settings-remote" id="settings-remote"{% if not workspace_git_remote %} hidden{% endif %}>{{ workspace_git_remote }}</p>
-              <p class="settings-path" id="settings-path">{{ default_workspace }}</p>
-            </div>
-          </div>
-          <label for="editor-scheme">Open files in</label>
-          <select id="editor-scheme" aria-label="Editor for changed files">
-            <option value="cursor">Cursor</option>
-            <option value="vscode">VS Code</option>
-            <option value="">Do not link</option>
-          </select>
-          <p class="hint">Changed files in a run get an Open link that jumps to the file in this editor.</p>
-        </div>
-      </div>
     </div>
     </aside>
     <section class="tasks">
@@ -2707,14 +2730,6 @@
             <span class="repo" id="workspace-summary-repo">{{ workspace_repo_label }}</span>
             <span class="branch" id="workspace-summary-branch" hidden></span>
           </span>
-        </div>
-        <div class="project-actions">
-          <button type="button" class="secondary icon-button" id="open-workspace-picker" aria-label="Add project" title="Add a project, folder, or repository">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-          </button>
-          <button type="button" class="secondary icon-button" id="archive-project" aria-label="Archive project" title="Archive this project"{% if known_workspaces|length < 2 %} hidden{% endif %}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7M7.2 7l.7 12.2a1.4 1.4 0 0 0 1.4 1.3h5.4a1.4 1.4 0 0 0 1.4-1.3L16.8 7M10 11v5.5M14 11v5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
         </div>
       </header>
       <div class="center-view" id="proposals-view" data-section="proposals">
@@ -2749,11 +2764,11 @@
 
       <div class="llm-block">
         <p class="llm-heading">Model</p>
-        <label for="model">Granted model</label>
-        <select id="model" name="model_id" aria-label="Granted model">
-          <option value="">No models granted</option>
+        <label for="model">Model</label>
+        <select id="model" name="model_id" aria-label="Model">
+          <option value="">No models turned on</option>
         </select>
-        <p class="hint" id="model-hint">Add a host and its models in organization settings. This list shows the models granted to this project.</p>
+        <p class="hint" id="model-hint">Add a host and its models in organization settings. This list shows the models turned on for this project.</p>
         <label for="context-window">Context window</label>
         <input id="context-window" name="context_window" type="number" min="512" max="1048576" step="1" inputmode="numeric" placeholder="server default" value="{{ default_context_window }}">
         <p class="hint">Tokens this model can hold on this machine. Leave blank to use the server window, or LBW_CONTEXT_WINDOW when that is set.</p>
@@ -2877,6 +2892,14 @@
           <p class="hint" id="roles-status">Loading roles…</p>
         </div>
       </div>
+      <div class="center-view" id="models-view" data-section="models" hidden>
+        <div class="section-page">
+          <p class="ask-kicker">Project</p>
+          <h1 class="ask-heading">Models</h1>
+          <p class="hint">A switch turns a model on for this project. A model turned on for the organization starts on here. An organization admin or a repository admin can change it. That choice stays when the organization turns the model off and back on.</p>
+          <div class="settings-skills-list" id="workspace-models"></div>
+        </div>
+      </div>
       <div class="center-view" id="skills-view" data-section="skills" hidden>
         <div class="section-page" id="skills-panel">
           <p class="ask-kicker">Process</p>
@@ -2904,6 +2927,13 @@
               <button type="button" id="save-profile">Save</button>
               <button type="button" class="secondary" id="sign-out">Sign out</button>
             </div>
+            <label for="editor-scheme">Open files in</label>
+            <select id="editor-scheme" aria-label="Editor for changed files">
+              <option value="cursor">Cursor</option>
+              <option value="vscode">VS Code</option>
+              <option value="">Do not link</option>
+            </select>
+            <p class="hint">Changed files in a run get an Open link that jumps to the file in this editor.</p>
           </div>
           <div class="personal-panel" id="personal-panel-github" data-personal-panel="github" hidden>
             <p class="hint">Connect GitHub here. The organization shows the username GitHub returns. It is not entered on the organization page.</p>
@@ -3014,15 +3044,16 @@
             </div>
             <div id="github-repos" hidden>
               <h2 class="rule-heading">Repositories</h2>
-              <p class="hint">Add a repository this app can see to the organization, a person, or a team. Sync copies GitHub roles, teams, and repository access onto people who connected GitHub.</p>
-              <div class="settings-skill-source">
-                <select id="github-repo" aria-label="Repository"></select>
-                <select id="github-repo-subject" aria-label="Who receives the repository"></select>
-                <button type="button" class="secondary" id="load-github-repos">Load repositories</button>
-                <button type="button" id="add-github-repo">Add workspace</button>
-              </div>
+              <p class="hint">Sync loads every repository this app can see. A switch makes one available. A person sees it in the project list when their GitHub account can use it. An archived repository is left out.</p>
+              <input id="org-repo-search" class="org-repo-search" type="search" placeholder="Find a repository" aria-label="Find a repository" autocomplete="off">
+              <table class="org-table" id="org-repo-table">
+                <thead>
+                  <tr><th>Repository</th><th>Use</th></tr>
+                </thead>
+                <tbody id="org-repo-rows"></tbody>
+              </table>
               <div class="modal-actions">
-                <button type="button" id="sync-github-access">Sync access</button>
+                <button type="button" id="sync-github-access">Sync</button>
               </div>
             </div>
           </div>
@@ -3063,7 +3094,7 @@
         <select id="schedule-model" aria-label="Granted model">
           <option value="">No models granted</option>
         </select>
-        <p class="hint">Models turned on for the organization and granted to this project. The run uses this server.</p>
+        <p class="hint">Models turned on for this project. The run uses this server.</p>
         <label>How often</label>
         <div class="cadence-choices">
           <button type="button" class="secondary cadence-choice" id="cadence-hourly" data-kind="hourly" aria-pressed="false">Hourly</button>
@@ -3257,10 +3288,6 @@
     const workspaceKindEl = document.getElementById("workspace-kind");
     const workspaceSummaryRepoEl = document.getElementById("workspace-summary-repo");
     const workspaceSummaryBranchEl = document.getElementById("workspace-summary-branch");
-    const settingsKindEl = document.getElementById("settings-kind");
-    const settingsKindLabelEl = document.getElementById("settings-kind-label");
-    const settingsRemoteEl = document.getElementById("settings-remote");
-    const settingsPathEl = document.getElementById("settings-path");
     const settingsDockEl = document.getElementById("settings-dock");
     const settingsToggleEl = document.getElementById("open-settings");
     const settingsPanelEl = document.getElementById("settings-panel");
@@ -3669,6 +3696,7 @@
       const reposEl = document.getElementById("github-repos");
       const manage = githubAccount ? canManageOrg(githubAccount) : false;
       if (reposEl) reposEl.hidden = !app.account_login || !manage;
+      if (reposEl && !reposEl.hidden) loadGitHubRepos().catch(showGitHubError);
       const callbackEl = document.getElementById("github-callback");
       if (callbackEl) callbackEl.textContent = window.location.origin + "/api/github/callback";
       const secretEl = document.getElementById("github-app-secret");
@@ -3682,7 +3710,7 @@
       } else if (app.configured) {
         statusEl.textContent = "Saved. Install the app on the GitHub account or organization that owns the repositories, then refresh.";
       } else {
-        statusEl.textContent = "Not connected. Public repositories can still be added by URL.";
+        statusEl.textContent = "Not connected.";
       }
     }
 
@@ -4209,6 +4237,10 @@
     }
 
     function setSettingsOpen(open) {
+      if (!settingsPanelEl) {
+        settingsDockEl.classList.remove("open");
+        return;
+      }
       settingsDockEl.classList.toggle("open", open);
       settingsPanelEl.hidden = !open;
       settingsToggleEl.setAttribute("aria-expanded", open ? "true" : "false");
@@ -4274,6 +4306,7 @@
       const workspace = item || {};
       const remote = String(workspace.git_remote || "");
       const label = repoLabel(remote, workspace.name)
+        || (workspace.path ? "" : "No projects yet")
         || (workspaceSummaryRepoEl ? workspaceSummaryRepoEl.textContent : "")
         || "Project";
       if (workspaceSummaryRepoEl) workspaceSummaryRepoEl.textContent = label;
@@ -4287,14 +4320,7 @@
       const item = ((body && body.workspaces) || []).find((ws) => ws.path === path) || {};
       const kind = workspaceType(item);
       applyWorkspaceKind(workspaceKindEl, kind);
-      applyWorkspaceKind(settingsKindEl, kind);
       paintWorkspaceSummary(item);
-      if (settingsKindLabelEl) settingsKindLabelEl.textContent = WORKSPACE_KIND_LABELS[kind];
-      if (settingsRemoteEl) {
-        settingsRemoteEl.textContent = item.git_remote || "";
-        settingsRemoteEl.hidden = !item.git_remote;
-      }
-      if (settingsPathEl) settingsPathEl.textContent = path;
       syncGitHubIssues(item, path);
     }
 
@@ -4309,6 +4335,8 @@
       }
       updateWorkspaceDisplay(body);
       renderProjectSelect(body.workspaces || [], body.current);
+      applyLinkedProject(body.workspaces || []);
+      writePageUrl();
       if (archivedEl && !pickerEl.hidden) {
         renderArchivedWorkspaces(body.archived || []);
         renderFolderButtons(recentEl, body.workspaces || [], "No recent workspaces yet.", (item) => selectWorkspace(item.path, { seed: true }));
@@ -4316,13 +4344,34 @@
       setGuidelinesEditor(body.guidelines, body.custom_guidelines);
       loadWorkspaceSkills();
       loadWorkspaceRoles();
+      loadProjectModels();
       if (state.section === "rules") loadRulesSection();
     }
 
     function renderProjectSelect(workspaces, current) {
       if (!projectSelectEl) return;
+      const emptyNote = document.getElementById("project-empty");
       const picked = current || workspaceEl.value;
       projectSelectEl.replaceChildren();
+      if (!workspaces.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.disabled = true;
+        option.selected = true;
+        option.textContent = "No projects yet";
+        projectSelectEl.append(option);
+        if (emptyNote) emptyNote.hidden = false;
+        if (workspaceEl) workspaceEl.value = "";
+        const search = document.getElementById("project-search");
+        if (search) {
+          search.value = "";
+          search.placeholder = "No projects yet";
+        }
+        paintWorkspaceSummary({});
+        if (archiveProjectEl) archiveProjectEl.hidden = true;
+        return;
+      }
+      if (emptyNote) emptyNote.hidden = true;
       for (const item of workspaces) {
         const option = document.createElement("option");
         option.value = item.path;
@@ -4333,6 +4382,13 @@
       }
       if ([...projectSelectEl.options].some((option) => option.value === picked)) {
         projectSelectEl.value = picked;
+      }
+      const search = document.getElementById("project-search");
+      const chosen = workspaces.find((item) => item.path === (projectSelectEl.value || picked));
+      if (search && document.activeElement !== search) {
+        search.disabled = false;
+        search.placeholder = "Find a project";
+        search.value = chosen ? finderLabel(chosen) : "";
       }
       if (archiveProjectEl) archiveProjectEl.hidden = workspaces.length < 2;
     }
@@ -4492,6 +4548,7 @@
       if (opts.close !== false && !opts.quiet) {
         notify("success", body.current, { title: "Workspace selected" });
       }
+      writePageUrl();
     }
 
     async function loadBranches() {
@@ -4539,9 +4596,163 @@
       return value;
     }
 
-    document.getElementById("open-workspace-picker").addEventListener("click", () => {
-      openPicker().catch(showPickerError);
-    });
+    const openPickerEl = document.getElementById("open-workspace-picker");
+    if (openPickerEl) {
+      openPickerEl.addEventListener("click", () => {
+        openPicker().catch(showPickerError);
+      });
+    }
+    const projectSearchEl = document.getElementById("project-search");
+    const projectMenuEl = document.getElementById("project-menu");
+    let projectQuery = "";
+    if (projectSearchEl) {
+      projectSearchEl.addEventListener("focus", () => {
+        projectQuery = "";
+        openProjectMenu();
+        projectSearchEl.select();
+      });
+      projectSearchEl.addEventListener("input", () => {
+        projectQuery = projectSearchEl.value;
+        openProjectMenu();
+      });
+      projectSearchEl.addEventListener("blur", () => {
+        closeProjectMenu();
+        const current = (state.workspaceCatalog || []).find((item) => item.path === workspaceEl.value);
+        projectSearchEl.value = current ? finderLabel(current) : "";
+      });
+      projectSearchEl.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          projectSearchEl.blur();
+          return;
+        }
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        const first = projectMenuEl && projectMenuEl.querySelector(".project-menu-item");
+        if (first) first.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      });
+    }
+
+    function finderLabel(item) {
+      const locator = String((item && item.locator) || "");
+      if (locator && locator.indexOf("/") > 0 && !locator.startsWith("/") && locator.indexOf("\\") < 0) {
+        return item.missing ? locator + " (no checkout)" : locator;
+      }
+      const name = (item && (item.name || item.path)) || "";
+      return item && item.missing ? name + " (no checkout)" : name;
+    }
+
+    function projectLink(item) {
+      const locator = String((item && item.locator) || "");
+      if (locator && locator.indexOf("/") > 0 && !locator.startsWith("/") && locator.indexOf("\\") < 0) {
+        return locator;
+      }
+      return String((item && item.path) || "");
+    }
+
+    function openProjectMenu() {
+      if (!projectMenuEl) return;
+      projectMenuEl.hidden = false;
+      if (projectSearchEl) projectSearchEl.setAttribute("aria-expanded", "true");
+      renderProjectMenu();
+    }
+
+    function closeProjectMenu() {
+      if (projectMenuEl) projectMenuEl.hidden = true;
+      if (projectSearchEl) projectSearchEl.setAttribute("aria-expanded", "false");
+    }
+
+    function projectMatches(item, query) {
+      const name = String((item && item.name) || "");
+      const locator = String((item && item.locator) || "");
+      const remote = String((item && item.git_remote) || "");
+      const path = String((item && item.path) || "");
+      if (repoMatches(name, query) || repoMatches(remote, query)) return true;
+      const repo = locator.indexOf("/") > 0 && !locator.startsWith("/") && locator.indexOf("\\") < 0;
+      if (repo && repoMatches(locator, query)) return true;
+      const folded = String(query || "").toLowerCase();
+      if (!folded) return true;
+      return path.toLowerCase().includes(folded) || locator.toLowerCase().includes(folded);
+    }
+
+    function renderProjectMenu() {
+      if (!projectMenuEl) return;
+      const rows = (state.workspaceCatalog || []).filter((item) => projectMatches(item, projectQuery));
+      projectMenuEl.replaceChildren();
+      if (!rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "project-menu-empty";
+        empty.textContent = (state.workspaceCatalog || []).length
+          ? "No project matches."
+          : "No projects yet";
+        projectMenuEl.append(empty);
+        return;
+      }
+      for (const item of rows) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "project-menu-item";
+        button.setAttribute("role", "option");
+        button.textContent = finderLabel(item);
+        if (item.path === workspaceEl.value) button.setAttribute("aria-selected", "true");
+        button.addEventListener("mousedown", (event) => {
+          event.preventDefault();
+          chooseProject(item);
+        });
+        projectMenuEl.append(button);
+      }
+    }
+
+    function chooseProject(item) {
+      closeProjectMenu();
+      if (projectSearchEl) projectSearchEl.value = finderLabel(item);
+      if (!item.path || item.path === workspaceEl.value) return;
+      selectWorkspace(item.path, { close: false }).catch((err) => {
+        notify("error", err.message, { title: "Could not switch project" });
+      });
+    }
+
+    const linkedPage = new URLSearchParams(window.location.search);
+    let linkedProjectApplied = !linkedPage.get("project");
+
+    function sameProject(item, token) {
+      const want = String(token || "").toLowerCase();
+      if (!want) return false;
+      const fields = [item.path, item.locator, item.name, item.git_remote];
+      return fields.some((value) => String(value || "").toLowerCase() === want);
+    }
+
+    function applyLinkedProject(workspaces) {
+      const token = linkedPage.get("project");
+      if (!token || linkedProjectApplied) return;
+      if (!workspaces.length) return;
+      const match = workspaces.find((item) => sameProject(item, token));
+      linkedProjectApplied = true;
+      if (!match || match.path === workspaceEl.value) return;
+      selectWorkspace(match.path, { close: false, quiet: true }).catch((err) => {
+        notify("error", err.message, { title: "Could not open that project" });
+      });
+    }
+
+    function writePageUrl() {
+      const params = new URLSearchParams(window.location.search);
+      const section = state.section || "proposals";
+      if (section === "proposals") params.delete("section");
+      else params.set("section", section);
+      let tab = "";
+      if (section === "organization" && orgTab && orgTab !== "people") tab = orgTab;
+      if (section === "personal" && personalTab && personalTab !== "profile") tab = personalTab;
+      if (tab) params.set("tab", tab);
+      else params.delete("tab");
+      const item = (state.workspaceCatalog || []).find((row) => row.path === (workspaceEl && workspaceEl.value));
+      const token = projectLink(item);
+      if (token) params.set("project", token);
+      else if (linkedProjectApplied) params.delete("project");
+      const query = params.toString();
+      const next = window.location.pathname + (query ? "?" + query : "") + window.location.hash;
+      const current = window.location.pathname + window.location.search + window.location.hash;
+      if (next !== current) window.history.replaceState({}, "", next);
+    }
+
     if (projectSelectEl) {
       projectSelectEl.addEventListener("change", function () {
         const path = projectSelectEl.value;
@@ -4743,9 +4954,10 @@
           });
         });
         head.append(title, toggle);
-        const text = document.createElement("pre");
-        text.className = "repo-rule-body";
-        text.textContent = file.body || "";
+        const text = document.createElement("div");
+        text.className = "repo-rule-body skill-markdown";
+        if (file.html) text.innerHTML = file.html;
+        else text.textContent = file.body || "";
         row.append(head, text);
         list.append(row);
       }
@@ -4921,6 +5133,7 @@
       for (const panel of document.querySelectorAll(".personal-panel")) {
         panel.hidden = panel.dataset.personalPanel !== personalTab;
       }
+      writePageUrl();
     }
 
     function renderPersonalRules(scope) {
@@ -5119,48 +5332,81 @@
       return messages[result] || "";
     }
 
+    let githubRepoRows = [];
+
+    function repoMatches(name, query) {
+      const hay = String(name || "").toLowerCase();
+      const needle = String(query || "").toLowerCase().replace(/\s+/g, "");
+      if (!needle) return true;
+      if (hay.includes(needle)) return true;
+      let index = 0;
+      for (const ch of hay) {
+        if (ch === needle[index]) index += 1;
+        if (index === needle.length) return true;
+      }
+      return false;
+    }
+
+    function renderGitHubRepoTable() {
+      const body = document.getElementById("org-repo-rows");
+      const search = document.getElementById("org-repo-search");
+      if (!body) return;
+      const query = search ? search.value : "";
+      body.replaceChildren();
+      const rows = githubRepoRows.filter((repo) => repoMatches(repo.full_name, query));
+      if (!rows.length) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 2;
+        td.className = "muted";
+        td.textContent = githubRepoRows.length
+          ? "No repository matches that search."
+          : "No repositories yet. Sync from GitHub.";
+        tr.append(td);
+        body.append(tr);
+        return;
+      }
+      for (const repo of rows) {
+        const tr = document.createElement("tr");
+        const name = document.createElement("td");
+        name.textContent = repo.full_name;
+        const cell = document.createElement("td");
+        const toggle = document.createElement("input");
+        toggle.type = "checkbox";
+        toggle.className = "org-switch";
+        toggle.checked = Boolean(repo.enabled);
+        toggle.setAttribute("aria-label", "Use " + repo.full_name);
+        toggle.addEventListener("change", () => {
+          setGitHubRepoEnabled(repo.project_id, toggle.checked).catch((err) => {
+            toggle.checked = !toggle.checked;
+            showGitHubError(err);
+          });
+        });
+        cell.append(toggle);
+        tr.append(name, cell);
+        body.append(tr);
+      }
+    }
+
     async function loadGitHubRepos() {
       const res = await fetch("/api/github/repos");
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "failed to load repositories");
-      const select = document.getElementById("github-repo");
-      if (!select) return;
-      const previous = select.value;
-      select.replaceChildren();
-      for (const repo of body.repos || []) {
-        const option = document.createElement("option");
-        option.value = repo.full_name;
-        option.textContent = repo.full_name + (repo.private ? " (private)" : "");
-        select.append(option);
-      }
-      if (previous) select.value = previous;
-      const slot = document.getElementById("github-app-error");
-      if (slot) slot.replaceChildren();
-      if (!(body.repos || []).length) throw new Error("This installation has no repositories.");
-      notify("success", "Loaded " + body.repos.length + " repositories.", { title: "GitHub" });
+      githubRepoRows = body.repos || [];
+      renderGitHubRepoTable();
     }
 
-    async function addGitHubWorkspace() {
-      const repoEl = document.getElementById("github-repo");
-      const subjectEl = document.getElementById("github-repo-subject");
-      const fullName = repoEl ? repoEl.value : "";
-      const subject = (subjectEl ? subjectEl.value : "").split("\n");
-      if (!fullName) throw new Error("Load repositories and choose one.");
-      const res = await fetch("/api/github/workspaces", {
-        method: "POST",
+    async function setGitHubRepoEnabled(projectId, enabled) {
+      const res = await fetch("/api/github/repos/enabled", {
+        method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          full_name: fullName,
-          subject_type: subject[0] || "",
-          subject_id: subject[1] || "",
-          parent: cloneParentEl && cloneParentEl.value ? cloneParentEl.value.trim() : "",
-        }),
+        body: JSON.stringify({ project_id: projectId, enabled: enabled }),
       });
       const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "failed to add that repository");
-      const slot = document.getElementById("github-app-error");
-      if (slot) slot.replaceChildren();
-      notify("success", "Added " + body.full_name + " for " + body.placed + ".", { title: "GitHub" });
+      if (!res.ok) throw new Error(body.error || "failed to update the repository");
+      githubRepoRows = body.repos || [];
+      renderGitHubRepoTable();
+      await loadRecentWorkspaces();
     }
 
     async function syncGitHubAccess() {
@@ -5171,6 +5417,7 @@
       if (slot) slot.replaceChildren();
       if (body.account) renderAccount(body.account);
       await loadOrgSettings();
+      await loadGitHubRepos();
       notify("success", body.summary || "Synced GitHub access.", { title: "GitHub" });
     }
 
@@ -5196,6 +5443,7 @@
       for (const panel of document.querySelectorAll(".org-panel")) {
         panel.hidden = panel.dataset.orgPanel !== orgTab;
       }
+      writePageUrl();
     }
 
     for (const button of document.querySelectorAll(".org-tab")) {
@@ -5331,6 +5579,19 @@
       });
     }
 
+    async function loadProjectModels() {
+      const path = workspaceEl.value;
+      const res = await fetch("/api/workspaces/models?path=" + encodeURIComponent(path));
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "failed to load models");
+      window.__lbwProjectModels = body;
+      document.dispatchEvent(new CustomEvent("lbw-project-models", { detail: body }));
+    }
+    document.addEventListener("lbw-project-models", () => {
+      loadGrantedModels();
+      loadScheduleModels();
+    });
+
     async function loadWorkspaceRoles() {
       const path = workspaceEl.value;
       const res = await fetch(`/api/workspaces/roles?path=${encodeURIComponent(path)}`);
@@ -5406,7 +5667,6 @@
         showPickerError(err);
       }
     });
-    document.getElementById("close-settings").addEventListener("click", () => setSettingsOpen(false));
     document.getElementById("save-profile").addEventListener("click", () => {
       saveAccount().catch(showAccountError);
     });
@@ -5473,12 +5733,8 @@
     document.getElementById("use-github-installation").addEventListener("click", () => {
       useGitHubInstallation().catch(showGitHubError);
     });
-    document.getElementById("load-github-repos").addEventListener("click", () => {
-      loadGitHubRepos().catch(showGitHubError);
-    });
-    document.getElementById("add-github-repo").addEventListener("click", () => {
-      addGitHubWorkspace().catch(showGitHubError);
-    });
+    const orgRepoSearch = document.getElementById("org-repo-search");
+    if (orgRepoSearch) orgRepoSearch.addEventListener("input", renderGitHubRepoTable);
     document.getElementById("sync-github-access").addEventListener("click", () => {
       syncGitHubAccess().catch(showGitHubError);
     });
@@ -5495,10 +5751,6 @@
     document.getElementById("open-organization-page").addEventListener("click", () => {
       setAccountMenuOpen(false);
       showSection("organization");
-    });
-    document.getElementById("open-workspace-page").addEventListener("click", () => {
-      setAccountMenuOpen(false);
-      setSettingsOpen(true);
     });
     document.getElementById("open-crossing").addEventListener("click", () => {
       const button = document.getElementById("open-crossing");
@@ -7348,7 +7600,7 @@
 
       const chosen = steps.find((step) => step.id === (state.stepFocus || focus)) || steps[0];
       const usage = stepUsageHtml(metrics, chosen.id, chosen.pill);
-      return `<section class="change-board" aria-label="Change"><header class="step-head"><h2>Steps</h2>${jobPeopleHtml(item)}</header><div class="step-rail" role="tablist" aria-label="Change steps">${steps.map(card).join("")}</div><div class="step-pane" role="tabpanel"><div class="step-pane-head">${stepIcon(chosen.kind)}<strong>${escapeHtml(chosen.title)}</strong>${stepPill(chosen.pill[0], chosen.pill[1])}${usage}</div><div class="step-body">${chosen.body}</div></div></section>`;
+      return `<section class="change-board" aria-label="Change"><header class="step-head">${activityLogHtml(item)}</header><div class="step-rail" role="tablist" aria-label="Change steps">${steps.map(card).join("")}</div><div class="step-pane" role="tabpanel">${usage}<div class="step-body">${chosen.body}</div></div></section>`;
     }
 
     function renderProgress(item, { running = false } = {}) {
@@ -7529,7 +7781,7 @@
           workspace: workspaceEl.value || "",
         });
       });
-      return tasks.concat(history);
+      return oneJobPerPull(tasks.concat(history));
     }
 
     function inboxStepLabel(entry, section) {
@@ -7564,8 +7816,8 @@
       return "";
     }
 
-    function jobPeopleHtml(task) {
-      if (!task) return "";
+    function jobPeopleParts(task) {
+      if (!task) return [];
       const parts = [];
       const starter = task.started_by && (task.started_by.name || task.started_by.id);
       if (starter) parts.push(`Started by ${starter}`);
@@ -7574,9 +7826,9 @@
         if (!who) continue;
         if (gate.action === "send_back") {
           parts.push(gate.note ? `${who} sent this back: ${gate.note}` : `${who} sent this back`);
-        } else if (gate.action === "continue") {
+        } else if (gate.action === "continue" || gate.action === "rework") {
           parts.push(
-            gate.note ? `${who} asked for more changes: ${gate.note}` : `${who} asked for more changes`
+            gate.note ? `${who} requested changes: ${gate.note}` : `${who} requested changes`
           );
         } else if (gate.action === "build" || gate.action === "approve") {
           parts.push(`${who} accepted`);
@@ -7584,8 +7836,69 @@
           parts.push(`${who} handed this off`);
         }
       }
+      return parts;
+    }
+
+    function jobPeopleHtml(task) {
+      const parts = jobPeopleParts(task);
       if (!parts.length) return "";
       return `<span class="inbox-people">${escapeHtml(parts.join(" · "))}</span>`;
+    }
+
+    function activityPhrase(action) {
+      if (action === "send_back") return "sent this back";
+      if (action === "continue" || action === "rework") return "requested changes";
+      if (action === "build" || action === "approve") return "accepted";
+      if (action === "hand_off") return "handed this off";
+      return "updated this";
+    }
+
+    function reworkLines(task) {
+      const notes = [];
+      const text = String((task && task.review_notes) || "");
+      for (const part of text.split("\n\n")) {
+        const line = part.trim();
+        if (line.startsWith("Rework request:")) {
+          notes.push(line.slice("Rework request:".length).trim());
+        }
+      }
+      return notes;
+    }
+
+    function activityWhen(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      return raw.replace("T", " ").replace(/Z$/, " UTC");
+    }
+
+    function activityLogHtml(task) {
+      if (!task) return "";
+      const rows = [];
+      const starter = task.started_by && (task.started_by.name || task.started_by.id);
+      if (starter) {
+        rows.push({ who: starter, what: "started this", note: "", at: task.created_at || "" });
+      }
+      const seen = new Set();
+      for (const gate of task.gates || []) {
+        const who = (gate.actor && (gate.actor.name || gate.actor.id)) || "Someone";
+        const note = String(gate.note || "").trim();
+        if (note) seen.add(note);
+        rows.push({ who, what: activityPhrase(gate.action), note, at: gate.at || "" });
+      }
+      for (const note of reworkLines(task)) {
+        if (seen.has(note)) continue;
+        rows.push({ who: "Someone", what: "requested changes", note, at: "" });
+      }
+      if (!rows.length) return "";
+      const items = [];
+      for (const row of rows) {
+        const note = row.note ? `<span class="activity-note">${escapeHtml(row.note)}</span>` : "";
+        const when = row.at ? `<time class="activity-when">${escapeHtml(activityWhen(row.at))}</time>` : "";
+        items.push(
+          `<li><span class="activity-who">${escapeHtml(row.who)}</span> ${escapeHtml(row.what)}${note}${when}</li>`
+        );
+      }
+      return `<ol class="activity-log" aria-label="Activity">${items.join("")}</ol>`;
     }
 
     function inboxRowHtml(entry, items, section) {
@@ -7595,20 +7908,15 @@
         : (entry.key === state.selectedRunKey ? " selected" : "");
       const step = inboxStepLabel(entry, section);
       const project = projectLabel(entry.workspace || task.workspace, items);
-      const title = escapeHtml(String((task && task.fault) || entry.workspace || ""));
+      const title = escapeHtml(
+        [task && task.fault, jobPeopleParts(task).join(" · "), entry.workspace]
+          .filter(Boolean)
+          .join(" — ")
+      );
+      const body = `<span class="inbox-goal">${escapeHtml(goalHeadline(task))}</span><span class="inbox-meta"><span class="inbox-project">${escapeHtml(project)}</span><span class="inbox-step">${escapeHtml(step)}</span></span>`;
       const button = entry.kind === "history"
-        ? `<button type="button" class="inbox-item${selected}" data-run-key="${escapeHtml(entry.key)}" title="${title}">
-            <span class="inbox-project">${escapeHtml(project)}</span>
-            <span class="inbox-step">${escapeHtml(step)}</span>
-            <span class="inbox-goal">${escapeHtml(goalHeadline(task))}</span>
-            ${jobPeopleHtml(task)}
-          </button>`
-        : `<button type="button" class="inbox-item${selected}" data-inbox-id="${escapeHtml(task.id)}" data-inbox-workspace="${escapeHtml(task.workspace || "")}" title="${title}">
-            <span class="inbox-project">${escapeHtml(project)}</span>
-            <span class="inbox-step">${escapeHtml(step)}</span>
-            <span class="inbox-goal">${escapeHtml(goalHeadline(task))}</span>
-            ${jobPeopleHtml(task)}
-          </button>`;
+        ? `<button type="button" class="inbox-item${selected}" data-run-key="${escapeHtml(entry.key)}" title="${title}">${body}</button>`
+        : `<button type="button" class="inbox-item${selected}" data-inbox-id="${escapeHtml(task.id)}" data-inbox-workspace="${escapeHtml(task.workspace || "")}" title="${title}">${body}</button>`;
       return `<div class="inbox-row">${button}${inboxActionsHtml(entry, section)}</div>`;
     }
 
@@ -7684,15 +7992,43 @@
     }
 
     function isRelease(entry) {
+      const status = entry.status || "";
+      if (status === "queued" || status === "running" || status === "waiting") return false;
       const item = entry.item || {};
       if (prUrl(item)) return true;
       return entry.status === "success" && Boolean(item.committed || item.published);
     }
 
+    function oneJobPerPull(entries) {
+      const rank = { running: 0, queued: 1, waiting: 2, success: 3, failed: 4, error: 5 };
+      const kept = new Map();
+      const plain = [];
+      for (const entry of entries) {
+        const pull = prUrl(entry.item || {});
+        if (!pull) {
+          plain.push(entry);
+          continue;
+        }
+        const current = kept.get(pull);
+        if (!current) {
+          kept.set(pull, entry);
+          continue;
+        }
+        const left = Object.prototype.hasOwnProperty.call(rank, entry.status) ? rank[entry.status] : 9;
+        const right = Object.prototype.hasOwnProperty.call(rank, current.status) ? rank[current.status] : 9;
+        if (left < right || (left === right && runTime(entry.item) >= runTime(current.item))) {
+          kept.set(pull, entry);
+        }
+      }
+      const chosen = [];
+      for (const entry of kept.values()) chosen.push(entry);
+      return plain.concat(chosen);
+    }
+
     function releaseEntries() {
       const current = workspaceEl.value || "";
       const rows = [];
-      for (const entry of workspaceRuns()) {
+      for (const entry of oneJobPerPull(workspaceRuns())) {
         if (!isRelease(entry)) continue;
         const item = entry.item || {};
         rows.push({
@@ -7728,9 +8064,8 @@
         : "";
       return `
         <button type="button" class="inbox-item${tone}" data-release-key="${escapeHtml(entry.key)}">
-          <span class="inbox-project">${escapeHtml(project)}</span>
-          <span class="inbox-step">${badge}${escapeHtml(url ? prLabel(url) : "Committed")}</span>
           <span class="inbox-goal">${escapeHtml(goalHeadline(task))}</span>
+          <span class="inbox-meta"><span class="inbox-project">${escapeHtml(project)}</span><span class="inbox-step">${badge}${escapeHtml(url ? prLabel(url) : "Committed")}</span></span>
         </button>
       `;
     }
@@ -8228,7 +8563,7 @@
     let sessionReady = false;
 
     function showSection(name) {
-      const allowed = ["proposals", "changes", "releases", "rules", "skills", "roles", "schedules", "personal", "organization"];
+      const allowed = ["proposals", "changes", "releases", "rules", "skills", "roles", "models", "schedules", "personal", "organization"];
       const next = allowed.includes(name) ? name : "proposals";
       state.section = next;
       document.querySelectorAll("[data-section]").forEach((el) => {
@@ -8238,6 +8573,9 @@
       if (next === "skills") loadWorkspaceSkills();
       if (next === "roles") {
         loadWorkspaceRoles().catch((err) => notify("error", err.message, { title: "Could not load roles" }));
+      }
+      if (next === "models") {
+        loadProjectModels().catch((err) => notify("error", err.message, { title: "Could not load models" }));
       }
       if (next === "schedules") {
         loadScheduleBranches();
@@ -8257,6 +8595,7 @@
       } catch (_err) {
         /* ignore quota / private mode */
       }
+      writePageUrl();
     }
     document.querySelectorAll("[data-rail]").forEach((button) => {
       button.addEventListener("click", () => showSection(button.dataset.rail));
@@ -8282,10 +8621,14 @@
       });
     }
     try {
-      showSection(localStorage.getItem("lbw-section") || "proposals");
+      const linkedSection = linkedPage.get("section");
+      showSection(linkedSection || localStorage.getItem("lbw-section") || "proposals");
     } catch (_err) {
       showSection("proposals");
     }
+    const linkedTab = linkedPage.get("tab");
+    if (linkedTab && state.section === "organization") showOrgTab(linkedTab);
+    if (linkedTab && state.section === "personal") showPersonalTab(linkedTab);
 
     function contextWindowPayload() {
       const el = document.getElementById("context-window");
@@ -8386,11 +8729,19 @@
         ? `${pending.entry.goal || ""}\n\n${note}`.trim()
         : (note || pending.entry.goal || "");
       hideRerunGoalPicker();
+      const feedback = pending.purpose === "changes"
+        ? note
+        : (note && note !== (pending.entry.goal || "") ? note : "Continue this change.");
       if (pending.kind === "history") {
+        const existing = taskForEntry(pending.entry);
+        if (existing) {
+          await reworkTask(existing.id, feedback);
+          return;
+        }
         await rerunHistoryEntry(pending.entry, revised);
         return;
       }
-      await rerunFailedTask(pending.entry.id, revised);
+      await reworkTask(pending.entry.id, feedback);
     }
 
     document.getElementById("rerun-with-goal").addEventListener("click", () => {
@@ -8409,6 +8760,42 @@
         hideRerunGoalPicker();
       }
     });
+
+    function taskForEntry(entry) {
+      const tasks = state.allTasks || [];
+      if (entry && entry.id) {
+        const byId = tasks.find((task) => task.id === entry.id);
+        if (byId) return byId;
+      }
+      const pull = prUrl(entry);
+      if (!pull) return null;
+      const matches = tasks.filter((task) => prUrl(task) === pull);
+      const active = matches.find((task) => (
+        task.status === "queued" || task.status === "running" || task.status === "waiting"
+      ));
+      return active || matches[0] || null;
+    }
+
+    async function reworkTask(taskId, note) {
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/rework`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ note: note || "" }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "Could not continue this job");
+        state.selectedRunKey = `task:${body.id}`;
+        state.selected = body.id;
+        state.selectedHistoryKey = "";
+        state.taskStatus[body.id] = body.status || "queued";
+        notify("queued", goalHeadline(body), { title: "Back in progress" });
+        await refresh();
+      } catch (err) {
+        showNotice(errorEl, "error", err.message);
+        notify("error", err.message, { title: "Could not continue this job" });
+      }
+    }
 
     async function rerunFailedTask(taskId, newGoal) {
       try {
@@ -8659,7 +9046,7 @@
       const select = document.getElementById("model");
       const modelId = select ? select.value : "";
       if (!modelId) {
-        throw new Error("Add a model in organization settings and grant it to this project.");
+        throw new Error("Add a model in organization settings and turn it on for this project.");
       }
       return { model_id: modelId };
     }

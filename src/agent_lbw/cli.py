@@ -20,6 +20,7 @@ from agent_lbw.llm.client import (
 )
 from agent_lbw.logging import setup_logging
 from agent_lbw.runtime.improve import run_cycle
+from agent_lbw.runtime.local_github import LOCAL_GITHUB_FILE, export_github, hydrate_github
 from agent_lbw.runtime.project import write_default_project_files
 from agent_lbw.runtime.watch import watch as watch_loop
 from agent_lbw.tools.kiwi import check_kiwifs
@@ -573,3 +574,73 @@ def ui_command(
         )
     except KeyboardInterrupt:
         console.print("stopped")
+
+
+def _local_store(workspace: Path) -> tuple[Path, str]:
+    return workspace, Settings().database_url
+
+
+@app.command("export-github")
+def export_github_command(
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            "--workspace",
+            "-w",
+            exists=True,
+            file_okay=False,
+            resolve_path=True,
+            help="Store root with .lbw/master.key. The Docker stack uses ./workspaces.",
+        ),
+    ] = Path("."),
+    file: Annotated[
+        Path,
+        typer.Option(
+            "--file",
+            "-f",
+            help=f"Untracked file that keeps the GitHub App. Default: {LOCAL_GITHUB_FILE}.",
+        ),
+    ] = Path(LOCAL_GITHUB_FILE),
+) -> None:
+    """Copy the GitHub App into an untracked local file."""
+    root, database_url = _local_store(workspace)
+    try:
+        saved = export_github(root, file, database_url=database_url)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"Saved the GitHub App to {saved}")
+
+
+@app.command("hydrate")
+def hydrate_command(
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            "--workspace",
+            "-w",
+            exists=True,
+            file_okay=False,
+            resolve_path=True,
+            help="Store root with .lbw/master.key. The Docker stack uses ./workspaces.",
+        ),
+    ] = Path("."),
+    file: Annotated[
+        Path,
+        typer.Option(
+            "--file",
+            "-f",
+            help=f"Untracked file that keeps the GitHub App. Default: {LOCAL_GITHUB_FILE}.",
+        ),
+    ] = Path(LOCAL_GITHUB_FILE),
+) -> None:
+    """Restore the GitHub App from the local file."""
+    root, database_url = _local_store(workspace)
+    try:
+        view = hydrate_github(root, file, database_url=database_url)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    login = str(view.get("account_login") or "")
+    suffix = f" on {login}" if login else ""
+    console.print(f"Restored GitHub App {view.get('app_id', '')}{suffix}")

@@ -114,7 +114,7 @@ Attach any local git checkout. The agent will not read or write outside that wor
 
 Local models often cannot hold the context the server advertises. Set `LBW_CONTEXT_WINDOW` (or `--context-window`, or the Context window field in the web UI) to the number of tokens this machine can run, for example `8192`. LBW fits each prompt to that window and, on Ollama, sends it as `num_ctx`. Leave it unset to use the window the server reports.
 
-The web UI (`lbw ui`) lets you queue cycles, choose a model granted to the project, and switch workspaces. Browse local folders, create a new LBW project, or clone a git repo onto this machine so you can run and open PRs locally. Remembered folders live in `.lbw/workspaces.json`. Archive a tab to hide it from the session, or remove it from the list; neither deletes the folder on disk. Add a host and its models in organization settings. The proposal screen lists the models granted to that project. `--base-url` on `run`, `watch`, and `ui` still selects a host from the CLI.
+The web UI (`lbw ui`) lets you queue cycles, choose a model turned on for the project, and switch workspaces. Browse local folders, create a new LBW project, or clone a git repo onto this machine so you can run and open PRs locally. Remembered folders live in `.lbw/workspaces.json`. Archive a tab to hide it from the session, or remove it from the list; neither deletes the folder on disk. Add a host and its models in organization settings. The proposal screen lists the models turned on for that project. `--base-url` on `run`, `watch`, and `ui` still selects a host from the CLI.
 
 ## Onboard a project
 
@@ -159,6 +159,8 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up
 ```
 
 Postgres listens on `127.0.0.1:5432` (`lbw` / `lbw`, database `lbw`). Its files stay in the `lbw-postgres` Docker volume, so the organization and people survive a restart. `make wipe` deletes `lbw-postgres`, `lbw-kiwifs`, and the Ollama volume. The agent container receives `LBW_DATABASE_URL` on the compose network. Project files, run logs, and remembered folders stay on disk.
+
+`make export-github` writes the GitHub App to gitignored `github.local.yaml`. After a wipe, `make up-local` and then `make hydrate` seal that file back into Postgres. The private key stays out of git and out of `.lbw/`. Details are in [docs/github-app.md](docs/github-app.md).
 
 ### Clone a repo into the container
 

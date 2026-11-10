@@ -1,9 +1,11 @@
 """Organization models and the agents that may build with them.
 
-LBW stays the orchestrator. A model is a bring-your-own endpoint. An agent is a
-worker LBW can hand the change to. Use of either is a grant on a project, a
-team, or a person. Rank does not include one. Work an agent builds stays open
-until a person accepts it.
+LBW stays the orchestrator. A model is a bring-your-own endpoint. Turning it on
+makes it available on every project until that project turns it off. That
+project choice stays when the organization turns the model off and back on.
+An agent is a worker LBW can hand the change to. An agent grant is on a
+project, a team, or a person. Rank does not include one. Work an agent builds
+stays open until a person accepts it.
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ from agent_lbw.runtime.store.crypto import open_secret, seal
 from agent_lbw.runtime.store.install import require_account
 from agent_lbw.runtime.store.names import clean_name, new_id
 from agent_lbw.runtime.store.projects import can_access
-from agent_lbw.runtime.store.rules import project_for_workspace
 from agent_lbw.runtime.store.tasks import tenant_dek
 
 PROVIDERS = (
@@ -179,6 +180,7 @@ def delete_model(db: Database, model_id: str) -> dict:
     if used is not None:
         raise ValueError("an agent still uses this model")
     db.execute("DELETE FROM model_grants WHERE model_id = ?", (model_id,))
+    db.execute("DELETE FROM model_project_settings WHERE model_id = ?", (model_id,))
     db.execute("DELETE FROM models WHERE id = ? AND tenant_id = ?", (model_id, tenant_id))
     return catalog_for_settings(db)
 
@@ -312,13 +314,113 @@ def set_agent_grant(
 
 
 def model_allowed(db: Database, identity_id: str, project_id: str, model_id: str) -> bool:
-    return _allowed(db, identity_id, project_id, "model", model_id)
+    """A model the organization has on, unless this project turned it off."""
+    if not can_access(db, identity_id, project_id, need="use"):
+        return False
+    if not _org_enabled(db, "model", model_id):
+        return False
+    row = db.fetchone(
+        """
+        SELECT enabled FROM model_project_settings
+        WHERE model_id = ? AND project_id = ?
+        """,
+        (model_id, project_id),
+    )
+    return row is None or int(row["enabled"] or 0) == 1
+
+
+def project_models(db: Database, workspace: Path) -> dict:
+    """Every organization model, and whether this project has it on."""
+    account = require_account(db)
+    tenant_id = account["org"]["id"]
+    project = _checkout_project(db, tenant_id, workspace)
+    if project is None:
+        return {"can_manage": False, "models": []}
+    identity_id = account["current_user_id"]
+    manage = can_manage_org(account) or can_access(db, identity_id, project["id"], need="manage")
+    if not manage and not can_access(db, identity_id, project["id"], need="use"):
+        return {"can_manage": False, "models": []}
+    return {
+        "can_manage": manage,
+        "models": [_project_model(db, project["id"], row) for row in _model_rows(db, tenant_id)],
+    }
+
+
+def set_project_model(db: Database, workspace: Path, model_id: str, *, enabled: bool) -> dict:
+    """Turn a model on or off for one project. The choice outlives the organization switch."""
+    account = require_account(db)
+    tenant_id = account["org"]["id"]
+    project = _checkout_project(db, tenant_id, workspace)
+    if project is None:
+        raise KeyError(model_id)
+    identity_id = account["current_user_id"]
+    if not can_manage_org(account) and not can_access(
+        db, identity_id, project["id"], need="manage"
+    ):
+        raise PermissionError(
+            "an organization admin or a repository admin changes models for this project"
+        )
+    if _model_row(db, tenant_id, model_id) is None:
+        raise KeyError(model_id)
+    if enabled:
+        db.execute(
+            "DELETE FROM model_project_settings WHERE model_id = ? AND project_id = ?",
+            (model_id, project["id"]),
+        )
+    else:
+        db.execute(
+            """
+            INSERT INTO model_project_settings (tenant_id, model_id, project_id, enabled)
+            VALUES (?, ?, ?, 0)
+            ON CONFLICT (model_id, project_id) DO UPDATE SET enabled = 0
+            """,
+            (tenant_id, model_id, project["id"]),
+        )
+    return project_models(db, workspace)
+
+
+def _checkout_project(db: Database, tenant_id: str, workspace: Path) -> dict | None:
+    """The project for this checkout, including a GitHub repository stored as owner/repo."""
+    from agent_lbw.runtime.store.recording import project_id_for_checkout
+
+    project_id = project_id_for_checkout(db, tenant_id, workspace)
+    if project_id is None:
+        return None
+    row = db.fetchone(
+        """
+        SELECT id, name, kind, locator FROM projects
+        WHERE id = ? AND tenant_id = ?
+        """,
+        (project_id, tenant_id),
+    )
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "kind": row["kind"],
+        "locator": row["locator"],
+    }
+
+
+def _project_model(db: Database, project_id: str, row: dict) -> dict:
+    choice = _model_choice(row)
+    saved = db.fetchone(
+        """
+        SELECT enabled FROM model_project_settings
+        WHERE model_id = ? AND project_id = ?
+        """,
+        (row["id"], project_id),
+    )
+    choice["org_enabled"] = bool(row["enabled"])
+    choice["enabled"] = saved is None or int(saved["enabled"] or 0) == 1
+    return choice
 
 
 def models_for_workspace(db: Database, workspace: Path) -> list[dict]:
     """Models this person may choose for a project. Adding one stays in settings."""
     account = require_account(db)
-    project = project_for_workspace(db, account["org"]["id"], workspace)
+    project = _checkout_project(db, account["org"]["id"], workspace)
     if project is None:
         return []
     identity_id = account["current_user_id"]
@@ -333,11 +435,11 @@ def use_model(db: Database, root: Path, workspace: Path, model_id: str) -> dict:
     """The granted model's name, host, and key. The key is not returned to the page."""
     account = require_account(db)
     tenant_id = account["org"]["id"]
-    project = project_for_workspace(db, tenant_id, workspace)
+    project = _checkout_project(db, tenant_id, workspace)
     if project is None or not model_allowed(
         db, account["current_user_id"], project["id"], model_id
     ):
-        raise PermissionError("that model is not granted for this project")
+        raise PermissionError("that model is off for this project")
     row = next((item for item in _model_rows(db, tenant_id) if item["id"] == model_id), None)
     if row is None:
         raise KeyError(model_id)
@@ -369,7 +471,7 @@ def attach_builder(db: Database, task_id: str, *, agent_id: str) -> dict:
         raise PermissionError("that agent is not granted for this project")
     model_id = agent["model_id"] or ""
     if model_id and not model_allowed(db, identity_id, project_id, model_id):
-        raise PermissionError("that model is not granted for this project")
+        raise PermissionError("that model is off for this project")
     db.execute(
         """
         UPDATE tasks

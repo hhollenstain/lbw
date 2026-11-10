@@ -228,7 +228,8 @@ export function ModelsSection() {
         </button>
       </div>
       <p className="hint">
-        Turn a model on to use it in this organization. Plus adds one the endpoint returned.
+        The switch makes a model available on every project. A repository admin turns one off for
+        that project. That choice stays if this switch is turned off and back on.
       </p>
       <div id="org-models">
         <OrgTable

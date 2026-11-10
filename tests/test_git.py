@@ -15,15 +15,19 @@ from agent_lbw.tools.git import (
     create_pull_request,
     current_branch,
     current_sha,
+    default_base_branch,
     ensure_pr_branch,
     existing_pull_request,
     extract_pr_url,
+    fold_unpublished_commits,
     goal_keeps_current_branch,
     has_changes,
+    intended_pr_base,
     is_runtime_artifact,
     is_tracked,
     list_branches,
     merge_pull_request,
+    move_commits_off_base,
     parse_github_remote,
     prepare_clean_base,
     pull_request_state,
@@ -347,16 +351,17 @@ def test_agent_commit_refuses_protected_branch(tmp_path: Path) -> None:
     assert current_branch(workspace) in {"main", "master"}
 
 
-def test_agent_commit_allows_feature_branch(tmp_path: Path) -> None:
+def test_agent_commit_leaves_the_tree_for_one_cycle_commit(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
     init_git_repo(tmp_path)
     workspace = Workspace(tmp_path)
     run_git(workspace, ["checkout", "-b", "lbw/feature"])
     (tmp_path / "app.py").write_text("print('changed')\n", encoding="utf-8")
     result = agent_commit(workspace, "update app")
-    assert result.ok
-    assert "committed" in result.output
-    assert not has_changes(workspace)
+    assert result.ok is False
+    assert "one commit after review" in result.output
+    assert has_changes(workspace)
+    assert current_branch(workspace) == "lbw/feature"
 
 
 def test_cycle_commit_helper_still_works_on_protected_branch(tmp_path: Path) -> None:
@@ -395,6 +400,130 @@ def test_ensure_pr_branch_moves_commits_off_main(tmp_path: Path) -> None:
     assert current_branch(workspace) == result.output
     assert current_sha(workspace) == after
     assert run_git(workspace, ["rev-parse", protected or "HEAD"]).stdout.strip() == sha_before
+
+
+def test_ensure_pr_branch_leaves_the_branch_the_run_started_from(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("one\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    workspace = Workspace(tmp_path)
+    run_git(workspace, ["checkout", "-b", "fix/format"])
+    sha_before = current_sha(workspace)
+    (tmp_path / "app.py").write_text("two\n", encoding="utf-8")
+    committed = commit_changes(workspace, "format the file")
+    assert committed.ok
+    after = current_sha(workspace)
+    result = ensure_pr_branch(workspace, "Format the sources", sha_before, base="fix/format")
+    assert result.ok
+    assert result.output.startswith("lbw/")
+    assert current_branch(workspace) == result.output
+    assert current_sha(workspace) == after
+    assert run_git(workspace, ["rev-parse", "fix/format"]).stdout.strip() == sha_before
+    assert intended_pr_base(workspace, "fix/format", None) == "fix/format"
+
+
+def test_move_commits_off_base_uses_the_remote_when_the_run_sha_is_missing(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "app.py").write_text("one\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    workspace = Workspace(tmp_path)
+    run_git(workspace, ["checkout", "-b", "fix/format"])
+    sha_before = current_sha(workspace) or ""
+    run_git(workspace, ["update-ref", "refs/remotes/origin/fix/format", sha_before])
+    (tmp_path / "app.py").write_text("two\n", encoding="utf-8")
+    assert commit_changes(workspace, "format the file").ok
+    after = current_sha(workspace)
+    moved = move_commits_off_base(workspace, "Format the sources", "fix/format", None)
+    assert moved.ok
+    assert current_branch(workspace) == moved.output
+    assert current_sha(workspace) == after
+    assert run_git(workspace, ["rev-parse", "fix/format"]).stdout.strip() == sha_before
+
+
+def test_move_commits_off_base_reports_when_the_remote_already_has_them(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "app.py").write_text("one\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    workspace = Workspace(tmp_path)
+    run_git(workspace, ["checkout", "-b", "fix/format"])
+    (tmp_path / "app.py").write_text("two\n", encoding="utf-8")
+    assert commit_changes(workspace, "format the file").ok
+    after = current_sha(workspace) or ""
+    run_git(workspace, ["update-ref", "refs/remotes/origin/fix/format", after])
+    moved = move_commits_off_base(workspace, "Format the sources", "fix/format", None)
+    assert moved.ok is False
+    assert "already on fix/format" in moved.output
+
+
+def test_default_base_branch_prefers_origin_main_over_the_working_branch(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "app.py").write_text("one\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    workspace = Workspace(tmp_path)
+    initial = current_sha(workspace) or ""
+    run_git(workspace, ["checkout", "-b", "fix/format"])
+    local = current_branch(workspace)
+    if local not in {"main", "master"}:
+        run_git(workspace, ["branch", "-D", "main"])
+        run_git(workspace, ["branch", "-D", "master"])
+    run_git(workspace, ["update-ref", "refs/remotes/origin/main", initial])
+    assert default_base_branch(workspace) == "main"
+    assert default_base_branch(workspace, "fix/format", avoid="fix/format") == "main"
+
+
+def _commit_file(workspace: Workspace, root: Path, text: str, message: str) -> None:
+    (root / "app.py").write_text(text, encoding="utf-8")
+    committed = commit_changes(workspace, message)
+    assert committed.ok
+
+
+def test_fold_unpublished_commits_keeps_one_commit_for_a_long_run(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("one\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    workspace = Workspace(tmp_path)
+    base = current_branch(workspace) or "main"
+    run_git(workspace, ["checkout", "-b", "lbw/docs"])
+    for number in range(1, 6):
+        _commit_file(workspace, tmp_path, f"step {number}\n", f"step {number}")
+    assert commits_ahead_of_base(workspace, base) == 5
+    folded = fold_unpublished_commits(workspace, base, "Write up AGENTS.md")
+    assert folded.ok
+    assert folded.output.startswith("folded 5 commits")
+    assert commits_ahead_of_base(workspace, base) == 1
+    assert (tmp_path / "app.py").read_text(encoding="utf-8") == "step 5\n"
+
+
+def test_fold_unpublished_commits_leaves_a_branch_already_on_the_remote(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "app.py").write_text("one\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    workspace = Workspace(tmp_path)
+    base = current_branch(workspace) or "main"
+    base_sha = current_sha(workspace) or ""
+    run_git(workspace, ["checkout", "-b", "lbw/docs"])
+    for number in range(1, 5):
+        _commit_file(workspace, tmp_path, f"step {number}\n", f"step {number}")
+    tip = current_sha(workspace) or ""
+    run_git(workspace, ["update-ref", "refs/remotes/origin/lbw/docs", tip])
+    run_git(workspace, ["update-ref", f"refs/remotes/origin/{base}", base_sha])
+    folded = fold_unpublished_commits(workspace, base, "Write up AGENTS.md")
+    assert folded.ok
+    assert "already on the remote" in folded.output
+    assert commits_ahead_of_base(workspace, base) == 4
+    assert current_sha(workspace) == tip
+
+
+def test_create_pull_request_refuses_a_branch_into_itself(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("one\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    workspace = Workspace(tmp_path)
+    run_git(workspace, ["checkout", "-b", "fix/format"])
+    result = create_pull_request(workspace, "Format the sources", "details", base="fix/format")
+    assert result.ok is False
+    assert "same branch" in result.output
 
 
 def test_upstream_state_without_remote_is_not_pushed(tmp_path: Path) -> None:

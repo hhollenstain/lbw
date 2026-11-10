@@ -58,6 +58,7 @@ def test_repo_rules_follow_the_primary_branch_and_a_switch_leaves_one_out(
     assert body["branch"] == "main"
     by_path = {item["path"]: item for item in body["files"]}
     assert by_path["AGENTS.md"]["body"].strip() == "Follow main."
+    assert by_path["AGENTS.md"]["html"] == "<p>Follow main.</p>"
     assert by_path["AGENTS.md"]["enabled"] is True
     assert by_path["CLAUDE.md"]["enabled"] is True
 
@@ -80,9 +81,16 @@ def test_repo_rules_follow_the_primary_branch_and_a_switch_leaves_one_out(
 
 
 def test_a_folder_without_git_reads_the_instruction_file(tmp_path: Path) -> None:
-    (tmp_path / "CURSOR.md").write_text("Use Cursor.\n", encoding="utf-8")
+    (tmp_path / "CURSOR.md").write_text(
+        "# Cursor\n\n- Keep the names.\n\n```\nmake web\n```\n",
+        encoding="utf-8",
+    )
     listed = list_repo_rules(tmp_path)
     assert listed["branch"] == ""
-    assert listed["files"] == [
-        {"path": "CURSOR.md", "enabled": True, "body": "Use Cursor.\n"},
-    ]
+    html = listed["files"][0]["html"]
+    assert listed["files"][0]["path"] == "CURSOR.md"
+    assert listed["files"][0]["enabled"] is True
+    assert "<h1>Cursor</h1>" in html
+    assert "<li>Keep the names.</li>" in html
+    assert "<pre><code>make web\n</code></pre>" in html
+    assert "<script" not in html

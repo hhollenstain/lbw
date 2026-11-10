@@ -62,7 +62,10 @@ def run_command(
     if _PROTECTED_PUSH.search(command):
         return ToolResult(False, "refusing to push directly to main/master")
     if _COMMIT_COMMAND.search(command):
-        return ToolResult(False, "use the git_commit tool instead of git commit")
+        return ToolResult(
+            False,
+            "refusing git commit; the cycle commits once after review",
+        )
     if not allow_publish and _PUBLISH_COMMAND.search(command):
         return ToolResult(
             False,

@@ -47,6 +47,7 @@ class RepoRuleFile(BaseModel):
     path: str
     enabled: bool
     body: str
+    html: str
 
 
 class RepoRuleList(BaseModel):
@@ -58,6 +59,32 @@ class RepoRuleWrite(BaseModel):
     path: str
     enabled: bool
     workspace: str = ""
+
+
+class ProjectModel(BaseModel):
+    id: str
+    name: str
+    provider: str
+    model_name: str
+    org_enabled: bool
+    enabled: bool
+    endpoint_name: str = ""
+
+
+class ProjectModelList(BaseModel):
+    can_manage: bool
+    models: list[ProjectModel] = Field(default_factory=list)
+
+
+class ProjectModelWrite(BaseModel):
+    model_id: str
+    enabled: bool
+    path: str = ""
+
+
+class RepoEnabled(BaseModel):
+    project_id: str
+    enabled: bool
 
 
 class TaskActor(BaseModel):

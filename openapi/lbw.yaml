@@ -53,6 +53,43 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuditList"
+  /api/workspaces/models:
+    get:
+      operationId: listProjectModels
+      responses:
+        "200":
+          description: Models for the current project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectModelList"
+    put:
+      operationId: setProjectModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectModelWrite"
+      responses:
+        "200":
+          description: Models after one project switch changes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectModelList"
+  /api/github/repos/enabled:
+    put:
+      operationId: setGitHubRepoEnabled
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RepoEnabled"
+      responses:
+        "200":
+          description: The repositories after one switch changes.
 components:
   schemas:
     ScheduleCadence:
@@ -145,7 +182,7 @@ components:
             $ref: "#/components/schemas/AuditEntry"
     RepoRuleFile:
       type: object
-      required: [path, enabled, body]
+      required: [path, enabled, body, html]
       properties:
         path:
           type: string
@@ -153,6 +190,9 @@ components:
           type: boolean
         body:
           type: string
+        html:
+          type: string
+          description: The body rendered as HTML for the page. Raw HTML in the file is escaped.
     RepoRuleList:
       type: object
       required: [branch, files]
@@ -172,6 +212,54 @@ components:
           type: string
           default: ""
         path:
+          type: string
+        enabled:
+          type: boolean
+    ProjectModel:
+      type: object
+      required: [id, name, provider, model_name, endpoint_name, org_enabled, enabled]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        provider:
+          type: string
+        model_name:
+          type: string
+        endpoint_name:
+          type: string
+          default: ""
+        org_enabled:
+          type: boolean
+        enabled:
+          type: boolean
+    ProjectModelList:
+      type: object
+      required: [can_manage, models]
+      properties:
+        can_manage:
+          type: boolean
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectModel"
+    ProjectModelWrite:
+      type: object
+      required: [model_id, enabled]
+      properties:
+        path:
+          type: string
+          default: ""
+        model_id:
+          type: string
+        enabled:
+          type: boolean
+    RepoEnabled:
+      type: object
+      required: [project_id, enabled]
+      properties:
+        project_id:
           type: string
         enabled:
           type: boolean

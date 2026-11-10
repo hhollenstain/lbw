@@ -16,6 +16,11 @@ from agent_lbw.tools.files import is_probably_secret_path
 
 SECRET_REFUSAL = "refusing to commit likely secrets: {paths}"
 PROTECTED_COMMIT_REFUSAL = "refusing to commit on {branch}; the cycle commits after review passes"
+AGENT_COMMIT_REFUSAL = (
+    "refusing to commit during the run; leave the files in the tree. "
+    "The cycle makes one commit after review. Do not retry git_commit."
+)
+MAX_PUBLISHED_COMMITS = 3
 CONNECT_GITHUB = "Connect GitHub before committing to this repository."
 APPROVE_GITHUB = "Connect GitHub before approving a commit."
 _COMMITTER: ContextVar[tuple[str, str] | None] = ContextVar("lbw_committer", default=None)
@@ -206,9 +211,8 @@ def git_tools(
         ToolSpec(
             name="git_commit",
             description=(
-                "Stage workspace changes and create a commit. Refuses secrets, empty commits, "
-                "and commits on main/master/trunk. Do not commit on a protected branch; the "
-                "cycle commits after tests pass and review confirms the goal."
+                "Refuses. Do not commit each step. The cycle commits the finished change "
+                "once after review. Leave edits in the working tree."
             ),
             parameters=object_schema(
                 {
@@ -663,14 +667,56 @@ def _fetch_branch(workspace: Workspace, remote: str, branch: str) -> None:
         return
 
 
-def default_base_branch(workspace: Workspace, configured: str | None = None) -> str:
-    if configured and configured.strip():
-        return configured.strip()
+def default_base_branch(
+    workspace: Workspace,
+    configured: str | None = None,
+    *,
+    avoid: str | None = None,
+) -> str:
+    """The branch a change merges into.
+
+    A configured name wins. Otherwise the local or origin ``main`` or
+    ``master``, then ``origin/HEAD``. ``avoid`` is the branch being published,
+    so the result is not that branch.
+    """
+    skip = (avoid or "").strip()
+    chosen = (configured or "").strip()
+    if chosen and chosen != skip:
+        return chosen
     for candidate in ("main", "master"):
-        exists = run_git(workspace, ["show-ref", "--verify", "--quiet", f"refs/heads/{candidate}"])
-        if exists.returncode == 0:
-            return candidate
-    return current_branch(workspace) or "main"
+        if candidate == skip:
+            continue
+        for ref in (f"refs/heads/{candidate}", f"refs/remotes/origin/{candidate}"):
+            exists = run_git(workspace, ["show-ref", "--verify", "--quiet", ref])
+            if exists.returncode == 0:
+                return candidate
+    symbolic = run_git(workspace, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    if symbolic.returncode == 0:
+        name = symbolic.stdout.strip().removeprefix("origin/")
+        if name and name != skip and valid_branch_name(name):
+            return name
+    current = current_branch(workspace) or "main"
+    if current != skip:
+        return current
+    return "main"
+
+
+def intended_pr_base(
+    workspace: Workspace,
+    start: str | None,
+    configured: str | None,
+) -> str:
+    """The branch this run's pull request targets.
+
+    The start branch is the one the run checked out. It stays the target even
+    when the commits are still sitting on it; the caller moves those commits
+    onto a new branch first.
+    """
+    for candidate in (start, configured):
+        name = (candidate or "").strip()
+        if name:
+            return name
+    return default_base_branch(workspace)
 
 
 def _branch_slug(goal: str) -> str:
@@ -685,20 +731,59 @@ def ensure_pr_branch(
     workspace: Workspace,
     goal: str,
     sha_before: str | None,
+    *,
+    base: str | None = None,
 ) -> ToolResult:
-    """Put this cycle's work on a lbw/* branch. Does not leave new commits on main."""
+    """Put this cycle's work on a lbw/* branch.
+
+    A protected branch, and the branch the run started from, keep the commit
+    they had before this work. The new commits stay on the lbw/* branch so a
+    pull request is not opened from a branch into itself.
+    """
     current = current_branch(workspace)
-    if current and current != "HEAD" and not is_protected_branch(current):
+    started = (base or "").strip()
+    leave = is_protected_branch(current) or bool(started and current == started)
+    if current and current != "HEAD" and not leave:
         return ToolResult(True, current)
     name = f"lbw/{_branch_slug(goal)}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     created = run_git(workspace, ["checkout", "-b", name])
     if created.returncode != 0:
         return ToolResult(False, _output(created))
-    if current and sha_before and is_protected_branch(current):
+    if current and sha_before and leave:
         moved = run_git(workspace, ["branch", "-f", current, sha_before])
         if moved.returncode != 0:
             return ToolResult(False, _output(moved))
     return ToolResult(True, name)
+
+
+def move_commits_off_base(
+    workspace: Workspace,
+    goal: str,
+    base: str,
+    rewind_sha: str | None,
+) -> ToolResult:
+    """Move this run's commits off `base` onto a new branch.
+
+    The base ref goes back to the commit from before the run, or to
+    ``origin/<base>`` when that ref is behind. A base that already matches
+    the remote has nothing left to open a pull request for.
+    """
+    current = current_branch(workspace)
+    if not current or current != base:
+        return ToolResult(True, current or "")
+    rewind = (rewind_sha or "").strip()
+    head = current_sha(workspace)
+    if not rewind or rewind == head:
+        remote = run_git(workspace, ["rev-parse", "--verify", f"origin/{base}"])
+        if remote.returncode == 0:
+            rewind = remote.stdout.strip()
+    if not rewind or rewind == head:
+        return ToolResult(
+            False,
+            f"the commits are already on {base}, so a pull request from that "
+            "branch has nothing to merge",
+        )
+    return ensure_pr_branch(workspace, goal, rewind, base=base)
 
 
 def current_sha(workspace: Workspace) -> str | None:
@@ -790,20 +875,8 @@ def agent_commit(
     store_root: Path | None = None,
     database_url: str = "",
 ) -> ToolResult:
-    """Commit from the coding agent. Refuses protected branches until cycle review."""
-    branch = current_branch(workspace)
-    if is_protected_branch(branch):
-        return ToolResult(
-            False,
-            PROTECTED_COMMIT_REFUSAL.format(branch=branch or "HEAD"),
-        )
-    return commit_changes(
-        workspace,
-        message,
-        env,
-        store_root=store_root,
-        database_url=database_url,
-    )
+    """Refuse. The cycle commits once after review, so a run is not one commit per step."""
+    return ToolResult(False, AGENT_COMMIT_REFUSAL)
 
 
 def commit_changes(
@@ -849,6 +922,58 @@ def commit_changes(
         return ToolResult(False, _output(commit))
     sha = current_sha(workspace) or ""
     return ToolResult(True, f"committed {sha}: {message}")
+
+
+def _resolved_base_ref(workspace: Workspace, base: str | None) -> str | None:
+    target = (base or "").strip() or default_base_branch(workspace)
+    for ref in (f"origin/{target}", target):
+        exists = run_git(workspace, ["rev-parse", "--verify", "--quiet", ref])
+        if exists.returncode == 0:
+            return ref
+    return None
+
+
+def fold_unpublished_commits(
+    workspace: Workspace,
+    base: str | None,
+    message: str,
+    env: dict[str, str] | None = None,
+    *,
+    store_root: Path | None = None,
+    database_url: str = "",
+) -> ToolResult:
+    """Fold a long unpublished run into one commit before the first push.
+
+    A branch already on the remote is left as it is. Published history is not
+    rewritten.
+    """
+    branch = current_branch(workspace)
+    if not branch or is_protected_branch(branch):
+        return ToolResult(True, "left history on a protected branch")
+    ref = _resolved_base_ref(workspace, base)
+    if ref is None:
+        return ToolResult(True, "no base branch to fold onto")
+    ahead = commits_ahead_of_base(workspace, (base or "").strip() or None)
+    if ahead <= MAX_PUBLISHED_COMMITS:
+        return ToolResult(True, f"{ahead} commit(s) on {branch}")
+    remote = run_git(workspace, ["rev-parse", "--verify", f"refs/remotes/origin/{branch}"])
+    if remote.returncode == 0:
+        base_sha = run_git(workspace, ["rev-parse", ref])
+        if base_sha.returncode != 0 or remote.stdout.strip() != base_sha.stdout.strip():
+            return ToolResult(True, f"left {ahead} commits; {branch} is already on the remote")
+    reset = run_git(workspace, ["reset", "--soft", ref])
+    if reset.returncode != 0:
+        return ToolResult(False, _output(reset))
+    committed = commit_changes(
+        workspace,
+        message,
+        env,
+        store_root=store_root,
+        database_url=database_url,
+    )
+    if not committed.ok:
+        return committed
+    return ToolResult(True, f"folded {ahead} commits into one on {branch}")
 
 
 def push_changes(
@@ -915,6 +1040,11 @@ def create_pull_request(
         return ToolResult(False, f"refusing to open a PR from {head}")
     if not head:
         return ToolResult(False, "no branch to publish")
+    if base and base.strip() == head:
+        return ToolResult(
+            False,
+            f"pull request base {head} is the same branch as the commits",
+        )
     body = (body or title).rstrip()
     if "co-authored-by: agent-lbw" not in body.lower():
         body = f"{body}\n\n{CO_AUTHORED_BY}"
