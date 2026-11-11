@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from lbw_shared.directory import request_directory
 from pydantic import BaseModel
 
+from agent_lbw.openapi_models import RepoEnabled
 from agent_lbw.runtime.account import load_account
 from agent_lbw.runtime.db import database
 from agent_lbw.runtime.store.github import (
@@ -25,8 +26,9 @@ from agent_lbw.runtime.store.github import (
 from agent_lbw.runtime.store.github_sync import (
     claim_repo,
     clear_github_login,
-    list_repos,
     place_repo,
+    set_repo_enabled,
+    stored_repos,
     sync_access,
 )
 from agent_lbw.runtime.workspaces import clone_workspace, durable_checkout_parent
@@ -93,7 +95,14 @@ def register_github(app: FastAPI) -> None:
 
     @app.get("/api/github/repos", response_model=None)
     def read_repos(request: Request) -> object:
-        return _act(request, lambda db, root: {"repos": list_repos(db, root)})
+        return _act(request, lambda db, _root: {"repos": stored_repos(db)})
+
+    @app.put("/api/github/repos/enabled", response_model=None)
+    def enable_repo(request: Request, payload: RepoEnabled) -> object:
+        return _act(
+            request,
+            lambda db, _root: {"repos": set_repo_enabled(db, payload.project_id, payload.enabled)},
+        )
 
     @app.get("/api/github/connect", response_model=None)
     def connect_github(request: Request) -> object:

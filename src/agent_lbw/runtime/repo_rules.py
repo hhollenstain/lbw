@@ -32,11 +32,13 @@ def list_repo_rules(root: Path) -> dict:
         body = _read(place, branch, rel)
         if body is None:
             continue
+        clipped = _clip(body, _FILE_CAP)
         files.append(
             {
                 "path": rel,
                 "enabled": rel not in disabled,
-                "body": _clip(body, _FILE_CAP),
+                "body": clipped,
+                "html": _html(clipped),
             }
         )
     return {"branch": branch, "files": files}
@@ -76,6 +78,12 @@ def text_for_prompt(root: Path, *, line_limit: int = 0) -> str:
     if len(text) <= _PROMPT_CAP:
         return text
     return text[:_PROMPT_CAP].rstrip() + "\n…"
+
+
+def _html(body: str) -> str:
+    from agent_lbw.runtime.skills import render_skill_html
+
+    return render_skill_html(body)
 
 
 def _primary_branch(root: Path) -> str:

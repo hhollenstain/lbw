@@ -235,7 +235,7 @@ def test_directory_seals_the_request_and_checks_the_grant(
             indexed = db.fetchone(
                 "SELECT kind, cadence FROM schedules WHERE id = ?", (saved["id"],)
             )
-        assert indexed["kind"] == "change"
+        assert indexed["kind"] == "scan"
         assert "daily" in indexed["cadence"]
         assert _INSTRUCTION.encode() not in (tmp_path / ".lbw" / "lbw.db").read_bytes()
         scan = client.post(

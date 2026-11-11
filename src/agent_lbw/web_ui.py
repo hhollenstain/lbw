@@ -32,7 +32,7 @@ from pydantic import BaseModel
 from agent_lbw.auth_http import register_auth
 from agent_lbw.config import Settings
 from agent_lbw.llm.client import effective_context_window, normalize_model_base_url
-from agent_lbw.openapi_models import AuditList, ScheduleWrite
+from agent_lbw.openapi_models import AuditList, ProjectModelList, ProjectModelWrite, ScheduleWrite
 from agent_lbw.progress import attach_token_usage, clip_text, llm_turn_snippets, public_run_item
 from agent_lbw.runtime.account import (
     add_user,
@@ -85,6 +85,8 @@ from agent_lbw.runtime.workspaces import (
     default_checkout_parent,
     durable_checkout_parent,
     forget_workspace,
+    is_checkout_shelf,
+    is_store_bookkeeping,
     last_workspace,
     load_archived_workspaces,
     load_workspaces,
@@ -230,6 +232,10 @@ class DecidePayload(BaseModel):
     note: str = ""
 
 
+class ReworkPayload(BaseModel):
+    note: str = ""
+
+
 class WorkspaceRolesUpdate(BaseModel):
     path: str | None = None
     enabled: list[str] | None = None
@@ -332,7 +338,7 @@ class UiState:
         if manager.store_root is None:
             manager.store_root = Path(self.store_root)
         manager.adopt_open_jobs()
-        self.default_workspace = last_workspace(Path(self.store_root), default=self.store_root)
+        self.default_workspace = self.store_root
         self.default_goal = default_goal or ""
         self.default_auto_commit = manager.settings.auto_commit
         self._history_lock = threading.Lock()
@@ -364,28 +370,50 @@ class UiState:
         return remember_workspace(Path(self.store_root), self.default_workspace)
 
     def shown_workspace(self) -> str:
-        if self.pending_workspace:
+        if self.pending_workspace and self._listed_project(self.pending_workspace):
             return self.pending_workspace
-        return self.default_workspace
+        projects = self.visible_workspaces()
+        if any(item["path"] == self.default_workspace for item in projects):
+            return self.default_workspace
+        if projects:
+            return str(projects[-1]["path"])
+        return ""
+
+    def _listed_project(self, path: str) -> bool:
+        store = Path(self.store_root)
+        if is_checkout_shelf(path, store) or is_store_bookkeeping(path, store):
+            return False
+        return Path(path).expanduser().is_dir()
 
     def visible_workspaces(self) -> list[dict[str, Any]]:
-        """Filesystem checkouts plus every recorded project, even with no checkout."""
-        self.ensure_recorded_checkouts()
+        """Project rows when a database is configured. Otherwise the local folders."""
+        store = Path(self.store_root)
+        url = self.manager.settings.database_url
+        from agent_lbw.runtime.db import database_configured
+
+        if database_configured(store, url):
+            if self._listed_project(self.default_workspace):
+                self._record_project(self.default_workspace)
+            self.ensure_recorded_checkouts()
+            from agent_lbw.runtime.store.github_sync import recorded_workspaces
+
+            archived = {str(item["path"]) for item in load_archived_workspaces(store)}
+            return [
+                item
+                for item in recorded_workspaces(store, url)
+                if str(item["path"]) not in archived
+            ]
+        if self._listed_project(self.default_workspace):
+            current = remember_workspace(store, self.default_workspace)
+        else:
+            current = load_workspaces(store)
         merged: list[dict[str, Any]] = []
         seen: set[str] = set()
-        if Path(self.default_workspace).is_dir():
-            current = self.remember_current_workspace()
-        else:
-            current = load_workspaces(Path(self.store_root), default=self.store_root)
         for item in current:
-            seen.add(str(item["path"]))
-            merged.append(item)
-        from agent_lbw.runtime.store.github_sync import recorded_workspaces
-
-        for item in recorded_workspaces(Path(self.store_root), self.manager.settings.database_url):
-            if str(item["path"]) in seen:
+            path = str(item["path"])
+            if path in seen or not self._listed_project(path):
                 continue
-            seen.add(str(item["path"]))
+            seen.add(path)
             merged.append(item)
         return merged
 
@@ -393,7 +421,30 @@ class UiState:
         self.pending_workspace = None
         remembered = remember_workspace(Path(self.store_root), path)
         self.default_workspace = last_workspace(Path(self.store_root), default=path)
+        self._record_project(path)
         return remembered
+
+    def _record_project(self, path: str) -> None:
+        store = Path(self.store_root)
+        if is_checkout_shelf(path, store) or is_store_bookkeeping(path, store):
+            return
+        folder = Path(path).expanduser()
+        if not folder.is_dir():
+            return
+        from agent_lbw.runtime.account import load_account
+        from agent_lbw.runtime.db import database, database_configured
+        from agent_lbw.runtime.store.recording import project_for_workspace
+
+        url = self.manager.settings.database_url
+        if not database_configured(store, url):
+            return
+        try:
+            remember_workspace(store, folder)
+        except ValueError:
+            return
+        account = load_account(store, database_url=url)
+        with database(store, url) as db:
+            project_for_workspace(db, account, folder, folder.name or "project")
 
     def _refresh_current_workspace(self) -> None:
         self.default_workspace = last_workspace(Path(self.store_root), default=self.store_root)
@@ -405,8 +456,35 @@ class UiState:
 
     def forget_workspace_path(self, path: str) -> list[dict[str, str | bool]]:
         remembered = forget_workspace(Path(self.store_root), path)
+        self._drop_project(path)
         self._refresh_current_workspace()
         return remembered
+
+    def _drop_project(self, path: str) -> None:
+        """Remove a project row that has no jobs. The checkout folder stays."""
+        store = Path(self.store_root)
+        from agent_lbw.runtime.db import database, database_configured
+        from agent_lbw.runtime.store.install import read_account
+        from agent_lbw.runtime.store.recording import project_id_for_checkout
+
+        url = self.manager.settings.database_url
+        if not database_configured(store, url):
+            return
+        folder = Path(path).expanduser()
+        with database(store, url) as db:
+            account = read_account(db)
+            if account is None:
+                return
+            project_id = project_id_for_checkout(db, account["org"]["id"], folder)
+            if project_id is None:
+                return
+            jobs = db.fetchone("SELECT id FROM tasks WHERE project_id = ? LIMIT 1", (project_id,))
+            if jobs is not None:
+                return
+            db.execute("DELETE FROM project_grants WHERE project_id = ?", (project_id,))
+            db.execute("DELETE FROM rule_requirements WHERE project_id = ?", (project_id,))
+            db.execute("DELETE FROM schedules WHERE project_id = ?", (project_id,))
+            db.execute("DELETE FROM projects WHERE id = ?", (project_id,))
 
     def remember_server(self, url: str, model: str | None = None) -> list[dict[str, str]]:
         return remember_server(
@@ -450,9 +528,13 @@ class UiState:
             "known_workspaces": workspaces,
             "workspace_is_git": bool((current or {}).get("is_git")),
             "workspace_git_remote": (current or {}).get("git_remote") or "",
-            "workspace_repo_label": repo_label(
-                str((current or {}).get("git_remote") or ""),
-                str((current or {}).get("name") or Path(shown).name),
+            "workspace_repo_label": (
+                repo_label(
+                    str((current or {}).get("git_remote") or ""),
+                    str((current or {}).get("name") or ""),
+                )
+                if current
+                else "No projects yet"
             ),
             "guidelines": (current or {}).get("guidelines") or default_guidelines(),
             "custom_guidelines": bool((current or {}).get("custom_guidelines")),
@@ -499,13 +581,12 @@ class UiState:
             cached = self._history_cache.get(key)
             if cached is not None and cached[0] == fingerprint:
                 return cached[1]
-            from agent_lbw.runtime.store.recording import recorded_history
+            from agent_lbw.runtime.store.recording import recorded_history, runs_come_from_database
 
-            merged = _collapse_history(
-                _merge_history(
-                    self._read_history(root), recorded_history(store, database_url, root)
-                )
-            )
+            if runs_come_from_database(store, database_url):
+                merged = _collapse_history(recorded_history(store, database_url, root))
+            else:
+                merged = _collapse_history(self._read_history(root))
             items = [public_run_item(item) for item in merged]
             self._history_cache[key] = (fingerprint, items)
             return items
@@ -1199,6 +1280,34 @@ def create_app(
             return JSONResponse({"error": "task not found or not rerunnable"}, status_code=404)
         return JSONResponse(new_task.to_dict(), status_code=201)
 
+    @app.post("/api/tasks/{task_id}/rework")
+    def rework_task(task_id: str, request: Request, payload: ReworkPayload | None = None) -> Any:
+        ui: UiState = request.app.state.ui
+        note = (payload.note if payload else "") or ""
+        if not " ".join(note.split()):
+            return JSONResponse({"error": "write what should change"}, status_code=400)
+        if ui.manager.get(task_id) is None:
+            ui.manager.adopt_job(task_id)
+        current = ui.manager.get(task_id)
+        if current is None:
+            return JSONResponse({"error": "task not found"}, status_code=404)
+        if current.pr_url and lookup_pull_state(current.pr_url, token=_ui_github_token(ui)) in {
+            "merged",
+            "closed",
+        }:
+            return JSONResponse({"error": "pull request is not open"}, status_code=409)
+        updated = ui.manager.rework(task_id, note)
+        if updated is None:
+            if ui.manager.get(task_id) is None:
+                return JSONResponse({"error": "task not found"}, status_code=404)
+            current = ui.manager.get(task_id)
+            if current is not None and current.status in {"queued", "running"}:
+                return JSONResponse({"error": "this job is already in progress"}, status_code=409)
+            return JSONResponse({"error": "this job cannot take more changes"}, status_code=409)
+        _remember_gate(ui, updated, "rework", note, path=f"/api/tasks/{task_id}/rework")
+        request.state.audit_explicit = True
+        return updated.to_dict()
+
     @app.post("/api/tasks/{task_id}/decide")
     def decide_task(task_id: str, request: Request, payload: DecidePayload | None = None) -> Any:
         ui: UiState = request.app.state.ui
@@ -1390,7 +1499,7 @@ def create_app(
         token: str | None = None,
     ) -> dict[str, Any]:
         ui: UiState = request.app.state.ui
-        root = Path(ui.shown_workspace())
+        root = Path(ui.shown_workspace() or ui.default_workspace)
         current = history_token(
             root,
             store_root=Path(ui.store_root),
@@ -1652,6 +1761,42 @@ def create_app(
     def _workspace_root(ui: UiState, path: str | None) -> Path:
         return Path(path or ui.default_workspace).expanduser().resolve()
 
+    @app.get("/api/workspaces/models", response_model=ProjectModelList)
+    def list_project_models(
+        request: Request, path: str | None = None
+    ) -> ProjectModelList | JSONResponse:
+        ui: UiState = request.app.state.ui
+        return _project_model_list(ui, path)
+
+    @app.put("/api/workspaces/models", response_model=ProjectModelList)
+    def update_project_model(
+        request: Request, payload: ProjectModelWrite
+    ) -> ProjectModelList | JSONResponse:
+        ui: UiState = request.app.state.ui
+        from agent_lbw.runtime.db import database, database_configured
+        from agent_lbw.runtime.store.catalog import set_project_model
+
+        root = Path(ui.store_root)
+        url = ui.manager.settings.database_url
+        workspace = _model_workspace(ui, payload.path)
+        if not database_configured(root, url):
+            return JSONResponse({"error": "no organization database"}, status_code=400)
+        try:
+            with database(root, url) as db:
+                body = set_project_model(db, workspace, payload.model_id, enabled=payload.enabled)
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except KeyError:
+            return JSONResponse({"error": "unknown model"}, status_code=404)
+        except (OSError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        state = "on" if payload.enabled else "off"
+        request.state.audit_action = "model.project"
+        request.state.audit_summary = f"Turned a project model {state}"
+        request.state.audit_target_type = "model"
+        request.state.audit_target_id = payload.model_id
+        return ProjectModelList.model_validate(body)
+
     @app.get("/api/workspaces/roles")
     def list_workspace_roles(request: Request, path: str | None = None) -> Any:
         ui: UiState = request.app.state.ui
@@ -1786,12 +1931,10 @@ def create_app(
 
     @app.post("/api/workspaces/archive")
     def archive_workspace_tab(request: Request, payload: WorkspaceSelect) -> Any:
-        ui: UiState = request.app.state.ui
-        try:
-            ui.archive_workspace_path(payload.path)
-        except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
-        return _workspace_payload(ui)
+        return JSONResponse(
+            {"error": "An owner or admin turns repositories on in Organization."},
+            status_code=400,
+        )
 
     @app.post("/api/workspaces/restore")
     def restore_workspace_tab(request: Request, payload: WorkspaceSelect) -> Any:
@@ -1804,12 +1947,10 @@ def create_app(
 
     @app.post("/api/workspaces/forget")
     def forget_workspace_tab(request: Request, payload: WorkspaceSelect) -> Any:
-        ui: UiState = request.app.state.ui
-        try:
-            ui.forget_workspace_path(payload.path)
-        except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
-        return _workspace_payload(ui)
+        return JSONResponse(
+            {"error": "An owner or admin turns repositories on in Organization."},
+            status_code=400,
+        )
 
     @app.get("/api/schedules", response_model=None)
     def list_schedule_route(request: Request, workspace: str | None = None) -> Any:
@@ -1994,6 +2135,39 @@ def _write_request_audit(request: Request) -> None:
             )
     except (OSError, PermissionError, ValueError) as exc:
         log.warning("audit note was not stored: %s", exc)
+
+
+def _project_model_list(ui: UiState, path: str | None) -> ProjectModelList | JSONResponse:
+    from agent_lbw.runtime.db import database, database_configured
+    from agent_lbw.runtime.store.catalog import project_models
+
+    root = Path(ui.store_root)
+    url = ui.manager.settings.database_url
+    workspace = _model_workspace(ui, path)
+    if not database_configured(root, url):
+        return ProjectModelList(can_manage=False, models=[])
+    try:
+        with database(root, url) as db:
+            return ProjectModelList.model_validate(project_models(db, workspace))
+    except PermissionError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=403)
+    except (OSError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+def _workspace_root_path(ui: UiState, path: str | None) -> Path:
+    return Path(path or ui.default_workspace).expanduser().resolve()
+
+
+def _model_workspace(ui: UiState, path: str | None) -> Path:
+    """A checkout folder, or owner/repo when that repository has no checkout yet."""
+    raw = Path((path or ui.default_workspace).strip()).expanduser()
+    if len(raw.parts) == 2 and not raw.is_absolute() and not raw.is_dir():
+        return raw
+    try:
+        return raw.resolve()
+    except OSError:
+        return raw
 
 
 def _roles_for_workspace(ui: UiState, root: Path) -> dict:
@@ -2240,13 +2414,13 @@ def _schedule_model(ui: UiState, workspace: Path, model_id: str) -> tuple[str, s
         with database(root, url) as db:
             if not chosen:
                 if models_for_workspace(db, workspace):
-                    return "Choose a model granted to this project."
+                    return "Choose a model turned on for this project."
                 return _settings_model(ui)
             creds = use_model(db, root, workspace, chosen)
     except PermissionError:
-        return "That model is not granted for this project."
+        return "That model is off for this project."
     except KeyError:
-        return "That model is not granted for this project."
+        return "That model is off for this project."
     except (OSError, ValueError) as exc:
         return str(exc)
     host = str(creds.get("base_url") or "").strip()
@@ -2255,7 +2429,7 @@ def _schedule_model(ui: UiState, workspace: Path, model_id: str) -> tuple[str, s
     return (str(creds.get("model_name") or ""), host, str(creds.get("api_key") or ""))
 
 
-def _remember_gate(ui: UiState, task, action: str, note: str) -> None:
+def _remember_gate(ui: UiState, task, action: str, note: str, path: str = "") -> None:
     """Write who accepted a gate, or who sent the work back, onto the job."""
     from agent_lbw.runtime.account import load_account
     from agent_lbw.runtime.db import database, database_configured
@@ -2279,6 +2453,7 @@ def _remember_gate(ui: UiState, task, action: str, note: str) -> None:
                 actor_name=name,
                 action=action,
                 note=note,
+                path=path,
             )
         task.gates.append(gate)
     except (OSError, PermissionError, ValueError) as exc:

@@ -221,6 +221,7 @@ class Task:
             "plan": self.plan,
             "criteria": list(self.criteria),
             "evidence": list(self.evidence),
+            "review_notes": self.review_notes,
             "started_by": (
                 {"id": self.requester_id, "name": self.requester_name}
                 if self.requester_id or self.requester_name
@@ -446,6 +447,37 @@ class TaskManager:
             approval_gate=old_task.approval_gate,
         )
 
+    def rework(self, task_id: str, note: str) -> Task | None:
+        """Put this job back in progress and keep the request on it.
+
+        A later note extends the same job. It does not open a second one.
+        """
+        reply = " ".join((note or "").split())
+        if not reply:
+            return None
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return None
+            if task.status in {"queued", "running"}:
+                return None
+            if task.status not in {"success", "failed", "error"}:
+                return None
+            task.review_notes = _join_notes(task.review_notes, f"Rework request: {reply}")
+            task.decision = "continue"
+            task.stage = "building"
+            task.status = "queued"
+            task.finished_at = None
+            task.error = None
+            branch = (task.branch or "").strip()
+            if branch not in PROTECTED_BRANCHES:
+                task.resume_branch = branch
+                task.resume_sha = (task.commit_sha or task.sha_before or "").strip() or None
+            if task.pr_url:
+                task.create_pr = True
+        self._start(task)
+        return task
+
     def adopt_open_jobs(self) -> None:
         """Put stored queued, running, and waiting jobs back after a restart."""
         if self.store_root is None:
@@ -667,6 +699,7 @@ class TaskManager:
             requester_id=str((record.get("started_by") or {}).get("id") or ""),
             requester_name=str((record.get("started_by") or {}).get("name") or ""),
             gates=[item for item in (record.get("gates") or []) if isinstance(item, dict)],
+            review_notes=str(record.get("review_notes") or ""),
         )
 
     def _run(self, task: Task) -> None:

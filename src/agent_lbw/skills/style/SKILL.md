@@ -39,22 +39,35 @@ to the list below.
 | `--queued` | Queued work |
 | `--pr-open`, `--pr-merged`, `--pr-closed` | Pull request state |
 | `--code-bg` | Code |
-| `--shadow`, `--overlay` | Raised panels and backdrops |
+| `--shadow`, `--card-lift`, `--overlay` | Raised panels, compact cards, and backdrops |
 
 Status color uses those names. A new status reuses one of them unless the
 engineer adds a token to both themes and to this table.
+
+A repository instruction file is rendered markdown in a panel: `--panel`
+background, `1px` `--line` border, `8px` radius, and room to scroll. Headings,
+lists, and code use the same type as a skill. The file is not shown as a
+monospace dump.
 
 A release count sits at the right of its heading. It is a pill: `1px`
 border, full radius, and a light fill in that pull-request color. Open uses
 `--pr-open`, merged uses `--pr-merged`, and closed uses `--pr-closed`. The
 heading words stay `--muted`.
 
-A change lists its steps in a horizontal rail. Each step is a button with
-the step name and its state. The selected step uses an `--accent` border
-and a light `--accent` fill. That step's detail is the one pane under the
-rail. Log, Changes, and Screenshots stay as tabs under that pane. The
-log tab is labeled Log. A second strip of Init, tests, lint, review, and
-publish squares is not shown.
+The changes column is `--bg-subtle`. A change in that list is one compact
+card on `--panel`, with a `1px` `--line` border, an `8px` radius, and
+`--card-lift`. The goal is a single line. The project and the step share
+the muted line under it. Hover adds a short `--navy` shadow. The selected
+card keeps an `--accent` border and a `3px` `--accent` bar on the left. Who
+started the job and who accepted a gate stay on the open change. Merge,
+Request changes, and Rerun sit inside the card only when that job needs them.
+
+A change lists its steps in one track under that line. Each step is the
+name only. The selected step shows its state and an `--accent` underline.
+Its detail follows the track, without a second title card. Log, Changes,
+and Screenshots stay as tabs under that detail. The log tab is labeled Log.
+A second strip of Init, tests, lint, review, and publish squares is not
+shown.
 
 ## Type
 
@@ -69,6 +82,9 @@ at `0.78rem` `--muted`.
 Buttons, fields, and icon buttons use a `10px` radius. Cards, rail items,
 and inbox rows use `8px`. Status chips use a full pill. Borders are `1px
 solid var(--line)`. The page is `--bg`. The sidebar is `--bg-subtle`.
+A collapsed sidebar is a narrow column. Each project section stays as its
+icon, centered in a `2.15rem` button. The name stays available to the
+reader and is not drawn.
 
 ## Controls
 
@@ -84,7 +100,8 @@ radius around the whole table. A switch is `.org-switch`: a pill, off on
 `--panel-2` with a `--muted` knob, on with `--accent` and an `--on-accent`
 knob. A remove control is a secondary icon button with a trash glyph. A
 section plus is a secondary icon button. A skill loaded from a repository
-is an `.org-skill-chip` pill.
+is an `.org-skill-chip` pill. A project model uses the same row and switch
+as a skill.
 
 ## Theme
 

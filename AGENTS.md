@@ -42,7 +42,7 @@ itself is also in `skills/agent-lbw/SKILL.md`.
 - JavaScript in `index.html` uses double quotes and `function` declarations for
   named behavior. Iterate with `for...of`. Sections that have not moved keep
   those rules.
-- Rules, Skills, Schedules, and Roles are rail sections beside Proposals,
+- Rules, Skills, Schedules, Roles, and Models are rail sections beside Proposals,
   Changes, and Releases. A schedule runs in the current project from a base
   branch, which defaults to main. A fix opens a pull request. When the tree
   already meets the goal, the run reports that it found nothing. The main
@@ -103,10 +103,21 @@ scheduler call.
   in the database, a prompt, or a commit. Do not add a second cipher. The
   `github_apps` row stores the app id, the sealed private key, the sealed
   client secret, and the chosen installation. Do not store an installation
-  token or a user access token. A connected app can add a
-  repository it can see to the organization, a person, or a team. The checkout
-  is the workspace. A person connects GitHub from the GitHub tab on their
-  personal page once the organization has a GitHub App. Personal rules are
+  token or a user access token. A GitHub project's locator is `owner/repo`.
+  The checkout is scratch for a job. When a database is configured, the project
+  list and the run list come from that database. The memory palace is a cache
+  outside the checkout, keyed by tenant and project, and it is rebuilt from
+  the task rows. A developer keeps that app in gitignored
+  `github.local.yaml` and restores it with `lbw hydrate`. That file is not
+  under `.lbw/` and is not committed. Sync stores every repository the app
+  can see. Each row has its own id, the GitHub repository id, and this
+  organization's id. An owner or admin turns one on from Organization. A
+  repository GitHub has archived stores that time and is not shown. The
+  project list shows a repository when it is on and the person's linked
+  GitHub account can use it. The same repository is stored once. The
+  project bar does not add, remove, or archive a project. The checkout is the workspace. A person connects GitHub
+  from the GitHub tab on their personal page once the organization has a
+  GitHub App. Personal rules are
   listed by name. The plus button opens a dialog to add one, and a listed rule
   can be viewed as markdown, edited, or deleted. LBW
   reads their login from GitHub and stores it on `identities.github_login`.
@@ -159,8 +170,9 @@ scheduler call.
   agent is a worker LBW can hand a change to: LBW's builder, Claude Code,
   Codex, or Cursor. LBW remains the orchestrator. The API key is sealed with
   the tenant key and is not returned. Turning a model or an agent on in
-  organization settings makes it available on every project. A grant on a
-  project, a team, or a person, in `model_grants` and `agent_grants`, still
+  organization settings makes it available on every project. A project turns
+  one off from its Models page. That choice is kept when the organization
+  turns the model off and back on. An agent grant, in `agent_grants`, still
   allows one that is off. Rank does not include a model or an agent. A team
   grant applies on a project that team can use.
   Every agent requires a person to accept the change before the task can

@@ -187,6 +187,15 @@ _STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS model_project_settings (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        model_id TEXT NOT NULL REFERENCES models (id),
+        project_id TEXT NOT NULL REFERENCES projects (id),
+        enabled INTEGER NOT NULL,
+        PRIMARY KEY (model_id, project_id)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS agents (
         id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES tenants (id),
@@ -311,6 +320,7 @@ _STATEMENTS = (
 CLEAR_ORDER = (
     "audit_log",
     "agent_grants",
+    "model_project_settings",
     "model_grants",
     "agents",
     "models",
@@ -360,6 +370,38 @@ TASK_COLUMNS = frozenset(
 )
 
 
+SCHEMA_VERSION = 3
+
+
+def read_schema_version(db: Database) -> int:
+    """The saved schema version, or 0 when this database has not been marked."""
+    if not _has_table(db, "schema_meta"):
+        return 0
+    row = db.fetchone("SELECT version FROM schema_meta WHERE id = 1")
+    if row is None or row["version"] is None:
+        return 0
+    return int(row["version"])
+
+
+def write_schema_version(db: Database) -> None:
+    """Remember that the current schema has been applied."""
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_meta (
+            id INTEGER PRIMARY KEY,
+            version INTEGER NOT NULL
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO schema_meta (id, version) VALUES (1, ?)
+        ON CONFLICT (id) DO UPDATE SET version = excluded.version
+        """,
+        (SCHEMA_VERSION,),
+    )
+
+
 def apply_schema(db: Database) -> None:
     """Create tables. An older organizations/users database is copied in once."""
     legacy = None
@@ -390,6 +432,16 @@ def apply_schema(db: Database) -> None:
     _add_column(db, "skill_repo_files", "enabled", "INTEGER NOT NULL DEFAULT 1")
     _add_column(db, "agents", "enabled", "INTEGER NOT NULL DEFAULT 0")
     _add_column(db, "teams", "github_slug", "TEXT NOT NULL DEFAULT ''")
+    _add_column(db, "projects", "provider_id", "TEXT NOT NULL DEFAULT ''")
+    _add_column(db, "projects", "enabled", "INTEGER NOT NULL DEFAULT 1")
+    _add_column(db, "projects", "archived_at", "INTEGER")
+    db.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS projects_provider
+        ON projects (tenant_id, provider_id)
+        WHERE provider_id <> ''
+        """
+    )
     db.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS teams_github_slug

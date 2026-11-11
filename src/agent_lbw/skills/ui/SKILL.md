@@ -38,17 +38,25 @@ styling, update that skill in the same change, then match the CSS to it.
   bottom-right, and `.history-line-stats` owns the bottom-left. A new control
   in either corner overlaps them. Put a new card action in a footer row, or
   reuse the existing rerun button, and keep the card's bottom padding.
-- Rules, Skills, Schedules, and Roles are rail sections beside Proposals,
+- Rules, Skills, Schedules, Roles, and Models are rail sections beside Proposals,
   Changes, and Releases. The main pane shows the selected section. A schedule
   runs in the current project. It starts from a base branch, which defaults
-  to main, and uses a model granted to this project. A fix opens a pull
+  to main, and uses a model turned on for this project. A fix opens a pull
   request. When nothing needs changing, the result says it found nothing.
   A job shows who started it, who accepted a gate, and who sent it back.
-  A project shows an
+  The project list does not include the checkout folder or store files.
+  It shows a repository an owner or admin turned on, and only when the
+  signed-in person's GitHub account can use it. One repository appears
+  once. The project field filters that list as you type. The address bar
+  can open a section, an organization or personal tab, and a project, as
+  in `/?section=changes&project=owner/repo`. The project bar does not
+  add, remove, or archive a project. An organization with no projects says
+  that none are listed yet and points to the agent integration. A project shows an
   organization or team rule, and an organization skill, only when it is
   assigned to that project. Rules has two tabs. LBW rules are the standards
   stored for the project. Repository lists instruction files such as
   AGENTS.md, CLAUDE.md, and CURSOR.md from the primary branch. Each file
+  is shown as rendered markdown. Each file
   loads into project work until its switch is turned off. Update reads that
   branch again. Releases show open, merged, and closed counts as pills at
   the right of each heading, in that pull-request color. Skills from a cloned repository start collapsed
@@ -57,10 +65,15 @@ styling, update that skill in the same change, then match the CSS to it.
   control reads the skill. An empty search keeps them collapsed. A search
   opens the matches. Roles lists the jobs for this project. A switch turns
   a role on. Builder and QA stay on. An enforced role stays on and its
-  switch cannot turn it off. Hovering the name shows its summary. The live
+  switch cannot turn it off. Hovering the name shows its summary. Models
+  lists the organization models for this project. A switch turns one on.
+  A model turned on for the organization starts on. An organization admin
+  or a repository admin can change it. That choice stays when the
+  organization turns the model off and back on. The live
   console is on the engineer dashboard, not this page. Settings opens a small
-  menu for Personal, Organization, and Workspace. Personal and Organization
-  fill the main window. Personal uses tabs for Profile, Rules, and GitHub.
+  menu for Personal and Organization. Personal and Organization fill the
+  main window. Personal uses tabs for Profile, Rules, and GitHub. Profile
+  chooses the editor used to open a changed file.
   The GitHub tab appears once the organization has a GitHub App, and LBW
   stores the login GitHub returns. Rules lists each name. The plus button
   opens a dialog to add one, and a listed rule can be viewed as markdown,
@@ -81,10 +94,11 @@ styling, update that skill in the same change, then match the CSS to it.
   skill on. Models holds endpoints, models, and agents in tables. An endpoint row shows its
   name, URL, and how many model names it returned, and can resync. Removing
   an endpoint asks in a dialog first. A model row shows the endpoint and the
-  model name, with a switch and a remove button. An agent row shows its name
-  and kind the same way. Plus opens a dialog to add a model or an agent.
-  Turning one on makes it available on every project. The proposal screen
-  chooses an enabled model. It does not add a host from that screen.
+  model name, with a switch and a remove button. The switch makes that model
+  available on every project until a project turns it off. An
+  agent row shows its name and kind the same way. Plus opens a dialog to add
+  a model or an agent. The proposal screen chooses a model turned on for the
+  project. It does not add a host from that screen.
   Do not put Rules or Skills back in an overlay.
 - A new dialog uses the existing `.modal-backdrop` and `.modal`, starts
   `hidden`, and closes from its button or a click on the backdrop. A closed
@@ -143,7 +157,8 @@ team, and project ids. Resync pulls the latest commit into that space. Remove
 on a project takes off a repository stored on that project. An organization
 repository stays.
 Selecting one shows that section in the main pane. Those pages list what is
-assigned to the project. Settings opens a small menu. Personal and
+assigned to the project. A collapsed sidebar keeps each rail item as its
+icon. Settings opens a small menu. Personal and
 Organization then fill the main window. Roles fills the main pane from its
 rail item. A role enforced by the organization stays on and its checkbox
 cannot turn it off.
@@ -157,9 +172,11 @@ Modal dialogs should follow this structure:
 - Maintain consistent z-index stacking with other UI elements
 
 ### Task Cards
-A change shows its steps as a horizontal rail. Selecting a step loads that
-step in the pane under the rail. Log, Changes, and Screenshots stay as
-tabs under that pane. The log tab is labeled Log.
+A change in the list is a compact card: the goal on one line, and the
+project with its step under that. Selecting a change opens it. Its steps
+are one track. Selecting a step loads that step under the track. Log,
+Changes, and Screenshots stay as tabs under that step. The log tab is
+labeled Log.
 
 Task cards follow specific positioning rules:
 - Bottom-right corner owned by `.pr-link` and `.rerun-btn`

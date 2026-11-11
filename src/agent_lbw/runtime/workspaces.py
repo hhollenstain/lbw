@@ -149,6 +149,37 @@ def _git_remote_url(path: Path) -> str:
     return (result.stdout or "").strip()
 
 
+def is_checkout_shelf(path: str | Path, store_root: str | Path) -> bool:
+    """The checkout volume is not a project.
+
+    A folder outside the home directory is where cloned repositories are
+    kept. It shows up once for every organization when it is remembered as
+    a workspace. A git repository, or a folder that already has LBW project
+    files, stays a project.
+    """
+    root = Path(store_root).expanduser().resolve()
+    try:
+        place = Path(path).expanduser().resolve()
+    except OSError:
+        return False
+    if place != root:
+        return False
+    if (place / ".git").exists() or (place / ".lbw" / "config.yaml").exists():
+        return False
+    return default_checkout_parent(place) == place
+
+
+def is_store_bookkeeping(path: str | Path, store_root: str | Path) -> bool:
+    """Schedule files and other store data are not projects."""
+    root = Path(store_root).expanduser().resolve()
+    try:
+        place = Path(path).expanduser().resolve()
+    except OSError:
+        return False
+    book = root / ".lbw"
+    return place == book or book in place.parents
+
+
 def describe_workspace(path: str | Path) -> dict[str, str | bool]:
     """One workspace entry. The path has to be a directory."""
     return _entry(_normalize_dir(path))

@@ -13,6 +13,7 @@ _GATE_PHRASE = {
     "approve": "accepted the change",
     "send_back": "sent this back",
     "continue": "asked for more changes",
+    "rework": "requested changes",
     "hand_off": "handed this off",
 }
 
@@ -83,13 +84,14 @@ def note_gate(
     actor_name: str,
     action: str,
     note: str = "",
+    path: str = "",
 ) -> dict:
     """Remember who accepted a gate, or who sent the work back."""
     phrase = _GATE_PHRASE.get(action, action)
     who = actor_name or "Someone"
     clipped = " ".join((note or "").split())[:240]
     summary = f"{who} {phrase}"
-    if clipped and action in {"send_back", "continue"}:
+    if clipped and action in {"send_back", "continue", "rework"}:
         summary = f"{summary}: {clipped}"
     record_audit(
         db,
@@ -98,7 +100,7 @@ def note_gate(
         action=f"task.{action}",
         summary=summary,
         method="POST",
-        path=f"/api/tasks/{task_id}/decide",
+        path=path or f"/api/tasks/{task_id}/decide",
         target_type="task",
         target_id=task_id,
         detail=clipped,

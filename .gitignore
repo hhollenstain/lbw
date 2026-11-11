@@ -18,6 +18,8 @@ build/
 # Local env and runtime
 history.json
 .lbw/
+# GitHub App seed for `lbw hydrate`. Contains the private key.
+github.local.yaml
 .loco/
 .env
 .env.*

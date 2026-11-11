@@ -50,6 +50,8 @@ def test_a_model_is_sealed_and_an_agent_needs_a_grant_and_a_person(
     assert 'id="org-tab-models"' in page.text
     assert 'id="org-panel-rules" data-org-panel="rules" hidden' in page.text
     assert 'id="org-models-root"' in page.text
+    assert 'data-rail="models"' in page.text
+    assert 'id="workspace-models"' in page.text
     assert 'src="/static/app/app.js"' in page.text
     for token in (
         'id:"org-endpoints"',
@@ -63,6 +65,7 @@ def test_a_model_is_sealed_and_an_agent_needs_a_grant_and_a_person(
         'id:"endpoint-remove-dialog"',
         'id:"confirm-endpoint-remove"',
         '"data-model-enable"',
+        '"data-project-model"',
         '"data-agent-remove"',
     ):
         assert token in script
@@ -180,6 +183,8 @@ def test_a_model_is_sealed_and_an_agent_needs_a_grant_and_a_person(
         f"/api/directory/projects/{project['id']}/grants",
         json={"subject_type": "identity", "subject_id": grace["id"], "access": "use"},
     )
+    turned = client.put(f"/api/org/models/{model['id']}/enabled", json={"enabled": True})
+    assert turned.status_code == 200
     _become(tmp_path, grace["id"])
     attached = client.post(f"/api/tasks/{task_id}/builder", json={"agent_id": worker["id"]})
     assert attached.status_code == 200
@@ -281,7 +286,7 @@ def test_the_proposal_chooses_a_granted_model(settings: Settings, tmp_path: Path
         client.post("/api/directory/promote")
         account = client.get("/api/account").json()
         with database(tmp_path) as db:
-            project = ensure_workspace_project(db, account["org"]["id"], tmp_path)
+            project_id = ensure_workspace_project(db, account["org"]["id"], tmp_path)["id"]
         with patch(
             "agent_lbw.runtime.store.catalog._fetch_names",
             return_value=["gpt-4.1"],
@@ -306,11 +311,8 @@ def test_the_proposal_chooses_a_granted_model(settings: Settings, tmp_path: Path
             json={"workspace": str(tmp_path), "goal": "Ship", "model_id": model["id"]},
         )
         assert refused.status_code == 403
-        granted = client.put(
-            f"/api/org/models/{model['id']}/grants",
-            json={"scope_type": "project", "scope_id": project["id"], "granted": True},
-        )
-        assert granted.status_code == 200
+        turned = client.put(f"/api/org/models/{model['id']}/enabled", json={"enabled": True})
+        assert turned.status_code == 200
         listed = client.get("/api/org/models", params={"workspace": str(tmp_path)})
         assert listed.status_code == 200
         assert listed.json()["models"] == [
@@ -339,6 +341,61 @@ def test_the_proposal_chooses_a_granted_model(settings: Settings, tmp_path: Path
         assert body["base_url"] == "https://api.openai.com/v1"
         assert "sk-test-secret" not in created.text
         assert not (tmp_path / ".lbw" / "servers.json").exists()
+        off = client.put(
+            "/api/workspaces/models",
+            json={"path": str(tmp_path), "model_id": model["id"], "enabled": False},
+        )
+        assert off.status_code == 200
+        assert off.json()["can_manage"] is True
+        assert off.json()["models"][0]["enabled"] is False
+        assert off.json()["models"][0]["org_enabled"] is True
+        hidden = client.get("/api/org/models", params={"workspace": str(tmp_path)})
+        assert hidden.json()["models"] == []
+        org_off = client.put(f"/api/org/models/{model['id']}/enabled", json={"enabled": False})
+        assert org_off.status_code == 200
+        kept = client.get("/api/workspaces/models", params={"path": str(tmp_path)})
+        assert kept.json()["models"][0]["enabled"] is False
+        assert kept.json()["models"][0]["org_enabled"] is False
+        org_on = client.put(f"/api/org/models/{model['id']}/enabled", json={"enabled": True})
+        assert org_on.status_code == 200
+        still = client.get("/api/workspaces/models", params={"path": str(tmp_path)})
+        assert still.json()["models"][0]["enabled"] is False
+        assert still.json()["models"][0]["org_enabled"] is True
+        assert (
+            client.get("/api/org/models", params={"workspace": str(tmp_path)}).json()["models"]
+            == []
+        )
+        back = client.put(
+            "/api/workspaces/models",
+            json={"path": str(tmp_path), "model_id": model["id"], "enabled": True},
+        )
+        assert back.status_code == 200
+        assert back.json()["models"][0]["enabled"] is True
+        shown = client.get("/api/org/models", params={"workspace": str(tmp_path)})
+        assert shown.json()["models"][0]["id"] == model["id"]
+        added_user = client.post("/api/account/users", json={"name": "Grace"})
+        grace = next(user for user in added_user.json()["users"] if user["name"] == "Grace")
+        _become(tmp_path, grace["id"])
+        blocked_change = client.put(
+            "/api/workspaces/models",
+            json={"path": str(tmp_path), "model_id": model["id"], "enabled": False},
+        )
+        assert blocked_change.status_code == 403
+        _become(tmp_path, account["current_user_id"])
+        assert (
+            client.post(
+                f"/api/directory/projects/{project_id}/grants",
+                json={"subject_type": "identity", "subject_id": grace["id"], "access": "manage"},
+            ).status_code
+            == 200
+        )
+        _become(tmp_path, grace["id"])
+        managed = client.put(
+            "/api/workspaces/models",
+            json={"path": str(tmp_path), "model_id": model["id"], "enabled": False},
+        )
+        assert managed.status_code == 200
+        assert managed.json()["models"][0]["enabled"] is False
     finally:
         manager.shutdown(wait=False)
 
@@ -416,3 +473,53 @@ def test_turning_a_model_and_agent_on_makes_them_available(
     removed = client.delete(f"/api/org/agents/{worker['id']}")
     assert removed.status_code == 200
     assert removed.json()["agents"] == []
+
+
+def test_a_github_repository_shows_organization_models(settings: Settings, tmp_path: Path) -> None:
+    import subprocess
+
+    from agent_lbw.runtime.store.projects import ensure_project
+
+    client = TestClient(create_app(TaskManager(settings), default_workspace=tmp_path))
+    client.get("/api/directory")
+    client.post("/api/directory/promote")
+    account = client.get("/api/account").json()
+    checkout = tmp_path / "widget"
+    checkout.mkdir()
+    subprocess.run(["git", "init"], cwd=checkout, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/acme/widget.git"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+    )
+    with database(tmp_path) as db:
+        ensure_project(
+            db,
+            account["org"]["id"],
+            name="widget",
+            kind="github",
+            locator="acme/widget",
+        )
+    with patch("agent_lbw.runtime.store.catalog._fetch_names", return_value=["gpt-4.1"]):
+        saved = client.post(
+            "/api/org/endpoints",
+            json={"name": "Work", "provider": "openai", "api_key": "sk-test-secret"},
+        )
+    endpoint = saved.json()["endpoints"][0]
+    added = client.post(
+        "/api/org/models",
+        json={"endpoint_id": endpoint["id"], "model_name": "gpt-4.1", "name": "Work"},
+    )
+    model = added.json()["models"][0]
+    assert (
+        client.put(f"/api/org/models/{model['id']}/enabled", json={"enabled": True}).status_code
+        == 200
+    )
+    listed = client.get("/api/workspaces/models", params={"path": str(checkout)})
+    assert listed.status_code == 200
+    assert listed.json()["models"][0]["model_name"] == "gpt-4.1"
+    assert listed.json()["models"][0]["enabled"] is True
+    named = client.get("/api/workspaces/models", params={"path": "acme/widget"})
+    assert named.status_code == 200
+    assert named.json()["models"][0]["id"] == model["id"]

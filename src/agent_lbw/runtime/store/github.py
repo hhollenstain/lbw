@@ -177,6 +177,72 @@ def save_github_app(
     return view
 
 
+def restore_github_app(
+    db: Database,
+    root: Path,
+    *,
+    app_id: str,
+    private_key: str,
+    client_secret: str = "",
+    client_id: str = "",
+    installation_id: str = "",
+    account_login: str = "",
+    account_type: str = "",
+    installations: list[dict] | None = None,
+) -> dict:
+    """Seal a GitHub App from a local file. This does not call GitHub."""
+    account = _require_manager(db)
+    clean_id = app_id.strip()
+    if not clean_id.isdigit() or len(clean_id) > 20:
+        raise ValueError("app id is the number GitHub shows for the app")
+    key = private_key.strip()
+    if not key:
+        raise ValueError("paste the app's private key")
+    _load_key(key)
+    secret = _clean_secret(client_secret) if client_secret.strip() else ""
+    client = client_id.strip()
+    if client and _CLIENT_ID.fullmatch(client) is None:
+        raise ValueError("that client id is not from the GitHub App")
+    chosen = installation_id.strip()
+    if chosen and not chosen.isdigit():
+        raise ValueError("choose an installation")
+    login = account_login.strip()
+    kind = account_type.strip()
+    found = _clean_installations(installations)
+    if chosen and not any(item["id"] == chosen for item in found):
+        found.insert(0, {"id": chosen, "account_login": login, "account_type": kind})
+    tenant_id = account["org"]["id"]
+    dek = tenant_dek(db, root, tenant_id)
+    db.execute(
+        """
+            INSERT INTO github_apps (
+                tenant_id, app_id, private_key_ciphertext, installation_id,
+                account_login, account_type, client_id, client_secret_ciphertext
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (tenant_id) DO UPDATE SET
+                app_id = excluded.app_id,
+                private_key_ciphertext = excluded.private_key_ciphertext,
+                installation_id = excluded.installation_id,
+                account_login = excluded.account_login,
+                account_type = excluded.account_type,
+                client_id = excluded.client_id,
+                client_secret_ciphertext = excluded.client_secret_ciphertext
+            """,
+        (
+            tenant_id,
+            clean_id,
+            seal(dek, key),
+            chosen or None,
+            login or None,
+            kind or None,
+            client or None,
+            seal(dek, secret) if secret else None,
+        ),
+    )
+    _replace_installations(db, tenant_id, found)
+    return github_app_view(db)
+
+
 def list_installations(db: Database, root: Path) -> list[dict]:
     account = _require_manager(db)
     creds = _credentials(db, root, account["org"]["id"])
@@ -399,6 +465,26 @@ def _installation(row: dict) -> dict:
         "account_login": str(row["account_login"] or ""),
         "account_type": str(row["account_type"] or ""),
     }
+
+
+def _clean_installations(items: list[dict] | None) -> list[dict]:
+    if not items:
+        return []
+    found: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("an installation needs an id")
+        installation_id = str(item.get("id") or "").strip()
+        if not installation_id.isdigit():
+            raise ValueError("an installation id is a number")
+        found.append(
+            {
+                "id": installation_id,
+                "account_login": str(item.get("account_login") or "").strip(),
+                "account_type": str(item.get("account_type") or "").strip(),
+            }
+        )
+    return found
 
 
 def _replace_installations(db: Database, tenant_id: str, found: list[dict]) -> None:

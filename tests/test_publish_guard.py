@@ -61,7 +61,7 @@ def test_run_command_refuses_git_commit(tmp_path: Path) -> None:
         allow_publish=False,
     )
     assert result.ok is False
-    assert "git_commit" in result.output
+    assert "cycle commits once" in result.output
 
 
 def test_run_command_refuses_push_to_main_even_when_publish_enabled(tmp_path: Path) -> None:

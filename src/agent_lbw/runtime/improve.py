@@ -80,12 +80,15 @@ from agent_lbw.tools.git import (
     ensure_pr_branch,
     existing_pull_request,
     extract_pr_url,
+    fold_unpublished_commits,
     github_owner_repo,
     goal_keeps_current_branch,
     has_changes,
+    intended_pr_base,
     is_protected_branch,
     is_tracked,
     merge_pull_request,
+    move_commits_off_base,
     prepare_clean_base,
     push_changes,
     update_pull_request,
@@ -410,8 +413,10 @@ def _run_cycle(
             allow_create_pr=allow_create_pr,
             mark_checkbox=mark_checkbox,
             store_root=store_root,
+            pr_base=(base_branch or "").strip() or None,
         )
     stay_here = goal_keeps_current_branch(goal) and not (base_branch or "").strip()
+    pr_base = (base_branch or "").strip() or None
     if not keep_branch and not stay_here and (workspace.root / ".git").exists():
         start = _resolve_start_branch(
             workspace,
@@ -419,6 +424,7 @@ def _run_cycle(
             base_branch,
             project.publish_branch,
         )
+        pr_base = start
         log_progress(f"Starting from a clean {start}...")
         prepared = prepare_clean_base(workspace, start, project.publish_remote)
         if not prepared.ok:
@@ -503,6 +509,8 @@ def _run_cycle(
         workspace.root,
         siblings=sibling_tasks,
         task_id=task_id,
+        store_root=store_root,
+        database_url=settings.database_url,
     )
     agent = CodingAgent(
         llm,
@@ -862,7 +870,7 @@ def _run_cycle(
     will_commit = settings.auto_commit and has_changes(workspace)
     if allow_create_pr and (committed or will_commit):
         log_progress("Moving work onto a pull-request branch...")
-        branched = ensure_pr_branch(workspace, selected_goal, sha_before)
+        branched = ensure_pr_branch(workspace, selected_goal, sha_before, base=pr_base)
         if not branched.ok:
             log_progress(f"Could not create PR branch: {branched.output}")
             result = CycleResult(
@@ -927,6 +935,8 @@ def _run_cycle(
             token=github_token,
             settings=settings,
             store_root=store_root,
+            pr_base=pr_base,
+            rewind_sha=sha_before,
         )
         sha = current_sha(workspace) or sha
         if failed is not None:
@@ -1204,6 +1214,7 @@ def _publish_held(
     allow_create_pr: bool,
     mark_checkbox: bool,
     store_root: Path | None = None,
+    pr_base: str | None = None,
 ) -> CycleResult:
     """Commit and publish work a person already approved. Does not run the builder."""
     selected = goal.strip() or "Approved change"
@@ -1230,7 +1241,7 @@ def _publish_held(
     if settings.auto_commit and has_changes(workspace):
         if allow_create_pr:
             log_progress("Moving work onto a pull-request branch...")
-            branched = ensure_pr_branch(workspace, selected, sha)
+            branched = ensure_pr_branch(workspace, selected, sha, base=pr_base)
             if not branched.ok:
                 result = CycleResult(
                     status="failed",
@@ -1289,6 +1300,7 @@ def _publish_held(
             token=github_token,
             settings=settings,
             store_root=store_root,
+            pr_base=pr_base,
         )
         sha = current_sha(workspace) or sha
         if failed is not None:
@@ -1381,6 +1393,8 @@ def _publish_pull_request(
     token: str | None = None,
     settings: Settings | None = None,
     store_root: Path | None = None,
+    pr_base: str | None = None,
+    rewind_sha: str | None = None,
 ) -> tuple[bool, str | None, CycleResult | None, bool]:
     """Commit project changes, push that branch, then open or update the pull request.
 
@@ -1432,13 +1446,60 @@ def _publish_pull_request(
         sha = current_sha(workspace)
         log_progress(f"Committed SHA: {sha}")
     existing = existing_pull_request(workspace, token=token)
-    base = default_base_branch(workspace, project.publish_branch)
+    base = intended_pr_base(workspace, pr_base, project.publish_branch)
+    branch = current_branch(workspace)
+    if branch and branch == base and committed:
+        log_progress(f"Moving commits off {base} before opening the pull request...")
+        moved = move_commits_off_base(workspace, goal, base, rewind_sha)
+        if not moved.ok:
+            result = CycleResult(
+                status="failed",
+                goal=goal,
+                summary=_failure_notes(moved.output, summary),
+                tests_passed=tests_passed,
+                committed=committed,
+                published=False,
+                commit_sha=sha,
+                reason=moved.output,
+            )
+            _write_run_log(workspace.root, result)
+            _append_to_history(workspace.root, result)
+            return False, None, result, committed
+        branch = current_branch(workspace)
+        log_progress(f"On branch {branch}")
     if not committed and commits_ahead_of_base(workspace, base) <= 0:
         if existing:
             log_progress(f"Branch already has pull request {existing}")
             record_event(kind="pr", url=existing, message="existing pull request")
             return True, existing, None, committed
         return False, None, None, committed
+    folded = fold_unpublished_commits(
+        workspace,
+        base,
+        _commit_message(goal, summary),
+        env=_git_env(settings) if settings is not None else None,
+        store_root=store_root,
+        database_url=settings.database_url if settings is not None else "",
+    )
+    if not folded.ok:
+        result = CycleResult(
+            status="failed",
+            goal=goal,
+            summary=_failure_notes(folded.output, summary),
+            tests_passed=tests_passed,
+            committed=committed,
+            published=False,
+            commit_sha=sha,
+            reason=folded.output,
+        )
+        _write_run_log(workspace.root, result)
+        _append_to_history(workspace.root, result)
+        return False, None, result, committed
+    if folded.output.startswith("folded"):
+        log_progress(folded.output)
+        sha = current_sha(workspace) or sha
+        committed = True
+        branch = current_branch(workspace)
     log_progress(f"Pushing branch {branch}...")
     pushed = push_changes(workspace, project.publish_remote, branch, token)
     if not pushed.ok:
@@ -3081,15 +3142,31 @@ def _workspace_palace(
     *,
     siblings: list[dict] | None,
     task_id: str | None,
+    store_root: Path | None = None,
+    database_url: str = "",
 ):
+    from agent_lbw.runtime.db import database, database_configured
     from agent_lbw.runtime.palace import Palace, open_palace, seed_workspace
 
-    palace: Palace = open_palace(root)
+    tenant_id = ""
+    project_id = ""
+    stored: list[dict] = []
+    if store_root is not None and database_configured(store_root, database_url):
+        from agent_lbw.runtime.account import load_account
+        from agent_lbw.runtime.store.recording import project_for_workspace, recorded_history
+
+        account = load_account(store_root, database_url=database_url)
+        with database(store_root, database_url) as db:
+            project = project_for_workspace(db, account, root, root.name or "project")
+        tenant_id = str(account["org"]["id"])
+        project_id = str(project["id"])
+        stored = recorded_history(store_root, database_url, root)
+    palace: Palace = open_palace(root, tenant_id=tenant_id, project_id=project_id)
     _PALACE.set(palace)
-    records = list(siblings or [])
+    records = [*stored, *(siblings or [])]
     if task_id:
         records = [record for record in records if str(record.get("id") or "") != task_id]
-    seed_workspace(root, palace, siblings=records)
+    seed_workspace(root, palace, siblings=records, include_files=not tenant_id)
     return palace
 
 

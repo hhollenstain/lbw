@@ -108,9 +108,10 @@ def test_github_app_places_a_repository_and_syncs_linked_access(
     client = TestClient(create_app(TaskManager(settings), default_workspace=tmp_path))
     page = client.get("/")
     assert page.status_code == 200
-    assert 'id="add-github-repo"' in page.text
+    assert 'id="org-repo-search"' in page.text
+    assert 'id="org-repo-table"' in page.text
     assert 'id="sync-github-access"' in page.text
-    assert 'id="load-github-repos"' in page.text
+    assert 'id="add-github-repo"' not in page.text
     assert 'placeholder="GitHub login"' not in page.text
     assert "/api/github/connect" in page.text
 

@@ -8,7 +8,7 @@ from tests.support import init_git_repo
 
 from agent_lbw.runtime.account import load_account
 from agent_lbw.runtime.db import database
-from agent_lbw.runtime.store.github_sync import restore_checkouts
+from agent_lbw.runtime.store.github_sync import recorded_workspaces, restore_checkouts
 from agent_lbw.runtime.store.projects import ensure_project
 from agent_lbw.runtime.workspaces import (
     archive_workspace,
@@ -221,8 +221,6 @@ def test_a_missing_github_checkout_is_restored_onto_the_volume(
         row = db.fetchone("SELECT locator FROM projects WHERE name = ?", ("demo",))
     assert row is not None
     assert row["locator"] == str(home / "projects" / "demo")
-    paths = {item["path"] for item in load_workspaces(store)}
-    assert str(kept.resolve()) in paths
 
     def one_repo(_db, _root):
         return [{"full_name": "acme/demo", "private": True}]
@@ -241,7 +239,8 @@ def test_a_missing_github_checkout_is_restored_onto_the_volume(
     with database(store) as db:
         row = db.fetchone("SELECT locator FROM projects WHERE name = ?", ("demo",))
     assert row is not None
-    assert row["locator"] == str((store / "demo").resolve())
-    paths = {item["path"] for item in load_workspaces(store)}
-    assert str((store / "demo").resolve()) in paths
+    assert row["locator"] == "acme/demo"
+    assert (store / "demo").is_dir()
+    paths = {item["path"] for item in recorded_workspaces(store)}
+    assert "acme/demo" in paths or str((store / "demo").resolve()) in paths
     assert str(kept.resolve()) in paths
