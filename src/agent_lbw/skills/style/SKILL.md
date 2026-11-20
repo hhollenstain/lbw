@@ -35,6 +35,7 @@ to the list below.
 | `--line` | Borders and dividers |
 | `--navy`, `--on-navy` | Primary buttons and page titles |
 | `--accent`, `--on-accent`, `--ok` | Logo mark, success, open work |
+| `--series-1` | The one data series in a chart: usage bars and breakdown bars. Checked for contrast on `--panel` in both themes |
 | `--warn`, `--bad` | Caution, and failure |
 | `--queued` | Queued work |
 | `--pr-open`, `--pr-merged`, `--pr-closed` | Pull request state |
@@ -107,3 +108,11 @@ as a skill.
 
 The theme control sets `data-theme="dark"` on the document element. Light
 removes that attribute. Every color variable exists in both themes.
+
+## Charts
+
+The usage dashboard draws one series at a time in `--series-1`. Bars are thin,
+with a 4px rounded top on the baseline, and the axis is a `--line` rule. Values,
+labels, and ticks stay in `--ink` and `--muted`, never the series color. A bar
+has a hover tooltip on `--panel`. A breakdown is a table with a bar beside each
+value, so a reader never depends on color. A chart never gets a second y-axis.
