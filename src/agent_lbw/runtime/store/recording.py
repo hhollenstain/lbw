@@ -12,9 +12,11 @@ import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from agent_lbw.runtime.account import load_account
 from agent_lbw.runtime.db import Database, database, database_configured
+from agent_lbw.runtime.store.audit import record_audit
 from agent_lbw.runtime.store.crypto import open_secret
 from agent_lbw.runtime.store.install import read_account
 from agent_lbw.runtime.store.projects import ensure_project
@@ -26,6 +28,7 @@ from agent_lbw.runtime.store.tasks import (
     tenant_dek,
     touch_task,
 )
+from agent_lbw.runtime.store.usage import file_delta, file_stats, record_run
 from agent_lbw.sandbox import Workspace
 from agent_lbw.tools.git import github_owner_repo
 
@@ -53,6 +56,9 @@ def record_task(root: Path, database_url: str, task) -> None:
     )
     task.requester_id = requester
     task.requester_name = name
+    if not getattr(task, "actor_id", ""):
+        task.actor_id = requester
+    task.tenant_id = account["org"]["id"]
     with database(root, database_url) as db:
         project = _project(db, account, workspace, workspace.name or "project")
         save_task_request(
@@ -68,9 +74,8 @@ def record_task(root: Path, database_url: str, task) -> None:
             pr_url=task.pr_url,
             run_ref=f".lbw/runs/{task.id}",
             agent_id=str(getattr(task, "agent_id", "") or "") or None,
+            model_id=str(getattr(task, "model_id", "") or "") or None,
         )
-        from agent_lbw.runtime.store.audit import record_audit
-
         who = name or "Someone"
         record_audit(
             db,
@@ -130,6 +135,82 @@ def sync_task(root: Path, database_url: str, task) -> None:
             )
     except (OSError, ValueError) as exc:
         log.warning("task %s result was not stored: %s", task.id, exc)
+
+
+def record_usage(
+    root: Path, database_url: str, task, events: list, *, duration_ms: int = 0
+) -> dict | None:
+    """Add one run to the usage rollups, and note whose credentials it spent.
+
+    Files are counted as the change since this job's last run, so a rework or
+    a send-back does not count the same lines twice.
+    """
+    if not database_configured(root, database_url):
+        return None
+    account = load_account(root, database_url=database_url)
+    tenant_id = str(getattr(task, "tenant_id", "") or "") or account["org"]["id"]
+    identity_id = (
+        str(getattr(task, "actor_id", "") or "")
+        or str(getattr(task, "requester_id", "") or "")
+        or account["current_user_id"]
+    )
+    now = file_stats(_final_diff(task))
+    before = getattr(task, "recorded_files", None) or {}
+    changed = file_delta(now, before)
+    base_url = str(getattr(task, "model_base_url", "") or "")
+    with database(root, database_url) as db:
+        project_id = project_id_for_checkout(db, tenant_id, Path(task.workspace)) or ""
+        totals = record_run(
+            db,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            identity_id=identity_id,
+            events=events,
+            files=changed,
+            outcome=str(getattr(task, "status", "") or ""),
+            duration_ms=duration_ms,
+            default_service=_host(base_url),
+            default_model=str(getattr(task, "model_name", "") or ""),
+        )
+        if totals["calls"]:
+            who = (
+                next(
+                    (user["name"] for user in account["users"] if user["id"] == identity_id),
+                    "",
+                )
+                or "Someone"
+            )
+            services = sorted(
+                {
+                    str(event.get("service") or "")
+                    for event in events
+                    if isinstance(event, dict) and event.get("kind") == "llm"
+                }
+                - {""}
+            ) or [_host(base_url) or "the default model"]
+            cost = totals["cost_micros"] / 1_000_000
+            spend = f", about ${cost:,.2f}" if cost else ""
+            record_audit(
+                db,
+                tenant_id=tenant_id,
+                actor_id=identity_id,
+                action="task.usage",
+                summary=(
+                    f"{who}'s credentials ran {totals['calls']} model calls on "
+                    f"{', '.join(services)}: {totals['tokens']:,} tokens{spend}"
+                ),
+                target_type="task",
+                target_id=str(task.id),
+            )
+    task.recorded_files = now
+    return totals
+
+
+def _host(base_url: str) -> str:
+    try:
+        return urlparse(base_url).netloc.lower()
+    except ValueError:
+        return ""
 
 
 def runs_come_from_database(root: Path, database_url: str = "") -> bool:
@@ -439,7 +520,7 @@ def _open_rows(root: Path, database_url: str) -> list[dict]:
                 SELECT tasks.id, tasks.status, tasks.branch, tasks.pr_url,
                        tasks.goal_ciphertext, tasks.result_ciphertext, tasks.created,
                        tasks.tenant_id, tasks.requester_id, tasks.agent_id,
-                       projects.locator
+                       tasks.model_id, projects.locator
                 FROM tasks
                 JOIN projects ON projects.id = tasks.project_id
                 WHERE tasks.tenant_id = ?
@@ -466,7 +547,7 @@ def _task_row(root: Path, database_url: str, task_id: str) -> dict | None:
                 SELECT tasks.id, tasks.status, tasks.branch, tasks.pr_url,
                        tasks.goal_ciphertext, tasks.result_ciphertext, tasks.created,
                        tasks.tenant_id, tasks.requester_id, tasks.agent_id,
-                       projects.locator
+                       tasks.model_id, projects.locator
                 FROM tasks
                 JOIN projects ON projects.id = tasks.project_id
                 WHERE tasks.tenant_id = ? AND tasks.id = ?
@@ -540,6 +621,8 @@ def _open_record(root: Path, database_url: str, row: dict) -> dict | None:
         "model_base_url": str(result.get("model_base_url") or ""),
         "review_notes": str(result.get("review_notes") or ""),
         "agent_id": str(row.get("agent_id") or ""),
+        "model_id": str(row.get("model_id") or ""),
+        "tenant_id": str(row.get("tenant_id") or ""),
         **_people(root, database_url, row),
     }
 

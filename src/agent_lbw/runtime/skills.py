@@ -299,22 +299,31 @@ def sync_skill_source(root: Path, slug: str, *, ref: str | None = None) -> Skill
     return replace(source, path=str(dest))
 
 
-def format_enabled_skills(
+def selected_skills(
     root: Path,
     extra_names: Sequence[str] = (),
     included: Sequence[Skill] = (),
-) -> str:
+) -> list[Skill]:
+    """The skills a run follows: enabled ones, the run's extras, and repo skills."""
     extra = {name for name in extra_names if name}
     by_name = {skill.name: skill for skill in list_skills(root)}
     for skill in included:
         current = by_name.get(skill.name)
         if current is None or current.origin in {"bundled", "source"}:
             by_name[skill.name] = skill
-    selected = [
+    return [
         skill
         for skill in sorted(by_name.values(), key=lambda item: item.name)
         if skill.enabled or skill.name in extra or skill.origin == "repo"
     ]
+
+
+def format_enabled_skills(
+    root: Path,
+    extra_names: Sequence[str] = (),
+    included: Sequence[Skill] = (),
+) -> str:
+    selected = selected_skills(root, extra_names, included)
     if not selected:
         return ""
     parts = [

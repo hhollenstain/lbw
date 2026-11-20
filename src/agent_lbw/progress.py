@@ -233,6 +233,14 @@ def _llm_event_fields(llm: LLMClient, *, role: str) -> dict[str, str]:
     name = str(getattr(llm, "model", "") or "").strip()
     if name:
         fields["model_name"] = name
+    for attribute, key in (
+        ("usage_model_id", "model_id"),
+        ("usage_service", "service"),
+        ("usage_provider", "provider"),
+    ):
+        value = getattr(llm, attribute, "")
+        if isinstance(value, str) and value.strip():
+            fields[key] = value.strip()
     if role.strip():
         fields["role"] = role.strip()
     return fields
@@ -275,6 +283,8 @@ def timed_complete(
         prompt_tokens=turn.prompt_tokens,
         completion_tokens=turn.completion_tokens,
         total_tokens=turn.total_tokens,
+        cache_read_tokens=getattr(turn, "cache_read_tokens", None),
+        cache_write_tokens=getattr(turn, "cache_write_tokens", None),
         **identity,
     )
     log.info("llm %s response in %s", purpose, format_elapsed(elapsed))

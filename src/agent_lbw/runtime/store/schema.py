@@ -300,6 +300,105 @@ _STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS usage_daily (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        day TEXT NOT NULL,
+        project_id TEXT NOT NULL DEFAULT '',
+        identity_id TEXT NOT NULL DEFAULT '',
+        service TEXT NOT NULL DEFAULT '',
+        provider TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        step TEXT NOT NULL DEFAULT '',
+        purpose TEXT NOT NULL DEFAULT '',
+        calls BIGINT NOT NULL DEFAULT 0,
+        errors BIGINT NOT NULL DEFAULT 0,
+        input_tokens BIGINT NOT NULL DEFAULT 0,
+        output_tokens BIGINT NOT NULL DEFAULT 0,
+        cache_read_tokens BIGINT NOT NULL DEFAULT 0,
+        cache_write_tokens BIGINT NOT NULL DEFAULT 0,
+        duration_ms BIGINT NOT NULL DEFAULT 0,
+        cost_micros BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (tenant_id, day, project_id, identity_id, service, model, step, purpose)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS usage_files_daily (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        day TEXT NOT NULL,
+        project_id TEXT NOT NULL DEFAULT '',
+        identity_id TEXT NOT NULL DEFAULT '',
+        extension TEXT NOT NULL DEFAULT '',
+        files BIGINT NOT NULL DEFAULT 0,
+        lines_added BIGINT NOT NULL DEFAULT 0,
+        lines_removed BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (tenant_id, day, project_id, identity_id, extension)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS usage_skills_daily (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        day TEXT NOT NULL,
+        project_id TEXT NOT NULL DEFAULT '',
+        identity_id TEXT NOT NULL DEFAULT '',
+        skill TEXT NOT NULL DEFAULT '',
+        runs BIGINT NOT NULL DEFAULT 0,
+        tokens BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (tenant_id, day, project_id, identity_id, skill)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS usage_runs_daily (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        day TEXT NOT NULL,
+        project_id TEXT NOT NULL DEFAULT '',
+        identity_id TEXT NOT NULL DEFAULT '',
+        outcome TEXT NOT NULL DEFAULT '',
+        runs BIGINT NOT NULL DEFAULT 0,
+        duration_ms BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (tenant_id, day, project_id, identity_id, outcome)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS model_prices (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        input_micros BIGINT NOT NULL DEFAULT 0,
+        output_micros BIGINT NOT NULL DEFAULT 0,
+        cache_read_micros BIGINT NOT NULL DEFAULT 0,
+        cache_write_micros BIGINT NOT NULL DEFAULT 0,
+        updated BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (tenant_id, provider, model)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS claude_link_apps (
+        tenant_id TEXT PRIMARY KEY REFERENCES tenants (id),
+        client_id TEXT NOT NULL,
+        assertion_file TEXT NOT NULL,
+        profile_key_ciphertext TEXT NOT NULL,
+        updated BIGINT NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS claude_profiles (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        identity_id TEXT NOT NULL REFERENCES identities (id),
+        profile_id TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, identity_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS link_pending (
+        state TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        identity_id TEXT NOT NULL REFERENCES identities (id),
+        endpoint_id TEXT NOT NULL,
+        verifier_ciphertext TEXT NOT NULL,
+        created BIGINT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS tenant_keys (
         tenant_id TEXT PRIMARY KEY REFERENCES tenants (id),
         wrapped_key TEXT NOT NULL
@@ -370,6 +469,14 @@ _STATEMENTS = (
 # Child rows go before the identity and tenant they point at.
 CLEAR_ORDER = (
     "audit_log",
+    "usage_daily",
+    "usage_files_daily",
+    "usage_skills_daily",
+    "usage_runs_daily",
+    "model_prices",
+    "link_pending",
+    "claude_profiles",
+    "claude_link_apps",
     "agent_grants",
     "model_project_settings",
     "model_grants",
@@ -425,7 +532,7 @@ TASK_COLUMNS = frozenset(
 )
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def read_schema_version(db: Database) -> int:
@@ -493,6 +600,15 @@ def apply_schema(db: Database) -> None:
     _add_column(db, "model_endpoints", "auth", "TEXT NOT NULL DEFAULT 'key'")
     _add_column(db, "model_endpoints", "audience", "TEXT NOT NULL DEFAULT ''")
     _add_column(db, "endpoint_credentials", "kind", "TEXT NOT NULL DEFAULT 'sso'")
+    _add_column(db, "endpoint_credentials", "connection_id", "TEXT NOT NULL DEFAULT ''")
+    _add_column(db, "endpoint_credentials", "profile_id", "TEXT NOT NULL DEFAULT ''")
+    for table in ("usage_daily", "usage_files_daily", "usage_skills_daily", "usage_runs_daily"):
+        db.execute(
+            f"CREATE INDEX IF NOT EXISTS {table}_project ON {table} (tenant_id, project_id, day)"
+        )
+        db.execute(
+            f"CREATE INDEX IF NOT EXISTS {table}_person ON {table} (tenant_id, identity_id, day)"
+        )
     db.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS projects_provider

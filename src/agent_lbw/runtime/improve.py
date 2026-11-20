@@ -12,7 +12,7 @@ from pathlib import Path
 
 from agent_lbw.agent.loop import AgentResult, CodingAgent
 from agent_lbw.config import Settings
-from agent_lbw.llm.client import LLMClient
+from agent_lbw.llm.client import LLMClient, apply_credential
 from agent_lbw.progress import bind_progress, current_events, record_event, reset_progress
 from agent_lbw.runtime.importer import goal_headline
 from agent_lbw.runtime.plan import GoalPlan, PlanStep, format_plan, ground_plan, plan_goal
@@ -54,7 +54,7 @@ from agent_lbw.runtime.roles import (
     role_evidence,
 )
 from agent_lbw.runtime.rules import rules_for_prompt
-from agent_lbw.runtime.skills import compose_system_prompt
+from agent_lbw.runtime.skills import compose_system_prompt, selected_skills
 from agent_lbw.runtime.steward import propose_improvement_goal
 from agent_lbw.runtime.team_graph import (
     GraphError,
@@ -520,6 +520,12 @@ def _run_cycle(
         _assigned_skills(store_root, settings.database_url, workspace.root)
     )
     included_skills = _scoped_skills(store_root, settings, workspace.root)
+    record_event(
+        kind="skills",
+        names=[
+            skill.name for skill in selected_skills(workspace.root, extra_skills, included_skills)
+        ],
+    )
     palace = _workspace_palace(
         workspace.root,
         siblings=sibling_tasks,
@@ -1684,12 +1690,14 @@ def _client_for_team(
     except (OSError, ValueError, KeyError, PermissionError) as exc:
         log_progress(f"{team.get('name') or 'A team'} keeps the proposal model: {exc}")
         return llm
-    return client_for(
+    client = client_for(
         model=str(creds["model_name"]),
         base_url=str(creds["base_url"]),
         api_key=str(creds["api_key"]),
         context_window=settings.context_window,
     )
+    apply_credential(client, creds)
+    return client
 
 
 def _assigned_skills(store_root: Path | None, database_url: str, workspace: Path) -> list[str]:

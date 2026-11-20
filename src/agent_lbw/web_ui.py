@@ -31,6 +31,7 @@ from pydantic import BaseModel
 
 from agent_lbw.auth_http import register_auth
 from agent_lbw.config import Settings
+from agent_lbw.integrations_http import link_required_response, register_integrations
 from agent_lbw.llm.client import effective_context_window, normalize_model_base_url
 from agent_lbw.openapi_models import (
     AgentTeamImport,
@@ -82,6 +83,7 @@ from agent_lbw.runtime.skills import (
     skills_catalog,
     sync_skill_source,
 )
+from agent_lbw.runtime.store.gateway import LinkRequired
 from agent_lbw.runtime.tasks import Task, TaskManager
 from agent_lbw.runtime.uireview import resolve_ui_screenshot
 from agent_lbw.runtime.workspaces import (
@@ -1278,10 +1280,14 @@ def create_app(
         ):
             return JSONResponse({"error": "pull request is not open"}, status_code=409)
         goal_to_use = new_goal or old_task.goal
+        blocked, actor = _acting_credential(ui, old_task)
+        if blocked is not None:
+            return blocked
         new_task = ui.manager.rerun(
             task_id,
             from_sha=run_from_sha,
             goal=goal_to_use,
+            actor_id=actor,
         )
         if new_task is None:
             return JSONResponse({"error": "task not found or not rerunnable"}, status_code=404)
@@ -1307,7 +1313,10 @@ def create_app(
             "closed",
         }:
             return JSONResponse({"error": "pull request is not open"}, status_code=409)
-        updated = ui.manager.rework(task_id, note)
+        credential_block, actor = _acting_credential(ui, current)
+        if credential_block is not None:
+            return credential_block
+        updated = ui.manager.rework(task_id, note, actor_id=actor)
         if updated is None:
             if ui.manager.get(task_id) is None:
                 return JSONResponse({"error": "task not found"}, status_code=404)
@@ -1316,6 +1325,7 @@ def create_app(
                 return JSONResponse({"error": "this job is already in progress"}, status_code=409)
             return JSONResponse({"error": "this job cannot take more changes"}, status_code=409)
         _remember_gate(ui, updated, "rework", note, path=f"/api/tasks/{task_id}/rework")
+        _note_credentials(ui, updated, actor)
         request.state.audit_explicit = True
         return updated.to_dict()
 
@@ -1339,8 +1349,13 @@ def create_app(
             blocked = _proposal_writer_block(ui, current.workspace)
             if blocked:
                 return JSONResponse({"error": blocked}, status_code=403)
+        actor = None
+        if current is not None and choice != "hand_off":
+            credential_block, actor = _acting_credential(ui, current)
+            if credential_block is not None:
+                return credential_block
         try:
-            updated = ui.manager.decide(task_id, choice, body.note)
+            updated = ui.manager.decide(task_id, choice, body.note, actor_id=actor)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
         if updated is None:
@@ -1351,6 +1366,8 @@ def create_app(
                 status_code=409,
             )
         _remember_gate(ui, updated, choice, body.note)
+        if actor:
+            _note_credentials(ui, updated, actor)
         request.state.audit_explicit = True
         return updated.to_dict()
 
@@ -1412,6 +1429,8 @@ def create_app(
                 load_account(root, database_url=ui.manager.settings.database_url)
                 with database(root, ui.manager.settings.database_url) as db:
                     creds = use_model(db, root, Path(workspace_raw), chosen_id)
+            except LinkRequired as exc:
+                return link_required_response(exc)
             except PermissionError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=403)
             except KeyError:
@@ -1438,6 +1457,7 @@ def create_app(
                 gate=(body.gate or "auto"),
                 triage_gate=body.triage_gate or "",
                 approval_gate=body.approval_gate or "",
+                model_id=chosen_id or None,
             )
             if not chosen_id:
                 ui.remember_server(task.model_base_url, model=task.model_name)
@@ -2118,6 +2138,7 @@ def create_app(
     register_rules(app)
     register_github(app)
     register_org(app)
+    register_integrations(app)
     _register_audit(app)
     return app
 
@@ -2528,10 +2549,10 @@ def _schedule_model(ui: UiState, workspace: Path, model_id: str) -> tuple[str, s
                     return "Choose a model turned on for this project."
                 return _settings_model(ui)
             creds = use_model(db, root, workspace, chosen)
-    except PermissionError as exc:
+    except LinkRequired as exc:
         message = str(exc)
-        if message.startswith("sign in") or message.startswith("add your"):
-            return message[0].upper() + message[1:] + ("" if message.endswith(".") else ".")
+        return message[0].upper() + message[1:] + ("" if message.endswith(".") else ".")
+    except PermissionError:
         return "That model is off for this project."
     except KeyError:
         return "That model is off for this project."
@@ -2541,6 +2562,69 @@ def _schedule_model(ui: UiState, workspace: Path, model_id: str) -> tuple[str, s
     if not host:
         return "That model has no server."
     return (str(creds.get("model_name") or ""), host, str(creds.get("api_key") or ""))
+
+
+def _acting_credential(ui: UiState, task) -> tuple[JSONResponse | None, str | None]:
+    """Check the person acting now has linked the integration this job's model runs on.
+
+    Work that continues runs on their credentials, never on the requester's, so a
+    person who has not linked it is asked to link it first.
+    """
+    from agent_lbw.runtime.account import load_account
+    from agent_lbw.runtime.db import database, database_configured
+    from agent_lbw.runtime.store.auth import current_actor
+    from agent_lbw.runtime.store.catalog import use_model
+
+    root = Path(ui.store_root)
+    url = ui.manager.settings.database_url
+    if not database_configured(root, url):
+        return None, None
+    try:
+        account = load_account(root, database_url=url)
+    except (OSError, ValueError):
+        return None, None
+    actor = current_actor() or account["current_user_id"]
+    model_id = str(getattr(task, "model_id", "") or "")
+    if not model_id:
+        return None, actor
+    try:
+        with database(root, url) as db:
+            use_model(db, root, Path(task.workspace), model_id)
+    except LinkRequired as exc:
+        return link_required_response(exc), None
+    except PermissionError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=403), None
+    except (KeyError, ValueError) as exc:
+        return JSONResponse({"error": str(exc) or "that model is gone"}, status_code=409), None
+    return None, actor
+
+
+def _note_credentials(ui: UiState, task, actor: str | None) -> None:
+    """Note in the audit trail whose credentials run this job from here on."""
+    from agent_lbw.runtime.account import load_account
+    from agent_lbw.runtime.db import database, database_configured
+    from agent_lbw.runtime.store.audit import record_audit
+
+    root = Path(ui.store_root)
+    url = ui.manager.settings.database_url
+    if not actor or not database_configured(root, url):
+        return
+    try:
+        account = load_account(root, database_url=url)
+        name = next((user["name"] for user in account["users"] if user["id"] == actor), "")
+        model = str(getattr(task, "model_name", "") or "the default model")
+        with database(root, url) as db:
+            record_audit(
+                db,
+                tenant_id=account["org"]["id"],
+                actor_id=actor,
+                action="task.credentials",
+                summary=f"{name or 'Someone'}'s credentials run this job from here on {model}",
+                target_type="task",
+                target_id=task.id,
+            )
+    except (OSError, PermissionError, ValueError) as exc:
+        log.warning("task %s credential note was not recorded: %s", task.id, exc)
 
 
 def _remember_gate(ui: UiState, task, action: str, note: str, path: str = "") -> None:
@@ -2609,10 +2693,16 @@ def _launch_scheduled_run(ui: UiState, schedule: dict) -> None:
         goal = project_task_goal(goal, base_branch or "main")
         auto_commit = True
         create_pr = True
-    from agent_lbw.runtime.store.auth import current_actor
+    from agent_lbw.runtime.store.auth import current_actor, reset_actor, set_actor
 
     requester = current_actor() or str(schedule.get("created_by") or "")
-    granted = _schedule_model(ui, workspace, str(schedule.get("model_id") or ""))
+    chosen_model = str(schedule.get("model_id") or "")
+    acting = set_actor(requester) if requester and not current_actor() else None
+    try:
+        granted = _schedule_model(ui, workspace, chosen_model)
+    finally:
+        if acting is not None:
+            reset_actor(acting)
     if isinstance(granted, str):
         fail_run(root, str(schedule.get("id") or ""), run_id, granted)
         return
@@ -2628,6 +2718,7 @@ def _launch_scheduled_run(ui: UiState, schedule: dict) -> None:
             model_base_url=model_base_url,
             model_api_key=model_api_key,
             requester_id=requester or None,
+            model_id=chosen_model or None,
         )
     except Exception as exc:
         fail_run(root, str(schedule.get("id") or ""), run_id, str(exc))
