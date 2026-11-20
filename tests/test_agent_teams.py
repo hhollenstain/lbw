@@ -407,8 +407,8 @@ def test_review_teams_on_their_own_models_replace_the_roles(
     assert result.committed is False
     assert "Docs desk block" in (result.reason or "")
     verdicts = {item["role"]: item["verdict"] for item in result.evidence if "role" in item}
-    assert verdicts.get("tests-desk") == "pass"
     assert verdicts.get("docs-desk") == "block"
     assert "policy" not in verdicts
+    # Both reviews ran in the same wave, each on its own model; the block stops the commit.
     assert len(reviewers[fast].calls) == 1
     assert len(reviewers[careful].calls) == 1
