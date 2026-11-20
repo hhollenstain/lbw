@@ -349,8 +349,8 @@ label {
   letter-spacing: 0.06em;
 }
 
-input[type="text"], input[type="search"], input[type="number"], input[type="url"],
-input[type="password"], input[type="email"], textarea, select {
+input:not([type]), input[type="text"], input[type="search"], input[type="number"],
+input[type="url"], input[type="password"], input[type="email"], textarea, select {
   width: 100%;
   background: var(--panel);
   color: var(--ink);
@@ -360,9 +360,9 @@ input[type="password"], input[type="email"], textarea, select {
   font: inherit;
 }
 
-input[type="text"]:focus, input[type="search"]:focus, input[type="number"]:focus,
-input[type="url"]:focus, input[type="password"]:focus, input[type="email"]:focus,
-textarea:focus, select:focus {
+input:not([type]):focus, input[type="text"]:focus, input[type="search"]:focus,
+input[type="number"]:focus, input[type="url"]:focus, input[type="password"]:focus,
+input[type="email"]:focus, textarea:focus, select:focus {
   outline: none;
   border-color: var(--navy);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
@@ -2548,7 +2548,7 @@ button.icon-button svg {
 
 .team-step {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  grid-template-columns: minmax(5rem, 1fr) minmax(10.5rem, auto) minmax(5rem, 1fr) minmax(5rem, 1fr);
   align-items: end;
   gap: 0.5rem;
   padding: 0.55rem 0.65rem;
@@ -2561,6 +2561,27 @@ button.icon-button svg {
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+
+.team-step-field label {
+  margin: 0 0 0.3rem;
+}
+
+.team-step-field input,
+.team-step-field select {
+  padding: 0.45rem 0.55rem;
+  font-size: 0.86rem;
+}
+
+.team-step > button {
+  align-self: end;
+  justify-self: start;
+}
+
+@media (max-width: 40rem) {
+  .team-step {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .team-graph {
