@@ -11,8 +11,11 @@ from tests.support import init_git_repo
 
 from agent_lbw.config import Settings
 from agent_lbw.llm.client import model_ids_from_payload, normalize_model_base_url
+from agent_lbw.runtime.db import database
 from agent_lbw.runtime.improve import CycleResult
 from agent_lbw.runtime.servers import remember_server
+from agent_lbw.runtime.store.projects import grant_project
+from agent_lbw.runtime.store.recording import project_id_for_checkout
 from agent_lbw.runtime.tasks import Task, TaskManager
 from agent_lbw.runtime.workspaces import remember_workspace
 from agent_lbw.web_ui import (
@@ -352,6 +355,8 @@ def test_web_ui_queues_and_lists_tasks(settings: Settings, tmp_path: Path) -> No
         assert b"data-change-path" in home.content
         assert b'data-task-pane="changes"' in home.content
         assert b'data-task-pane="screenshots"' in home.content
+        assert b'data-task-pane="audit"' in home.content
+        assert b"No audit entries for this change." in home.content
         assert b'<link rel="stylesheet" href="/static/themes.css">' in home.content
         assert b'<link rel="stylesheet" href="/static/layout.css">' in home.content
         assert b"<style>" in home.content
@@ -1653,6 +1658,8 @@ def test_web_ui_progress_includes_file_history_and_timestamps(
         assert b"data-change-path" in home.content
         assert b'data-task-pane="changes"' in home.content
         assert b'data-task-pane="screenshots"' in home.content
+        assert b'data-task-pane="audit"' in home.content
+        assert b"No audit entries for this change." in home.content
         assert b"No file changes in this task." in home.content
     finally:
         manager.shutdown(wait=False)
@@ -2632,6 +2639,76 @@ def test_waiting_change_accepts_build_and_rejects_a_late_decision(
         assert done["stage"] == "done"
         late = client.post(f"/api/tasks/{task_id}/decide", json={"decision": "build"})
         assert late.status_code == 409
+    finally:
+        manager.shutdown(wait=False)
+
+
+def test_a_proposal_pauses_for_a_person_with_write_access(
+    settings: Settings, tmp_path: Path
+) -> None:
+    def runner(task: Task) -> CycleResult:
+        if task.decision == "build":
+            return _ok_result(task.goal)
+        return CycleResult(
+            status="waiting",
+            goal=task.goal,
+            summary="Implement: hello",
+            tests_passed=None,
+            committed=False,
+            published=False,
+            commit_sha=None,
+            reason="waiting for triage",
+            stage="triage",
+        )
+
+    manager = TaskManager(settings, runner=runner)
+    app = create_app(manager, default_workspace=tmp_path)
+    client = TestClient(app)
+    try:
+        created = client.post(
+            "/api/tasks",
+            json={"workspace": str(tmp_path), "goal": "Say hello", "gate": "ask"},
+        )
+        assert created.status_code == 201
+        task_id = created.json()["id"]
+        waiting = None
+        for _ in range(50):
+            body = client.get(f"/api/tasks/{task_id}").json()
+            if body["status"] == "waiting":
+                waiting = body
+                break
+            time.sleep(0.05)
+        assert waiting is not None
+        added = client.post("/api/account/users", json={"name": "Grace"})
+        assert added.status_code == 200
+        grace = next(user for user in added.json()["users"] if user["name"] == "Grace")
+        account = client.get("/api/account").json()
+        with database(tmp_path) as db:
+            project_id = project_id_for_checkout(db, account["org"]["id"], tmp_path)
+            assert project_id
+            grant_project(
+                db,
+                project_id,
+                subject_type="identity",
+                subject_id=grace["id"],
+                access="use",
+            )
+            db.execute("UPDATE install SET current_identity_id = ?", (grace["id"],))
+        refused = client.post(f"/api/tasks/{task_id}/decide", json={"decision": "build"})
+        assert refused.status_code == 403
+        assert refused.json()["error"] == (
+            "a person with write access to this project can continue a proposal"
+        )
+        with database(tmp_path) as db:
+            grant_project(
+                db,
+                project_id,
+                subject_type="identity",
+                subject_id=grace["id"],
+                access="write",
+            )
+        allowed = client.post(f"/api/tasks/{task_id}/decide", json={"decision": "build"})
+        assert allowed.status_code == 200
     finally:
         manager.shutdown(wait=False)
 

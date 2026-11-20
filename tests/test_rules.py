@@ -355,6 +355,8 @@ def test_postgres_duty_check_keeps_percent_signs_as_sql() -> None:
             return {"name": "duty_grants", "sql": "CHECK (duty IN ('billing', 'security'))"}
 
         def fetchall(self) -> list[dict[str, str]]:
+            if "FROM agent_teams" in seen[-1]:
+                return []
             return [{"name": "duty_grants_duty_check"}]
 
     class Raw:

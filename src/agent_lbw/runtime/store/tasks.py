@@ -56,6 +56,7 @@ def save_task_request(
     branch: str | None = None,
     pr_url: str | None = None,
     run_ref: str | None = None,
+    agent_id: str | None = None,
 ) -> None:
     """Insert a request. A person who cannot use the project is refused."""
     if not can_access(db, requester_id, project_id, need="use"):
@@ -65,8 +66,8 @@ def save_task_request(
         """
         INSERT INTO tasks (
             id, tenant_id, project_id, requester_id, status, branch, pr_url,
-            run_ref, goal_ciphertext, created
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            run_ref, goal_ciphertext, created, agent_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO NOTHING
         """,
         (
@@ -80,6 +81,7 @@ def save_task_request(
             run_ref,
             ciphertext,
             int(time.time()),
+            agent_id or None,
         ),
     )
 

@@ -42,7 +42,9 @@ Rules:
   use them. Do not ask a human to re-enter what the repo knows.
 - Do not return fake or generated sample data when a real API, file, or remote
   exists. Call it, or fail with a clear error.
-- Inspect the repo before editing: list files, read the relevant code, check git status.
+- Inspect the repo before editing: glob_files for a filename, search_text for a
+  symbol or error, read_file the relevant code, and git_status for the tree.
+  delete_file removes one file this change no longer needs.
   Follow the repository instruction files included in the context. Do not
   open one that was turned off.
 - Use the project's existing style, tooling, and test command.

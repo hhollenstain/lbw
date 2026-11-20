@@ -12,8 +12,9 @@ Local models invent architecture. This repo already has one. Match it.
 ## Before you add a type or file
 
 1. Read `AGENTS.md` if it exists.
-2. `list_dir` the area you will touch. `search_text` for the names, routes,
-   or errors in the goal.
+2. `glob_files` for a filename. `list_dir` one directory when you need its
+   contents. `search_text` for the names, routes, or errors in the goal.
+   Pass `path` to stay in one area and `context` to see the lines around a hit.
 3. Read one or two existing modules at the same seam (CLI, HTTP handler,
    template, test). Copy their shape: names, error objects, imports, tests.
 

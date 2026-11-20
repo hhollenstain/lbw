@@ -1398,6 +1398,7 @@ def _default_clicks(root: Path) -> list[str]:
             "#run-list button.task",
             '[data-task-pane="changes"]',
             '[data-task-pane="screenshots"]',
+            '[data-task-pane="audit"]',
             '[data-task-pane="progress"]',
         ]
     return []

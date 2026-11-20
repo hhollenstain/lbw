@@ -18,7 +18,7 @@ from agent_lbw.tools.tests import runner_unavailable
 
 log = logging.getLogger("lbw")
 
-MUTATING_TOOLS = {"write_file", "str_replace", "configure_project"}
+MUTATING_TOOLS = {"write_file", "str_replace", "delete_file", "configure_project"}
 VERIFY_TOOLS = {"review_ui", "run_tests"}
 CHECK_TOOLS = {"review_ui", "run_tests", "run_lint"}
 UI_SUFFIXES = {".html", ".htm", ".css", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte"}
@@ -504,6 +504,8 @@ class CodingAgent:
                             if call.name == "configure_project" or _writes_project_config(
                                 tool_path
                             ):
+                                substantive = True
+                            elif call.name == "delete_file":
                                 substantive = True
                             elif call.name in {"str_replace", "write_file"}:
                                 arguments = call.arguments or {}

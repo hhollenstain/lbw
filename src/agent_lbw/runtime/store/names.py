@@ -10,7 +10,7 @@ RANKS = frozenset({"owner", "admin", "member"})
 DUTIES = frozenset({"billing", "security", "rules"})
 TENANT_KINDS = frozenset({"personal", "organization"})
 PROJECT_KINDS = frozenset({"github", "git", "folder"})
-ACCESS_LEVELS = frozenset({"use", "manage"})
+ACCESS_LEVELS = frozenset({"use", "write", "manage"})
 SCHEDULE_KINDS = frozenset({"change", "scan"})
 
 

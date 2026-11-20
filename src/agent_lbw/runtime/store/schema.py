@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+import uuid
+
 from agent_lbw.runtime.db import Database
 from agent_lbw.runtime.store.names import slug_for
 
@@ -81,7 +84,7 @@ _STATEMENTS = (
         project_id TEXT NOT NULL REFERENCES projects (id),
         subject_type TEXT NOT NULL CHECK (subject_type IN ('team', 'identity')),
         subject_id TEXT NOT NULL,
-        access TEXT NOT NULL CHECK (access IN ('use', 'manage')),
+        access TEXT NOT NULL CHECK (access IN ('use', 'write', 'manage')),
         UNIQUE (project_id, subject_type, subject_id)
     )
     """,
@@ -152,12 +155,26 @@ _STATEMENTS = (
         tenant_id TEXT NOT NULL REFERENCES tenants (id),
         name TEXT NOT NULL,
         provider TEXT NOT NULL CHECK (provider IN (
-            'openai', 'anthropic', 'google', 'ollama', 'vllm', 'lmstudio', 'openai_compatible'
+            'openai', 'anthropic', 'google', 'ollama', 'vllm', 'lmstudio',
+            'openai_compatible', 'cursor', 'litellm', 'gateway'
         )),
         base_url TEXT NOT NULL DEFAULT '',
         api_key_ciphertext TEXT,
         models_json TEXT NOT NULL DEFAULT '[]',
+        auth TEXT NOT NULL DEFAULT 'key',
+        audience TEXT NOT NULL DEFAULT '',
         UNIQUE (tenant_id, name)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS endpoint_credentials (
+        endpoint_id TEXT NOT NULL REFERENCES model_endpoints (id),
+        identity_id TEXT NOT NULL REFERENCES identities (id),
+        access_ciphertext TEXT NOT NULL,
+        refresh_ciphertext TEXT,
+        expires_at INTEGER NOT NULL DEFAULT 0,
+        kind TEXT NOT NULL DEFAULT 'sso',
+        PRIMARY KEY (endpoint_id, identity_id)
     )
     """,
     """
@@ -167,13 +184,47 @@ _STATEMENTS = (
         endpoint_id TEXT REFERENCES model_endpoints (id),
         name TEXT NOT NULL,
         provider TEXT NOT NULL CHECK (provider IN (
-            'openai', 'anthropic', 'google', 'ollama', 'vllm', 'lmstudio', 'openai_compatible'
+            'openai', 'anthropic', 'google', 'ollama', 'vllm', 'lmstudio',
+            'openai_compatible', 'cursor', 'litellm', 'gateway'
         )),
         model_name TEXT NOT NULL,
         base_url TEXT NOT NULL DEFAULT '',
         api_key_ciphertext TEXT,
         enabled INTEGER NOT NULL DEFAULT 0,
         UNIQUE (tenant_id, name)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_teams (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        name TEXT NOT NULL,
+        job TEXT NOT NULL CHECK (job IN ('plan', 'build', 'review')),
+        instruction TEXT NOT NULL DEFAULT '',
+        model_id TEXT REFERENCES models (id),
+        UNIQUE (tenant_id, name)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_team_projects (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        team_id TEXT NOT NULL REFERENCES agent_teams (id),
+        project_id TEXT NOT NULL REFERENCES projects (id),
+        enabled INTEGER NOT NULL,
+        PRIMARY KEY (team_id, project_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_team_steps (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        team_id TEXT NOT NULL REFERENCES agent_teams (id),
+        step_key TEXT NOT NULL,
+        job TEXT NOT NULL CHECK (job IN ('plan', 'build', 'review')),
+        after_json TEXT NOT NULL DEFAULT '[]',
+        paths_json TEXT NOT NULL DEFAULT '[]',
+        position INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (tenant_id, step_key)
     )
     """,
     """
@@ -324,12 +375,16 @@ CLEAR_ORDER = (
     "model_grants",
     "agents",
     "models",
+    "endpoint_credentials",
     "model_endpoints",
     "github_installations",
     "github_apps",
     "skill_repo_files",
     "skill_repos",
     "skill_grants",
+    "agent_team_steps",
+    "agent_team_projects",
+    "agent_teams",
     "role_requirements",
     "rule_requirements",
     "rules",
@@ -370,7 +425,7 @@ TASK_COLUMNS = frozenset(
 )
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 8
 
 
 def read_schema_version(db: Database) -> int:
@@ -435,6 +490,9 @@ def apply_schema(db: Database) -> None:
     _add_column(db, "projects", "provider_id", "TEXT NOT NULL DEFAULT ''")
     _add_column(db, "projects", "enabled", "INTEGER NOT NULL DEFAULT 1")
     _add_column(db, "projects", "archived_at", "INTEGER")
+    _add_column(db, "model_endpoints", "auth", "TEXT NOT NULL DEFAULT 'key'")
+    _add_column(db, "model_endpoints", "audience", "TEXT NOT NULL DEFAULT ''")
+    _add_column(db, "endpoint_credentials", "kind", "TEXT NOT NULL DEFAULT 'sso'")
     db.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS projects_provider
@@ -464,6 +522,9 @@ def apply_schema(db: Database) -> None:
         """
     )
     _widen_duty_check(db)
+    _widen_model_provider(db)
+    _seed_team_steps(db)
+    _widen_project_access(db)
     if legacy is not None:
         _write_legacy(db, legacy)
     _mark_crossing_owner(db)
@@ -506,6 +567,40 @@ def _mark_crossing_owner(db: Database) -> None:
         )
         """
     )
+
+
+def _seed_team_steps(db: Database) -> None:
+    """Give each team made before steps existed one step for the job it had."""
+    rows = db.fetchall(
+        """
+        SELECT id, tenant_id, name, job FROM agent_teams
+        WHERE NOT EXISTS (
+            SELECT 1 FROM agent_team_steps WHERE agent_team_steps.team_id = agent_teams.id
+        )
+        ORDER BY tenant_id, name, id
+        """
+    )
+    for row in rows:
+        taken = {
+            str(item["step_key"])
+            for item in db.fetchall(
+                "SELECT step_key FROM agent_team_steps WHERE tenant_id = ?",
+                (row["tenant_id"],),
+            )
+        }
+        base = re.sub(r"[^a-z0-9]+", "-", str(row["name"]).lower()).strip("-")[:60] or "team"
+        key = base
+        number = 2
+        while key in taken:
+            key = f"{base}-{number}"
+            number += 1
+        db.execute(
+            """
+            INSERT INTO agent_team_steps (id, tenant_id, team_id, step_key, job, position)
+            VALUES (?, ?, ?, ?, ?, 0)
+            """,
+            (f"ats_{uuid.uuid4().hex[:12]}", row["tenant_id"], row["id"], key, row["job"]),
+        )
 
 
 def _add_column(db: Database, table: str, column: str, ddl: str) -> None:
@@ -582,6 +677,139 @@ def _duty_check_has_rules(db: Database) -> bool:
         """
     )
     return row is not None and "rules" in str(row["sql"])
+
+
+def _provider_check_has_gateway(db: Database, table: str) -> bool:
+    if db.kind == "sqlite":
+        row = db.fetchone(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        )
+        return row is not None and "litellm" in str(row["sql"] or "")
+    row = db.fetchone(
+        """
+        SELECT pg_get_constraintdef(oid) AS sql
+        FROM pg_constraint
+        WHERE conrelid = ?::regclass
+          AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%provider%'
+        """,
+        (table,),
+    )
+    return row is not None and "litellm" in str(row["sql"])
+
+
+def _create_sql(table: str) -> str:
+    needle = f"CREATE TABLE IF NOT EXISTS {table} "
+    for statement in _STATEMENTS:
+        if needle in statement:
+            return statement
+    raise KeyError(table)
+
+
+def _widen_model_provider(db: Database) -> None:
+    """Let an existing model table store a LiteLLM or other gateway endpoint."""
+    for table in ("model_endpoints", "models"):
+        if not _has_table(db, table) or _provider_check_has_gateway(db, table):
+            continue
+        if db.kind == "sqlite":
+            _rebuild_provider_table(db, table)
+            continue
+        rows = db.fetchall(
+            """
+            SELECT conname AS name
+            FROM pg_constraint
+            WHERE conrelid = ?::regclass
+              AND contype = 'c'
+              AND pg_get_constraintdef(oid) LIKE '%provider%'
+              AND pg_get_constraintdef(oid) NOT LIKE '%litellm%'
+            """,
+            (table,),
+        )
+        for row in rows:
+            name = str(row["name"]).replace('"', "")
+            db.execute(f'ALTER TABLE {table} DROP CONSTRAINT "{name}"')
+        db.execute(
+            f"""
+            ALTER TABLE {table}
+            ADD CONSTRAINT {table}_provider_check
+            CHECK (provider IN (
+                'openai', 'anthropic', 'google', 'ollama', 'vllm', 'lmstudio',
+                'openai_compatible', 'cursor', 'litellm', 'gateway'
+            ))
+            """
+        )
+
+
+def _rebuild_provider_table(db: Database, table: str) -> None:
+    previous = f"{table}_provider_prev"
+    kept = table_columns(db, table)
+    db.raw.execute("PRAGMA foreign_keys = OFF")
+    db.execute(f"ALTER TABLE {table} RENAME TO {previous}")
+    db.execute(_create_sql(table))
+    shared = [name for name in sorted(kept) if name in table_columns(db, table)]
+    joined = ", ".join(shared)
+    db.execute(f"INSERT INTO {table} ({joined}) SELECT {joined} FROM {previous}")
+    db.execute(f"DROP TABLE {previous}")
+    db.raw.execute("PRAGMA foreign_keys = ON")
+
+
+def _access_check_has_write(db: Database) -> bool:
+    if db.kind == "sqlite":
+        row = db.fetchone(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'project_grants'"
+        )
+        return row is not None and "write" in str(row["sql"] or "")
+    row = db.fetchone(
+        """
+        SELECT pg_get_constraintdef(oid) AS sql
+        FROM pg_constraint
+        WHERE conrelid = 'project_grants'::regclass
+          AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%access%'
+          AND pg_get_constraintdef(oid) LIKE '%write%'
+        """
+    )
+    return row is not None
+
+
+def _widen_project_access(db: Database) -> None:
+    """Let an existing grant store write access. Manage still includes it."""
+    if not _has_table(db, "project_grants") or _access_check_has_write(db):
+        return
+    if db.kind == "sqlite":
+        db.raw.execute("PRAGMA foreign_keys = OFF")
+        db.execute("ALTER TABLE project_grants RENAME TO project_grants_prev")
+        db.execute(_create_sql("project_grants"))
+        db.execute(
+            """
+            INSERT INTO project_grants (id, project_id, subject_type, subject_id, access)
+            SELECT id, project_id, subject_type, subject_id, access FROM project_grants_prev
+            """
+        )
+        db.execute("DROP TABLE project_grants_prev")
+        db.raw.execute("PRAGMA foreign_keys = ON")
+        return
+    rows = db.fetchall(
+        """
+        SELECT conname AS name
+        FROM pg_constraint
+        WHERE conrelid = 'project_grants'::regclass
+          AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%access%'
+          AND pg_get_constraintdef(oid) NOT LIKE '%write%'
+        """
+    )
+    for row in rows:
+        name = str(row["name"]).replace('"', "")
+        db.execute(f'ALTER TABLE project_grants DROP CONSTRAINT "{name}"')
+    db.execute(
+        """
+        ALTER TABLE project_grants
+        ADD CONSTRAINT project_grants_access_check
+        CHECK (access IN ('use', 'write', 'manage'))
+        """
+    )
 
 
 def _widen_duty_check(db: Database) -> None:

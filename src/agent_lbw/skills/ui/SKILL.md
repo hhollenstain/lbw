@@ -8,7 +8,7 @@ description: >-
 
 # UI layout
 
-Organization Models, Skills, and Roles, and project Skills and Roles, live
+Organization Models, Skills, and Agent teams, and project Skills and Agent teams, live
 in `web/src/sections/`. Other sections stay in `templates/index.html` until
 they move. After a change under `web/src`, run `make web` before pytest and
 before `review_ui`. Visual style stays the bundled `style` skill. The plan
@@ -38,7 +38,7 @@ styling, update that skill in the same change, then match the CSS to it.
   bottom-right, and `.history-line-stats` owns the bottom-left. A new control
   in either corner overlaps them. Put a new card action in a footer row, or
   reuse the existing rerun button, and keep the card's bottom padding.
-- Rules, Skills, Schedules, Roles, and Models are rail sections beside Proposals,
+- Rules, Skills, Schedules, Agent teams, and Models are rail sections beside Proposals,
   Changes, and Releases. The main pane shows the selected section. A schedule
   runs in the current project. It starts from a base branch, which defaults
   to main, and uses a model turned on for this project. A fix opens a pull
@@ -63,10 +63,14 @@ styling, update that skill in the same change, then match the CSS to it.
   under that repository, with a count and a switch for the whole repository.
   Each skill has a switch. Hovering the name shows its summary, and the info
   control reads the skill. An empty search keeps them collapsed. A search
-  opens the matches. Roles lists the jobs for this project. A switch turns
-  a role on. Builder and QA stay on. An enforced role stays on and its
-  switch cannot turn it off. Hovering the name shows its summary. Models
-  lists the organization models for this project. A switch turns one on.
+  opens the matches. Agent teams lists teams created for this organization
+  and the bundled Plan, Build, and Review tasks. Add a team names what it
+  does and the model that runs it. A switch turns a team or a task on for
+  this project. Builder and QA stay on. An enforced task stays on and its
+  switch cannot turn it off. Hovering the name shows its summary. A proposal
+  pauses at the plan-review group and again before the pull request, and a
+  person with write access continues it.
+  Models lists the organization models for this project. A switch turns one on.
   A model turned on for the organization starts on. An organization admin
   or a repository admin can change it. That choice stays when the
   organization turns the model off and back on. The live
@@ -85,20 +89,24 @@ styling, update that skill in the same change, then match the CSS to it.
   repositories to the organization, a person, or a team, and can sync access
   for people who connected. Organization settings open in the main window and
   switch with tabs for
-  People, Teams, Rules, Skills, Roles, Models, and GitHub. Skills stores
+  People, Teams, Rules, Skills, Agent teams, Models, and GitHub. Skills stores
   repositories for the whole organization. Each repository starts collapsed
   and shows how many skills it loaded. Opening it lists those skills. A
   switch turns the whole repository or one skill on for every project, an
   info control shows that skill, and Remove takes the repository off the
   organization. Resync is on that repository. A project turns an available
-  skill on. Models holds endpoints, models, and agents in tables. An endpoint row shows its
-  name, URL, and how many model names it returned, and can resync. Removing
-  an endpoint asks in a dialog first. A model row shows the endpoint and the
+  skill on. Models holds endpoints and models in tables. An endpoint row shows its
+  name, URL, and how many model names it returned, and can resync. A LiteLLM or
+  other gateway can use an organization key, each person's own key, or this
+  organization's sign-in. Your key checks the key for the signed-in person.
+  Sign in and Your key stay on that row, and on the project model, until this
+  person has one.
+  Removing an endpoint asks in a dialog first. A model row shows the endpoint and the
   model name, with a switch and a remove button. The switch makes that model
-  available on every project until a project turns it off. An
-  agent row shows its name and kind the same way. Plus opens a dialog to add
-  a model or an agent. The proposal screen chooses a model turned on for the
-  project. It does not add a host from that screen.
+  available on every project until a project turns it off. Plus opens a dialog to add
+  an endpoint or a model. The proposal screen chooses a model turned on for the
+  project. OpenAI, Claude, and the other endpoints are that model. It does not add
+  a host from that screen.
   Do not put Rules or Skills back in an overlay.
 - A new dialog uses the existing `.modal-backdrop` and `.modal`, starts
   `hidden`, and closes from its button or a click on the backdrop. A closed
@@ -151,7 +159,7 @@ there is no preview server, add one before claiming the control works.
 ## UI Component Patterns
 
 ### Project sections
-Rules, Skills, Schedules, and Roles sit in the project rail with Proposals, Changes, and Releases.
+Rules, Skills, Schedules, and Agent teams sit in the project rail with Proposals, Changes, and Releases.
 A cloned skill repository is stored in a KiwiFS space named from the organization,
 team, and project ids. Resync pulls the latest commit into that space. Remove
 on a project takes off a repository stored on that project. An organization
@@ -159,8 +167,8 @@ repository stays.
 Selecting one shows that section in the main pane. Those pages list what is
 assigned to the project. A collapsed sidebar keeps each rail item as its
 icon. Settings opens a small menu. Personal and
-Organization then fill the main window. Roles fills the main pane from its
-rail item. A role enforced by the organization stays on and its checkbox
+Organization then fill the main window. Agent teams fills the main pane from its
+rail item. A task enforced by the organization stays on and its checkbox
 cannot turn it off.
 
 ### Modal Dialogs
@@ -175,8 +183,9 @@ Modal dialogs should follow this structure:
 A change in the list is a compact card: the goal on one line, and the
 project with its step under that. Selecting a change opens it. Its steps
 are one track. Selecting a step loads that step under the track. Log,
-Changes, and Screenshots stay as tabs under that step. The log tab is
-labeled Log.
+Changes, Screenshots, and Audit stay as tabs under that step. The log tab
+is labeled Log. Audit lists who did what, newest first, and stays off the
+step track.
 
 Task cards follow specific positioning rules:
 - Bottom-right corner owned by `.pr-link` and `.rerun-btn`

@@ -23,7 +23,8 @@ Call `web_search`, then `fetch_url` on an official page, when you need:
 - How this language or framework should be tested, linted, or previewed
   when `.lbw/config.yaml` has no command for it
 
-Do not search for code that is already in the workspace. Read the repo first.
+Do not search the web for code that is already in the workspace. Call
+`glob_files` and `search_text`, then `read_file`, first.
 
 ## How to look it up
 

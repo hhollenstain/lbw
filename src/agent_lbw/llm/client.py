@@ -76,6 +76,9 @@ class OpenAICompatClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> AssistantTurn:
+        blocked = cursor_chat_block(self.base_url)
+        if blocked:
+            raise ModelRequestError(blocked, status_code=404)
         try:
             return self._complete_with_retry(messages, tools)
         except Exception as exc:
@@ -160,6 +163,311 @@ class OpenAICompatClient:
             tool_choice="auto" if tools else None,
             **kwargs,
         )
+
+
+class ModelRequestError(Exception):
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class AnthropicClient:
+    """Talks to Claude through Anthropic's Messages API."""
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        base_url: str,
+        api_key: str,
+        context_window: int | None = None,
+    ) -> None:
+        self.model = model
+        self.base_url = normalize_model_base_url(base_url).rstrip("/")
+        self.api_key = api_key.strip()
+        self.context_window = context_window if context_window and context_window >= 512 else None
+
+    def complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> AssistantTurn:
+        try:
+            return self._complete_with_retry(messages, tools)
+        except Exception as exc:
+            if not (tools and is_atem_parse_error(exc)):
+                raise
+            log.warning("Claude rejected the tool call; retrying")
+            nudged = [*messages, {"role": "user", "content": ATEM_RETRY_NUDGE}]
+            try:
+                return self._complete_with_retry(nudged, tools)
+            except Exception as retry_exc:
+                if not is_atem_parse_error(retry_exc):
+                    raise
+                log.warning("Claude tool retry still rejected; completing without native tools")
+                return self._complete_with_retry(nudged, [])
+
+    def _complete_with_retry(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> AssistantTurn:
+        for attempt in range(1, _TRANSIENT_ATTEMPTS + 1):
+            try:
+                return self._complete(messages, tools)
+            except Exception as exc:
+                if attempt >= _TRANSIENT_ATTEMPTS or not is_transient_llm_error(exc):
+                    raise
+                log.warning(
+                    "Claude request failed (%s); retrying %s/%s",
+                    exc,
+                    attempt,
+                    _TRANSIENT_ATTEMPTS - 1,
+                )
+                time.sleep(0.5 * attempt)
+        raise RuntimeError("model request failed")
+
+    def _complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> AssistantTurn:
+        system, turns = _anthropic_messages(messages)
+        body: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": 8192,
+            "messages": turns,
+        }
+        if system:
+            body["system"] = system
+        converted = _anthropic_tools(tools)
+        if converted:
+            body["tools"] = converted
+            body["tool_choice"] = {"type": "auto"}
+        response = httpx.post(
+            f"{self.base_url}/messages",
+            headers={
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=body,
+            timeout=600.0,
+        )
+        if response.status_code >= 400:
+            raise ModelRequestError(
+                _anthropic_error(response),
+                status_code=response.status_code,
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ModelRequestError("Claude returned a response that was not JSON") from exc
+        return _anthropic_turn(payload)
+
+
+def cursor_chat_block(base_url: str) -> str:
+    """Cursor lists models. It does not serve chat completions."""
+    try:
+        host = urlparse(normalize_model_base_url(base_url)).netloc.lower()
+    except ValueError:
+        return ""
+    if host != "api.cursor.com":
+        return ""
+    return (
+        "Cursor lists models but does not serve chat completions. "
+        "Run this proposal through a gateway that does, such as LiteLLM."
+    )
+
+
+def client_for(
+    *,
+    model: str,
+    base_url: str,
+    api_key: str,
+    context_window: int | None = None,
+) -> LLMClient:
+    """The client for this host. Claude uses Anthropic's Messages API."""
+    host = ""
+    try:
+        host = urlparse(normalize_model_base_url(base_url)).netloc.lower()
+    except ValueError:
+        host = ""
+    if host == "api.anthropic.com":
+        return AnthropicClient(
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            context_window=context_window,
+        )
+    return OpenAICompatClient(
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        context_window=context_window,
+    )
+
+
+def _anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    system: list[str] = []
+    turns: list[dict[str, Any]] = []
+    for message in messages:
+        role = str(message.get("role") or "")
+        if role == "system":
+            text = _message_text(message.get("content"))
+            if text:
+                system.append(text)
+            continue
+        if role == "tool":
+            _append_blocks(
+                turns,
+                "user",
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": str(message.get("tool_call_id") or ""),
+                        "content": _message_text(message.get("content")),
+                    }
+                ],
+            )
+            continue
+        if role == "assistant":
+            blocks = _assistant_blocks(message)
+            if blocks:
+                _append_blocks(turns, "assistant", blocks)
+            continue
+        text = _message_text(message.get("content"))
+        if text:
+            _append_blocks(turns, "user", [{"type": "text", "text": text}])
+    if turns and turns[0]["role"] != "user":
+        turns.insert(0, {"role": "user", "content": [{"type": "text", "text": "Continue."}]})
+    if not turns:
+        turns.append({"role": "user", "content": [{"type": "text", "text": "Continue."}]})
+    return "\n\n".join(system), turns
+
+
+def _assistant_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    text = _message_text(message.get("content"))
+    if text:
+        blocks.append({"type": "text", "text": text})
+    for call in message.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function") if isinstance(call.get("function"), dict) else {}
+        blocks.append(
+            {
+                "type": "tool_use",
+                "id": str(call.get("id") or ""),
+                "name": str(function.get("name") or ""),
+                "input": _tool_input(function.get("arguments")),
+            }
+        )
+    return blocks
+
+
+def _tool_input(raw: object) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"_raw": raw}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        schema = function.get("parameters")
+        if not isinstance(schema, dict):
+            schema = {"type": "object", "properties": {}}
+        converted.append(
+            {
+                "name": name,
+                "description": str(function.get("description") or ""),
+                "input_schema": schema,
+            }
+        )
+    return converted
+
+
+def _append_blocks(turns: list[dict[str, Any]], role: str, blocks: list[dict[str, Any]]) -> None:
+    if turns and turns[-1]["role"] == role:
+        turns[-1]["content"].extend(blocks)
+        return
+    turns.append({"role": role, "content": list(blocks)})
+
+
+def _message_text(content: object) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
+def _anthropic_error(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+        if payload.get("message"):
+            return str(payload["message"])
+    return f"Claude returned HTTP {response.status_code}"
+
+
+def _anthropic_turn(payload: object) -> AssistantTurn:
+    if not isinstance(payload, dict):
+        raise ModelRequestError("Claude returned a response that was not a message")
+    texts: list[str] = []
+    calls: list[ToolCall] = []
+    for block in payload.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and block.get("text"):
+            texts.append(str(block["text"]))
+        elif block.get("type") == "tool_use":
+            raw = block.get("input")
+            calls.append(
+                ToolCall(
+                    id=str(block.get("id") or ""),
+                    name=str(block.get("name") or ""),
+                    arguments=raw if isinstance(raw, dict) else {},
+                )
+            )
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    prompt = _positive_int(usage.get("input_tokens"))
+    completion = _positive_int(usage.get("output_tokens"))
+    total = prompt + completion if prompt is not None and completion is not None else None
+    return AssistantTurn(
+        text="\n".join(texts) or None,
+        tool_calls=calls,
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+    )
 
 
 class ScriptedClient:

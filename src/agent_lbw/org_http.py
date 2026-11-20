@@ -1,13 +1,19 @@
-"""Organization settings: skill assignments and enforced roles."""
+"""Organization settings: skill assignments and enforced agent-team tasks."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
+from agent_lbw.openapi_models import (
+    AgentTeamUpdate,
+    AgentTeamWrite,
+    EndpointCredential,
+    EndpointWrite,
+)
 from agent_lbw.runtime.account import load_account
 from agent_lbw.runtime.db import database
 from agent_lbw.runtime.roles import roles_catalog
@@ -28,15 +34,17 @@ from agent_lbw.runtime.store.catalog import (
     delete_endpoint,
     delete_model,
     models_for_workspace,
-    save_agent,
+    note_gateway_models,
     save_endpoint,
     save_model,
+    save_own_credential,
     set_agent_enabled,
     set_agent_grant,
     set_model_enabled,
     set_model_grant,
     sync_endpoint,
 )
+from agent_lbw.runtime.store.gateway import complete_gateway_sign_in, start_gateway_sign_in
 from agent_lbw.runtime.store.install import require_account
 from agent_lbw.runtime.store.rules import project_for_workspace
 
@@ -51,13 +59,6 @@ class SkillGrantBody(BaseModel):
 class EnforcedRoleBody(BaseModel):
     role_name: str
     enforced: bool = True
-
-
-class EndpointBody(BaseModel):
-    name: str
-    provider: str
-    base_url: str = ""
-    api_key: str = ""
 
 
 class ModelBody(BaseModel):
@@ -110,6 +111,61 @@ def register_org(app: FastAPI) -> None:
                 scope_id=payload.scope_id,
                 assigned=payload.assigned,
             )
+            return _settings(db, root)
+
+        return _act(request, apply)
+
+    @app.post("/api/org/agent-teams", response_model=None)
+    def add_agent_team(request: Request, payload: AgentTeamWrite) -> object:
+        def apply(db, root: Path) -> dict:
+            from agent_lbw.runtime.store.agent_teams import create_team
+
+            create_team(
+                db,
+                name=payload.name,
+                job=payload.job,
+                instruction=payload.instruction,
+                model_id=payload.model_id,
+                steps=[step.model_dump() for step in payload.steps],
+            )
+            request.state.audit_action = "agent_team.create"
+            request.state.audit_summary = f"Added agent team {payload.name.strip()}"
+            request.state.audit_target_type = "agent_team"
+            return _settings(db, root)
+
+        return _act(request, apply)
+
+    @app.put("/api/org/agent-teams/{team_id}", response_model=None)
+    def change_agent_team(request: Request, team_id: str, payload: AgentTeamUpdate) -> object:
+        def apply(db, root: Path) -> dict:
+            from agent_lbw.runtime.store.agent_teams import update_team
+
+            update_team(
+                db,
+                team_id,
+                name=payload.name,
+                instruction=payload.instruction,
+                model_id=payload.model_id,
+                steps=[step.model_dump() for step in payload.steps] or None,
+            )
+            request.state.audit_action = "agent_team.update"
+            request.state.audit_summary = f"Changed agent team {payload.name.strip()}"
+            request.state.audit_target_type = "agent_team"
+            request.state.audit_target_id = team_id
+            return _settings(db, root)
+
+        return _act(request, apply)
+
+    @app.delete("/api/org/agent-teams/{team_id}", response_model=None)
+    def remove_agent_team(request: Request, team_id: str) -> object:
+        def apply(db, root: Path) -> dict:
+            from agent_lbw.runtime.store.agent_teams import delete_team
+
+            delete_team(db, team_id)
+            request.state.audit_action = "agent_team.delete"
+            request.state.audit_summary = "Removed an agent team"
+            request.state.audit_target_type = "agent_team"
+            request.state.audit_target_id = team_id
             return _settings(db, root)
 
         return _act(request, apply)
@@ -202,7 +258,7 @@ def register_org(app: FastAPI) -> None:
         return _act_kiwi(request, apply)
 
     @app.post("/api/org/endpoints", response_model=None)
-    def add_endpoint(request: Request, payload: EndpointBody) -> object:
+    def add_endpoint(request: Request, payload: EndpointWrite) -> object:
         def apply(db, root: Path) -> dict:
             warning = save_endpoint(
                 db,
@@ -211,6 +267,8 @@ def register_org(app: FastAPI) -> None:
                 provider=payload.provider,
                 base_url=payload.base_url,
                 api_key=payload.api_key,
+                auth=payload.auth,
+                audience=payload.audience,
             )
             body = _settings(db, root)
             if warning:
@@ -218,6 +276,50 @@ def register_org(app: FastAPI) -> None:
             request.state.audit_action = "endpoint.add"
             request.state.audit_summary = f"Added endpoint {payload.name.strip()}"
             request.state.audit_target_type = "endpoint"
+            return body
+
+        return _act(request, apply)
+
+    @app.get("/api/org/endpoints/sso/callback", response_model=None)
+    def finish_endpoint_sso(request: Request, code: str = "", state: str = "") -> object:
+        def apply(db, root: Path) -> RedirectResponse:
+            endpoint_id = complete_gateway_sign_in(
+                db,
+                root,
+                code=code,
+                state=state,
+                redirect_uri=_gateway_callback(request),
+            )
+            warning = note_gateway_models(db, root, endpoint_id)
+            if warning:
+                raise ValueError(warning)
+            return RedirectResponse("/?section=organization", status_code=303)
+
+        return _act(request, apply)
+
+    @app.get("/api/org/endpoints/{endpoint_id}/sso", response_model=None)
+    def begin_endpoint_sso(request: Request, endpoint_id: str) -> object:
+        def apply(db, root: Path) -> RedirectResponse:
+            target = start_gateway_sign_in(
+                db,
+                root,
+                endpoint_id,
+                redirect_uri=_gateway_callback(request),
+            )
+            return RedirectResponse(target, status_code=303)
+
+        return _act(request, apply)
+
+    @app.post("/api/org/endpoints/{endpoint_id}/credential", response_model=None)
+    def add_own_credential(
+        request: Request, endpoint_id: str, payload: EndpointCredential
+    ) -> object:
+        def apply(db, root: Path) -> dict:
+            body = save_own_credential(db, root, endpoint_id, api_key=payload.api_key)
+            request.state.audit_action = "endpoint.credential"
+            request.state.audit_summary = "Checked a personal key for an endpoint"
+            request.state.audit_target_type = "endpoint"
+            request.state.audit_target_id = endpoint_id
             return body
 
         return _act(request, apply)
@@ -316,8 +418,9 @@ def register_org(app: FastAPI) -> None:
     @app.post("/api/org/agents", response_model=None)
     def add_agent(request: Request, payload: AgentBody) -> object:
         def apply(db, root: Path) -> dict:
-            save_agent(db, name=payload.name, kind=payload.kind, model_id=payload.model_id)
-            return _settings(db, root)
+            raise ValueError(
+                "A proposal uses a model from an endpoint. There is no separate agent to add."
+            )
 
         return _act(request, apply)
 
@@ -396,6 +499,7 @@ def _settings(db, root: Path) -> dict:
         "grants": [grant for grant in list_skill_grants(db) if grant["skill_name"] in known_skills],
         "roles": roles,
         "enforced": [name for name in enforced_role_names(db) if name in known_roles],
+        "agent_teams": _agent_teams(db),
         "teams": [
             {"id": row["id"], "name": row["name"]}
             for row in db.fetchall(
@@ -425,6 +529,12 @@ def _settings(db, root: Path) -> dict:
     }
 
 
+def _agent_teams(db) -> list[dict]:
+    from agent_lbw.runtime.store.agent_teams import teams_for_settings
+
+    return teams_for_settings(db)
+
+
 def _bundled_skills(root: Path):
     return [skill for skill in list_skills(root) if skill.origin == "bundled"]
 
@@ -445,6 +555,10 @@ def _skill_repos(db, account: dict) -> list[dict]:
     from agent_lbw.runtime.store.skill_repos import repos_for_settings
 
     return repos_for_settings(db, account)
+
+
+def _gateway_callback(request: Request) -> str:
+    return str(request.base_url).rstrip("/") + "/api/org/endpoints/sso/callback"
 
 
 def _act(request: Request, fn):

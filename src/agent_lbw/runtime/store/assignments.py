@@ -1,8 +1,8 @@
-"""Which skills and roles an organization applies to teams and projects.
+"""Which skills and agent-team tasks an organization applies to projects.
 
 A skill reaches a project only through a grant on the organization, on a team
-that can use the project, or on the project itself. An enforced role is on for
-every project. The text of a skill or role stays in its file.
+that can use the project, or on the project itself. An enforced task is on for
+every project. The text of a skill or task stays in its file.
 """
 
 from __future__ import annotations

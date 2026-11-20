@@ -1,11 +1,10 @@
-"""Organization models and the agents that may build with them.
+"""Organization models a proposal can run.
 
-LBW stays the orchestrator. A model is a bring-your-own endpoint. Turning it on
-makes it available on every project until that project turns it off. That
-project choice stays when the organization turns the model off and back on.
-An agent is a worker LBW can hand the change to. An agent grant is on a
-project, a team, or a person. Rank does not include one. Work an agent builds
-stays open until a person accepts it.
+A model is a bring-your-own endpoint: OpenAI, Claude, Google, a local server,
+or a gateway. Turning it on makes it available on every project until that
+project turns it off. That project choice stays when the organization turns
+the model off and back on. There is no separate agent to add. Rank does not
+include a model.
 """
 
 from __future__ import annotations
@@ -15,10 +14,11 @@ from pathlib import Path
 
 import httpx
 
-from agent_lbw.llm.client import model_ids_from_payload
+from agent_lbw.llm.client import model_ids_from_payload, normalize_model_base_url
 from agent_lbw.runtime.db import Database
 from agent_lbw.runtime.store.assignments import can_manage_org
 from agent_lbw.runtime.store.crypto import open_secret, seal
+from agent_lbw.runtime.store.gateway import gateway_bearer, signed_in
 from agent_lbw.runtime.store.install import require_account
 from agent_lbw.runtime.store.names import clean_name, new_id
 from agent_lbw.runtime.store.projects import can_access
@@ -28,7 +28,7 @@ PROVIDERS = (
     {"id": "openai", "label": "OpenAI", "key": True, "base_url": "https://api.openai.com/v1"},
     {
         "id": "anthropic",
-        "label": "Anthropic",
+        "label": "Claude",
         "key": True,
         "base_url": "https://api.anthropic.com/v1",
     },
@@ -42,6 +42,14 @@ PROVIDERS = (
     {"id": "vllm", "label": "vLLM", "key": False, "base_url": ""},
     {"id": "lmstudio", "label": "LM Studio", "key": False, "base_url": "http://127.0.0.1:1234/v1"},
     {"id": "openai_compatible", "label": "OpenAI-compatible", "key": False, "base_url": ""},
+    {
+        "id": "cursor",
+        "label": "Cursor",
+        "key": True,
+        "base_url": "https://api.cursor.com/v1",
+    },
+    {"id": "litellm", "label": "LiteLLM", "key": False, "base_url": "", "gateway": True},
+    {"id": "gateway", "label": "Gateway", "key": False, "base_url": "", "gateway": True},
 )
 AGENT_KINDS = (
     {"id": "lbw", "label": "LBW", "model": True},
@@ -51,9 +59,12 @@ AGENT_KINDS = (
 )
 _PROVIDER_IDS = {item["id"] for item in PROVIDERS}
 _HOSTED = frozenset({"ollama", "vllm", "lmstudio", "openai_compatible"})
+_GATEWAYS = {item["id"] for item in PROVIDERS if item.get("gateway")}
+_AUTH = frozenset({"key", "sso", "personal"})
 _KIND_IDS = {item["id"] for item in AGENT_KINDS}
 _SCOPES = frozenset({"project", "team", "identity"})
 _KEY_PROVIDERS = {item["id"] for item in PROVIDERS if item["key"]}
+_PERSONAL = _KEY_PROVIDERS | _GATEWAYS
 
 
 def catalog_for_settings(db: Database) -> dict:
@@ -63,7 +74,10 @@ def catalog_for_settings(db: Database) -> dict:
         "providers": [dict(item) for item in PROVIDERS],
         "agent_kinds": [dict(item) for item in AGENT_KINDS],
         "people": _people(db, tenant_id),
-        "endpoints": [_endpoint_view(row) for row in _endpoint_rows(db, tenant_id)],
+        "endpoints": [
+            _endpoint_view(db, account["current_user_id"], row)
+            for row in _endpoint_rows(db, tenant_id)
+        ],
         "models": [_model_view(row) for row in _model_rows(db, tenant_id)],
         "model_grants": _grants(db, tenant_id, "model"),
         "agents": [_agent_view(row) for row in _agent_rows(db, tenant_id)],
@@ -79,6 +93,8 @@ def save_endpoint(
     provider: str,
     base_url: str = "",
     api_key: str = "",
+    auth: str = "key",
+    audience: str = "",
 ) -> str:
     """Save a bring-your-own endpoint and store the model names it returns."""
     account = _require_manager(db)
@@ -86,25 +102,84 @@ def save_endpoint(
     chosen = provider.strip()
     if chosen not in _PROVIDER_IDS:
         raise ValueError("unknown model provider")
+    mode = auth.strip() or "key"
+    if mode not in _AUTH:
+        raise ValueError("unknown sign-in")
+    if mode == "sso" and chosen not in _GATEWAYS:
+        raise ValueError("only a gateway can use SSO")
+    if mode == "personal" and chosen not in _PERSONAL:
+        raise ValueError("this endpoint cannot take a personal key")
     label = clean_name(name, "endpoint")
     if _named(db, "model_endpoints", tenant_id, label) is not None:
         raise ValueError("that name is already used")
     url = _endpoint_url(chosen, base_url)
-    secret = api_key.strip()
-    if chosen in _KEY_PROVIDERS and not secret:
+    own_key = api_key.strip() if mode == "personal" else ""
+    secret = "" if mode in {"sso", "personal"} else api_key.strip()
+    if mode == "key" and (chosen in _KEY_PROVIDERS or chosen in _GATEWAYS) and not secret:
         raise ValueError("paste an API key")
+    names: list[str] | None = None
+    if own_key:
+        names = _fetch_names(chosen, url, own_key)
+    expected = audience.strip() if mode in {"sso", "personal"} and chosen in _GATEWAYS else ""
+    if len(expected) > 200:
+        raise ValueError("audience is too long")
     ciphertext = seal(tenant_dek(db, root, tenant_id), secret) if secret else None
     endpoint_id = new_id("ep")
     db.execute(
         """
         INSERT INTO model_endpoints (
-            id, tenant_id, name, provider, base_url, api_key_ciphertext, models_json
-        ) VALUES (?, ?, ?, ?, ?, ?, '[]')
+            id, tenant_id, name, provider, base_url, api_key_ciphertext, models_json,
+            auth, audience
+        ) VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)
         """,
-        (endpoint_id, tenant_id, label, chosen, url, ciphertext),
+        (endpoint_id, tenant_id, label, chosen, url, ciphertext, mode, expected),
     )
     row = _endpoint_row(db, tenant_id, endpoint_id)
     assert row is not None
+    if own_key:
+        from agent_lbw.runtime.store.gateway import save_personal_key
+
+        save_personal_key(db, root, endpoint_id, api_key=own_key)
+        db.execute(
+            "UPDATE model_endpoints SET models_json = ? WHERE id = ?",
+            (json.dumps(names or []), endpoint_id),
+        )
+        return ""
+    if mode in {"sso", "personal"}:
+        return ""
+    return _refresh_names(db, root, row)
+
+
+def save_own_credential(db: Database, root: Path, endpoint_id: str, *, api_key: str) -> dict:
+    """Check this person's key against the endpoint, then seal it for them alone."""
+    from agent_lbw.runtime.store.gateway import save_personal_key
+
+    account = require_account(db)
+    tenant_id = account["org"]["id"]
+    row = _endpoint_row(db, tenant_id, endpoint_id)
+    if row is None:
+        raise KeyError(endpoint_id)
+    if (row["auth"] or "key") != "personal":
+        raise ValueError("this endpoint uses one organization key")
+    secret = api_key.strip()
+    if not secret:
+        raise ValueError("paste an API key")
+    names = _fetch_names(row["provider"], row["base_url"], secret)
+    save_personal_key(db, root, endpoint_id, api_key=secret)
+    if not _stored_names(row["models_json"]):
+        db.execute(
+            "UPDATE model_endpoints SET models_json = ? WHERE id = ?",
+            (json.dumps(names), endpoint_id),
+        )
+    return catalog_for_settings(db)
+
+
+def note_gateway_models(db: Database, root: Path, endpoint_id: str) -> str:
+    """Store the names a gateway returns for the person who just signed in."""
+    account = require_account(db)
+    row = _endpoint_row(db, account["org"]["id"], endpoint_id)
+    if row is None or (row["auth"] or "key") not in {"sso", "personal"}:
+        raise KeyError(endpoint_id)
     return _refresh_names(db, root, row)
 
 
@@ -125,6 +200,7 @@ def delete_endpoint(db: Database, endpoint_id: str) -> dict:
     used = db.fetchone("SELECT id FROM models WHERE endpoint_id = ?", (endpoint_id,))
     if used is not None:
         raise ValueError("a model still uses this endpoint")
+    db.execute("DELETE FROM endpoint_credentials WHERE endpoint_id = ?", (endpoint_id,))
     db.execute(
         "DELETE FROM model_endpoints WHERE id = ? AND tenant_id = ?",
         (endpoint_id, tenant_id),
@@ -181,6 +257,7 @@ def delete_model(db: Database, model_id: str) -> dict:
         raise ValueError("an agent still uses this model")
     db.execute("DELETE FROM model_grants WHERE model_id = ?", (model_id,))
     db.execute("DELETE FROM model_project_settings WHERE model_id = ?", (model_id,))
+    db.execute("UPDATE agent_teams SET model_id = NULL WHERE model_id = ?", (model_id,))
     db.execute("DELETE FROM models WHERE id = ? AND tenant_id = ?", (model_id, tenant_id))
     return catalog_for_settings(db)
 
@@ -342,7 +419,10 @@ def project_models(db: Database, workspace: Path) -> dict:
         return {"can_manage": False, "models": []}
     return {
         "can_manage": manage,
-        "models": [_project_model(db, project["id"], row) for row in _model_rows(db, tenant_id)],
+        "models": [
+            _project_model(db, project["id"], row, identity_id)
+            for row in _model_rows(db, tenant_id)
+        ],
     }
 
 
@@ -403,7 +483,7 @@ def _checkout_project(db: Database, tenant_id: str, workspace: Path) -> dict | N
     }
 
 
-def _project_model(db: Database, project_id: str, row: dict) -> dict:
+def _project_model(db: Database, project_id: str, row: dict, identity_id: str) -> dict:
     choice = _model_choice(row)
     saved = db.fetchone(
         """
@@ -414,6 +494,11 @@ def _project_model(db: Database, project_id: str, row: dict) -> dict:
     )
     choice["org_enabled"] = bool(row["enabled"])
     choice["enabled"] = saved is None or int(saved["enabled"] or 0) == 1
+    endpoint_id = row["endpoint_id"] or ""
+    choice["endpoint_id"] = endpoint_id
+    choice["auth"] = row["endpoint_auth"] or "key"
+    needs_person = choice["auth"] in {"sso", "personal"}
+    choice["signed_in"] = not needs_person or signed_in(db, endpoint_id, identity_id)
     return choice
 
 
@@ -443,10 +528,7 @@ def use_model(db: Database, root: Path, workspace: Path, model_id: str) -> dict:
     row = next((item for item in _model_rows(db, tenant_id) if item["id"] == model_id), None)
     if row is None:
         raise KeyError(model_id)
-    secret = ""
-    token = row["api_key_ciphertext"]
-    if token:
-        secret = open_secret(tenant_dek(db, root, tenant_id), token)
+    secret = _model_secret(db, root, tenant_id, row)
     return {
         "model_name": row["model_name"],
         "base_url": row["base_url"] or "",
@@ -580,11 +662,33 @@ def _require_scope(db: Database, tenant_id: str, scope_type: str, scope_id: str)
 
 def _endpoint_url(provider: str, value: str) -> str:
     url = value.strip() or _provider_url(provider)
+    if provider in _GATEWAYS:
+        if not url:
+            raise ValueError("a gateway needs a base URL")
+        url = normalize_model_base_url(url)
     if provider in _HOSTED and not url:
         raise ValueError("a self-hosted model needs a base URL")
     if len(url) > 200 or not url.startswith(("http://", "https://")) or " " in url:
         raise ValueError("base URL must be an http or https address")
     return url.rstrip("/")
+
+
+def _endpoint_secret(db: Database, root: Path, row: dict) -> str:
+    if (row.get("auth") or "key") in {"sso", "personal"}:
+        return gateway_bearer(db, root, row["id"])
+    token = row["api_key_ciphertext"]
+    if not token:
+        return ""
+    return open_secret(tenant_dek(db, root, row["tenant_id"]), token)
+
+
+def _model_secret(db: Database, root: Path, tenant_id: str, row: dict) -> str:
+    if (row.get("endpoint_auth") or "key") in {"sso", "personal"}:
+        return gateway_bearer(db, root, row["endpoint_id"])
+    token = row["api_key_ciphertext"]
+    if not token:
+        return ""
+    return open_secret(tenant_dek(db, root, tenant_id), token)
 
 
 def _provider_url(provider: str) -> str:
@@ -595,12 +699,11 @@ def _provider_url(provider: str) -> str:
 
 
 def _refresh_names(db: Database, root: Path, row: dict) -> str:
-    secret = ""
-    token = row["api_key_ciphertext"]
-    if token:
-        secret = open_secret(tenant_dek(db, root, row["tenant_id"]), token)
     try:
+        secret = _endpoint_secret(db, root, row)
         names = _fetch_names(row["provider"], row["base_url"], secret)
+    except PermissionError as exc:
+        return str(exc)
     except ValueError as exc:
         return str(exc)
     db.execute(
@@ -612,6 +715,8 @@ def _refresh_names(db: Database, root: Path, row: dict) -> str:
 
 def _fetch_names(provider: str, base_url: str, api_key: str) -> list[str]:
     url = base_url.rstrip("/") + "/models"
+    if provider == "anthropic":
+        url += "?limit=100"
     headers = {"Accept": "application/json"}
     if provider == "anthropic":
         headers["anthropic-version"] = "2023-06-01"
@@ -641,6 +746,17 @@ def _fetch_names(provider: str, base_url: str, api_key: str) -> list[str]:
 
 
 def _names_from(provider: str, payload: object) -> list[str]:
+    if provider == "cursor" and isinstance(payload, dict):
+        rows = payload.get("items")
+        found: list[str] = []
+        if isinstance(rows, list):
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                raw = str(item.get("id") or "").strip()
+                if raw:
+                    found.append(raw)
+        return _limit_names(found)
     if provider == "google" and isinstance(payload, dict):
         rows = payload.get("models")
         found: list[str] = []
@@ -705,7 +821,7 @@ def _people(db: Database, tenant_id: str) -> list[dict]:
 def _endpoint_rows(db: Database, tenant_id: str) -> list[dict]:
     return db.fetchall(
         """
-        SELECT id, name, provider, base_url, api_key_ciphertext, models_json
+        SELECT id, name, provider, base_url, api_key_ciphertext, models_json, auth
         FROM model_endpoints WHERE tenant_id = ?
         ORDER BY name, id
         """,
@@ -716,14 +832,16 @@ def _endpoint_rows(db: Database, tenant_id: str) -> list[dict]:
 def _endpoint_row(db: Database, tenant_id: str, endpoint_id: str) -> dict | None:
     return db.fetchone(
         """
-        SELECT id, tenant_id, name, provider, base_url, api_key_ciphertext, models_json
+        SELECT id, tenant_id, name, provider, base_url, api_key_ciphertext, models_json,
+               auth, audience
         FROM model_endpoints WHERE id = ? AND tenant_id = ?
         """,
         (endpoint_id, tenant_id),
     )
 
 
-def _endpoint_view(row: dict) -> dict:
+def _endpoint_view(db: Database, identity_id: str, row: dict) -> dict:
+    mode = row["auth"] or "key"
     return {
         "id": row["id"],
         "name": row["name"],
@@ -731,6 +849,8 @@ def _endpoint_view(row: dict) -> dict:
         "base_url": row["base_url"] or "",
         "has_api_key": bool(row["api_key_ciphertext"]),
         "model_names": _stored_names(row["models_json"]),
+        "auth": mode,
+        "signed_in": mode not in {"sso", "personal"} or signed_in(db, row["id"], identity_id),
     }
 
 
@@ -739,7 +859,7 @@ def _model_rows(db: Database, tenant_id: str) -> list[dict]:
         """
         SELECT models.id, models.name, models.provider, models.model_name, models.base_url,
                models.enabled, models.endpoint_id, endpoints.name AS endpoint_name,
-               endpoints.api_key_ciphertext
+               endpoints.api_key_ciphertext, endpoints.auth AS endpoint_auth
         FROM models
         LEFT JOIN model_endpoints AS endpoints ON endpoints.id = models.endpoint_id
         WHERE models.tenant_id = ?

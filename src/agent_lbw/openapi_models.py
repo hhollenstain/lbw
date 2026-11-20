@@ -61,6 +61,19 @@ class RepoRuleWrite(BaseModel):
     workspace: str = ""
 
 
+class EndpointCredential(BaseModel):
+    api_key: str
+
+
+class EndpointWrite(BaseModel):
+    name: str
+    provider: str
+    base_url: str = ""
+    api_key: str = ""
+    auth: str = "key"
+    audience: str = ""
+
+
 class ProjectModel(BaseModel):
     id: str
     name: str
@@ -69,11 +82,46 @@ class ProjectModel(BaseModel):
     org_enabled: bool
     enabled: bool
     endpoint_name: str = ""
+    endpoint_id: str = ""
+    auth: str = "key"
+    signed_in: bool = True
 
 
 class ProjectModelList(BaseModel):
     can_manage: bool
     models: list[ProjectModel] = Field(default_factory=list)
+
+
+class AgentTeamStep(BaseModel):
+    key: str
+    job: str
+    after: list[str] = Field(default_factory=list)
+    paths: list[str] = Field(default_factory=list)
+
+
+class AgentTeamWrite(BaseModel):
+    name: str
+    job: str = ""
+    instruction: str = ""
+    model_id: str = ""
+    steps: list[AgentTeamStep] = Field(default_factory=list)
+
+
+class AgentTeamUpdate(BaseModel):
+    name: str
+    instruction: str
+    model_id: str
+    steps: list[AgentTeamStep] = Field(default_factory=list)
+
+
+class AgentTeamImport(BaseModel):
+    path: str = ""
+
+
+class AgentTeamProjectWrite(BaseModel):
+    team_id: str
+    enabled: bool
+    path: str = ""
 
 
 class ProjectModelWrite(BaseModel):

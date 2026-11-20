@@ -32,7 +32,14 @@ from pydantic import BaseModel
 from agent_lbw.auth_http import register_auth
 from agent_lbw.config import Settings
 from agent_lbw.llm.client import effective_context_window, normalize_model_base_url
-from agent_lbw.openapi_models import AuditList, ProjectModelList, ProjectModelWrite, ScheduleWrite
+from agent_lbw.openapi_models import (
+    AgentTeamImport,
+    AgentTeamProjectWrite,
+    AuditList,
+    ProjectModelList,
+    ProjectModelWrite,
+    ScheduleWrite,
+)
 from agent_lbw.progress import attach_token_usage, clip_text, llm_turn_snippets, public_run_item
 from agent_lbw.runtime.account import (
     add_user,
@@ -47,7 +54,7 @@ from agent_lbw.runtime.project import (
     guidelines_are_custom,
     save_guidelines,
 )
-from agent_lbw.runtime.roles import roles_catalog, save_enabled_roles
+from agent_lbw.runtime.roles import list_roles, roles_catalog, save_enabled_roles
 from agent_lbw.runtime.schedules import (
     ScheduleClock,
     agenda,
@@ -1289,6 +1296,10 @@ def create_app(
         if ui.manager.get(task_id) is None:
             ui.manager.adopt_job(task_id)
         current = ui.manager.get(task_id)
+        if current is not None:
+            blocked = _proposal_writer_block(ui, current.workspace)
+            if blocked:
+                return JSONResponse({"error": blocked}, status_code=403)
         if current is None:
             return JSONResponse({"error": "task not found"}, status_code=404)
         if current.pr_url and lookup_pull_state(current.pr_url, token=_ui_github_token(ui)) in {
@@ -1320,6 +1331,14 @@ def create_app(
                 {"error": "write what should change so the work can continue"},
                 status_code=400,
             )
+        current = ui.manager.get(task_id)
+        if current is None:
+            ui.manager.adopt_job(task_id)
+            current = ui.manager.get(task_id)
+        if current is not None:
+            blocked = _proposal_writer_block(ui, current.workspace)
+            if blocked:
+                return JSONResponse({"error": blocked}, status_code=403)
         try:
             updated = ui.manager.decide(task_id, choice, body.note)
         except ValueError as exc:
@@ -1797,6 +1816,57 @@ def create_app(
         request.state.audit_target_id = payload.model_id
         return ProjectModelList.model_validate(body)
 
+    @app.put("/api/workspaces/agent-teams")
+    def update_workspace_agent_team(request: Request, payload: AgentTeamProjectWrite) -> Any:
+        ui: UiState = request.app.state.ui
+        from agent_lbw.runtime.db import database, database_configured
+        from agent_lbw.runtime.store.agent_teams import set_project_team
+
+        root = Path(ui.store_root)
+        url = ui.manager.settings.database_url
+        if not database_configured(root, url):
+            return JSONResponse({"error": "no organization database"}, status_code=400)
+        workspace = _workspace_root(ui, payload.path)
+        try:
+            with database(root, url) as db:
+                set_project_team(db, workspace, payload.team_id, enabled=payload.enabled)
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except KeyError:
+            return JSONResponse({"error": "unknown team"}, status_code=404)
+        except (OSError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        state = "on" if payload.enabled else "off"
+        request.state.audit_action = "agent_team.project"
+        request.state.audit_summary = f"Turned an agent team {state}"
+        request.state.audit_target_type = "agent_team"
+        request.state.audit_target_id = payload.team_id
+        return _roles_for_workspace(ui, workspace)
+
+    @app.post("/api/workspaces/agent-teams/import-roles")
+    def import_workspace_roles(request: Request, payload: AgentTeamImport) -> Any:
+        """Turn the roles this project runs into agent teams, and turn those teams on."""
+        ui: UiState = request.app.state.ui
+        from agent_lbw.runtime.db import database, database_configured
+        from agent_lbw.runtime.store.agent_teams import import_roles
+
+        root = Path(ui.store_root)
+        url = ui.manager.settings.database_url
+        if not database_configured(root, url):
+            return JSONResponse({"error": "no organization database"}, status_code=400)
+        workspace = _workspace_root(ui, payload.path)
+        try:
+            with database(root, url) as db:
+                import_roles(db, workspace, list_roles(workspace))
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except (OSError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        request.state.audit_action = "agent_team.import"
+        request.state.audit_summary = "Turned this project's roles into agent teams"
+        request.state.audit_target_type = "agent_team"
+        return _roles_for_workspace(ui, workspace)
+
     @app.get("/api/workspaces/roles")
     def list_workspace_roles(request: Request, path: str | None = None) -> Any:
         ui: UiState = request.app.state.ui
@@ -2170,6 +2240,30 @@ def _model_workspace(ui: UiState, path: str | None) -> Path:
         return raw
 
 
+def _proposal_writer_block(ui: UiState, workspace: str) -> str | None:
+    """A paused proposal continues only for a person with write access."""
+    from agent_lbw.runtime.account import load_account
+    from agent_lbw.runtime.db import database, database_configured
+    from agent_lbw.runtime.store.projects import can_access
+    from agent_lbw.runtime.store.recording import project_id_for_checkout
+
+    root = Path(ui.store_root)
+    url = ui.manager.settings.database_url
+    if not database_configured(root, url):
+        return None
+    try:
+        account = load_account(root, database_url=url)
+    except (OSError, ValueError):
+        return None
+    with database(root, url) as db:
+        project_id = project_id_for_checkout(db, account["org"]["id"], Path(workspace))
+        if project_id is None:
+            return None
+        if can_access(db, account["current_user_id"], project_id, need="write"):
+            return None
+    return "a person with write access to this project can continue a proposal"
+
+
 def _roles_for_workspace(ui: UiState, root: Path) -> dict:
     catalog = roles_catalog(root)
     enforced = set(_enforced_roles(ui))
@@ -2187,6 +2281,23 @@ def _roles_for_workspace(ui: UiState, root: Path) -> dict:
             enabled.append(name)
     catalog["enabled"] = enabled
     catalog["enforced"] = sorted(enforced)
+    catalog["agent_teams"] = []
+    catalog["models"] = []
+    catalog["can_manage"] = False
+    catalog["graph"] = []
+    catalog["graph_error"] = ""
+    catalog["uses_roles"] = True
+    from agent_lbw.runtime.db import database, database_configured
+    from agent_lbw.runtime.store.agent_teams import project_view
+
+    store = Path(ui.store_root)
+    url = ui.manager.settings.database_url
+    if database_configured(store, url):
+        try:
+            with database(store, url) as db:
+                catalog.update(project_view(db, root))
+        except (OSError, ValueError):
+            pass
     return catalog
 
 
@@ -2417,7 +2528,10 @@ def _schedule_model(ui: UiState, workspace: Path, model_id: str) -> tuple[str, s
                     return "Choose a model turned on for this project."
                 return _settings_model(ui)
             creds = use_model(db, root, workspace, chosen)
-    except PermissionError:
+    except PermissionError as exc:
+        message = str(exc)
+        if message.startswith("sign in") or message.startswith("add your"):
+            return message[0].upper() + message[1:] + ("" if message.endswith(".") else ".")
         return "That model is off for this project."
     except KeyError:
         return "That model is off for this project."

@@ -15,7 +15,7 @@ Before any tool call, restate the goal in one sentence. This ensures alignment a
 
 ## Name files to change
 
-Identify 1–5 files that will be edited. Prefer `str_replace` on existing files rather than creating new ones. List these files explicitly before any edit.
+Identify 1–5 files that will be edited. Call `glob_files` when you know the name and `search_text` when you know a symbol. Prefer `str_replace` on existing files rather than creating new ones. List these files explicitly before any edit.
 
 ## Follow the plan
 
@@ -40,6 +40,7 @@ and **review** before you stop.
 ## Edit files
 
 - Use `str_replace` for precision. Provide the exact `old_string` from the file.
+- Use `delete_file` when this change removes a file. Do not delete a directory.
 - Do not repeat the same `str_replace` if it fails; adjust the arguments instead.
 - Do not add and remove the same small edit. A comment, blank line, or the same text put back and taken out is not the fix. Change the behavior the goal asks for.
 - Do not add scaffolding, mocks, TODOs, or unused form fields that don't serve this goal.

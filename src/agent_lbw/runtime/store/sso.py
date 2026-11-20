@@ -28,7 +28,7 @@ _SKEW = 60
 _HTTPS = "https://"
 _SAML_REDIRECT = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
 _SAML_POST = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
-_pending: dict[str, tuple[float, str, str, str, str]] = {}
+_pending: dict[str, tuple[float, str, str, str, str, str]] = {}
 
 
 def begin_sso(db: Database, root: Path, *, redirect_uri: str) -> str:
@@ -53,7 +53,9 @@ def finish_sso(
     pending = _pending.pop(state, None)
     if pending is None or pending[0] < time.time():
         raise ValueError("email or password is wrong")
-    _expiry, tenant_id, verifier, nonce, kind = pending
+    _expiry, tenant_id, verifier, nonce, kind = pending[:5]
+    if kind == "access":
+        raise ValueError("email or password is wrong")
     row = _row(db, tenant_id)
     if row is None or row["provider"] == "password":
         raise ValueError("email or password is wrong")
@@ -71,6 +73,143 @@ def finish_sso(
             redirect_uri=redirect_uri,
         )
     return open_session_for_email(db, tenant_id=tenant_id, email=email)
+
+
+def begin_access(
+    db: Database,
+    root: Path,
+    *,
+    redirect_uri: str,
+    audience: str = "",
+    endpoint_id: str = "",
+) -> str:
+    """The organization sign-in page, asking for an access token a gateway can check."""
+    del root
+    tenant_id, row = _provider(db)
+    if str(row["provider"]) == "saml":
+        raise ValueError("a gateway sign-in needs Entra or Auth0")
+    return _begin_oidc(
+        tenant_id,
+        row,
+        redirect_uri,
+        kind="access",
+        audience=audience.strip(),
+        endpoint_id=endpoint_id,
+    )
+
+
+def finish_access(
+    db: Database,
+    root: Path,
+    *,
+    code: str,
+    state: str,
+    redirect_uri: str,
+) -> dict[str, str | int]:
+    """Exchange the code and return the access token. The token is not stored here."""
+    pending = _pending.pop(state, None)
+    if pending is None or pending[0] < time.time():
+        raise ValueError("this sign-in could not be checked")
+    if len(pending) < 7:
+        raise ValueError("this sign-in could not be checked")
+    _expiry, tenant_id, verifier, nonce, kind, audience, endpoint_id = pending
+    if kind != "access":
+        raise ValueError("this sign-in could not be checked")
+    row = _row(db, tenant_id)
+    if row is None or row["provider"] in {"password", "saml"}:
+        raise ValueError("a gateway sign-in needs Entra or Auth0")
+    payload = _exchange_code(
+        root,
+        db,
+        tenant_id,
+        row,
+        code=code,
+        verifier=verifier,
+        redirect_uri=redirect_uri,
+        audience=audience,
+    )
+    identity = str(payload.get("id_token") or "")
+    if not identity:
+        raise ValueError("this sign-in could not be checked")
+    document = _discovery(row)
+    email = _id_token_email(
+        identity,
+        issuer=_document_issuer(document, row),
+        audience=str(row["client_id"]),
+        nonce=nonce,
+        jwks=_get_json(_https(str(document.get("jwks_uri") or ""))),
+    )
+    access = str(payload.get("access_token") or "")
+    if not access:
+        raise ValueError("the provider did not return an access token")
+    refresh = str(payload.get("refresh_token") or "")
+    try:
+        expires_in = int(payload.get("expires_in") or 3600)
+    except (TypeError, ValueError):
+        expires_in = 3600
+    return {
+        "email": email,
+        "access_token": access,
+        "refresh_token": refresh,
+        "expires_in": max(expires_in, 60),
+        "endpoint_id": endpoint_id,
+    }
+
+
+def refresh_access(
+    db: Database,
+    root: Path,
+    *,
+    refresh_token: str,
+    audience: str = "",
+) -> dict[str, str | int]:
+    """Ask the organization provider for a new access token."""
+    tenant_id, row = _provider(db)
+    if str(row["provider"]) == "saml":
+        raise ValueError("a gateway sign-in needs Entra or Auth0")
+    document = _discovery(row)
+    token_url = _https(str(document.get("token_endpoint") or ""))
+    secret = _secret(db, root, tenant_id, row)
+    form = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": row["client_id"],
+        "client_secret": secret,
+    }
+    if audience.strip():
+        form["audience"] = audience.strip()
+    try:
+        response = httpx.post(
+            token_url,
+            data=form,
+            headers={"Accept": "application/json"},
+            timeout=20,
+        )
+    except httpx.HTTPError as exc:
+        raise ValueError("this sign-in could not be checked") from exc
+    finally:
+        del secret
+    if response.status_code >= 400:
+        raise ValueError("sign in to this gateway again")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError("this sign-in could not be checked") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("this sign-in could not be checked")
+    access = str(payload.get("access_token") or "")
+    if not access:
+        raise ValueError("the provider did not return an access token")
+    try:
+        expires_in = int(payload.get("expires_in") or 3600)
+    except (TypeError, ValueError):
+        expires_in = 3600
+    renewed = str(payload.get("refresh_token") or refresh_token)
+    return {
+        "access_token": access,
+        "refresh_token": renewed,
+        "expires_in": max(expires_in, 60),
+    }
 
 
 def _provider(db: Database) -> tuple[str, dict]:
@@ -96,6 +235,54 @@ def _row(db: Database, tenant_id: str) -> dict | None:
     )
 
 
+def _exchange_code(
+    root: Path,
+    db: Database,
+    tenant_id: str,
+    row: dict,
+    *,
+    code: str,
+    verifier: str,
+    redirect_uri: str,
+    audience: str,
+) -> dict:
+    if not code:
+        raise ValueError("this sign-in could not be checked")
+    document = _discovery(row)
+    token_url = _https(str(document.get("token_endpoint") or ""))
+    secret = _secret(db, root, tenant_id, row)
+    form = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": row["client_id"],
+        "client_secret": secret,
+        "code_verifier": verifier,
+    }
+    if audience:
+        form["audience"] = audience
+    try:
+        response = httpx.post(
+            token_url,
+            data=form,
+            headers={"Accept": "application/json"},
+            timeout=20,
+        )
+    except httpx.HTTPError as exc:
+        raise ValueError("this sign-in could not be checked") from exc
+    finally:
+        del secret
+    if response.status_code >= 400:
+        raise ValueError("this sign-in could not be checked")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError("this sign-in could not be checked") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("this sign-in could not be checked")
+    return payload
+
+
 def _secret(db: Database, root: Path, tenant_id: str, row: dict) -> str:
     sealed = str(row["client_secret_ciphertext"] or "")
     if not sealed:
@@ -103,27 +290,44 @@ def _secret(db: Database, root: Path, tenant_id: str, row: dict) -> str:
     return open_secret(tenant_dek(db, root, tenant_id), sealed)
 
 
-def _begin_oidc(tenant_id: str, row: dict, redirect_uri: str) -> str:
+def _begin_oidc(
+    tenant_id: str,
+    row: dict,
+    redirect_uri: str,
+    *,
+    kind: str = "oidc",
+    audience: str = "",
+    endpoint_id: str = "",
+) -> str:
     document = _discovery(row)
     endpoint = _https(str(document.get("authorization_endpoint") or ""))
     state = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(48)
     nonce = secrets.token_urlsafe(24)
-    _pending[state] = (time.time() + _TTL, tenant_id, verifier, nonce, "oidc")
-    _drop_expired()
-    query = urlencode(
-        {
-            "client_id": row["client_id"],
-            "redirect_uri": redirect_uri,
-            "response_type": "code",
-            "scope": "openid email",
-            "state": state,
-            "nonce": nonce,
-            "code_challenge": _pkce(verifier),
-            "code_challenge_method": "S256",
-        }
+    _pending[state] = (
+        time.time() + _TTL,
+        tenant_id,
+        verifier,
+        nonce,
+        kind,
+        audience,
+        endpoint_id,
     )
-    return f"{endpoint}?{query}"
+    _drop_expired()
+    scope = "openid email offline_access" if kind == "access" else "openid email"
+    fields = {
+        "client_id": row["client_id"],
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": scope,
+        "state": state,
+        "nonce": nonce,
+        "code_challenge": _pkce(verifier),
+        "code_challenge_method": "S256",
+    }
+    if audience:
+        fields["audience"] = audience
+    return f"{endpoint}?{urlencode(fields)}"
 
 
 def _oidc_email(
@@ -140,31 +344,18 @@ def _oidc_email(
     if not code:
         raise ValueError("email or password is wrong")
     document = _discovery(row)
-    token_url = _https(str(document.get("token_endpoint") or ""))
     jwks_url = _https(str(document.get("jwks_uri") or ""))
-    secret = _secret(db, root, tenant_id, row)
     try:
-        response = httpx.post(
-            token_url,
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-                "client_id": row["client_id"],
-                "client_secret": secret,
-                "code_verifier": verifier,
-            },
-            headers={"Accept": "application/json"},
-            timeout=20,
+        payload = _exchange_code(
+            root,
+            db,
+            tenant_id,
+            row,
+            code=code,
+            verifier=verifier,
+            redirect_uri=redirect_uri,
+            audience="",
         )
-    except httpx.HTTPError as exc:
-        raise ValueError("this sign-in could not be checked") from exc
-    finally:
-        del secret
-    if response.status_code >= 400:
-        raise ValueError("email or password is wrong")
-    try:
-        payload = response.json()
     except ValueError as exc:
         raise ValueError("email or password is wrong") from exc
     token = str(payload.get("id_token") or "") if isinstance(payload, dict) else ""
@@ -289,7 +480,7 @@ def _jwk(jwks: dict, kid: str):
 def _begin_saml(db: Database, root: Path, tenant_id: str, row: dict, redirect_uri: str) -> str:
     meta = _saml_metadata(str(row["metadata_url"] or row["issuer"]))
     state = secrets.token_urlsafe(24)
-    _pending[state] = (time.time() + _TTL, tenant_id, "", "", "saml")
+    _pending[state] = (time.time() + _TTL, tenant_id, "", "", "saml", "", "")
     _drop_expired()
     request_id = "_" + secrets.token_hex(16)
     issued = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

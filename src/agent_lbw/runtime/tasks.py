@@ -4,6 +4,7 @@ import logging
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
@@ -11,7 +12,9 @@ from uuid import uuid4
 from agent_lbw.config import Settings
 from agent_lbw.llm.client import (
     LLMClient,
-    OpenAICompatClient,
+    ModelRequestError,
+    client_for,
+    cursor_chat_block,
     list_remote_models,
     lookup_context_window,
     normalize_model_base_url,
@@ -121,7 +124,7 @@ def sibling_task_records(manager: TaskManager, task: Task) -> list[dict]:
 
 
 def _default_llm(settings: Settings) -> LLMClient:
-    return OpenAICompatClient(
+    return client_for(
         model=settings.model_name,
         base_url=settings.model_base_url,
         api_key=settings.model_api_key,
@@ -183,6 +186,9 @@ class Task:
     requester_id: str = ""
     requester_name: str = ""
     gates: list[dict] = field(default_factory=list)
+    agent_id: str = ""
+    agent_kind: str = ""
+    cursor_key: str = ""
 
     def to_dict(self, *, include_logs: bool = True) -> dict:
         payload = {
@@ -234,17 +240,23 @@ class Task:
         return payload
 
 
-class _TaskLogHandler(logging.Handler):
-    """Capture `lbw` log lines from the worker thread that owns a task."""
+_LOGGING_TASK: ContextVar[str | None] = ContextVar("lbw_logging_task", default=None)
 
-    def __init__(self, task: Task, thread_id: int) -> None:
+
+class _TaskLogHandler(logging.Handler):
+    """Capture `lbw` log lines from the task that is running in this context.
+
+    The worker thread sets the task id; agent team steps that run side by side
+    copy that context into their threads, so their lines reach the same task.
+    """
+
+    def __init__(self, task: Task) -> None:
         super().__init__(level=logging.INFO)
         self._task = task
-        self._thread_id = thread_id
         self.setFormatter(UtcFormatter("%(asctime)s %(message)s"))
 
     def emit(self, record: logging.LogRecord) -> None:
-        if threading.get_ident() != self._thread_id:
+        if _LOGGING_TASK.get() != self._task.id:
             return
         try:
             self._task.logs.append(self.format(record))
@@ -299,6 +311,9 @@ class TaskManager:
         triage_gate: str = "",
         approval_gate: str = "",
         requester_id: str | None = None,
+        agent_id: str | None = None,
+        agent_kind: str | None = None,
+        cursor_key: str | None = None,
     ) -> Task:
         workspace = workspace.expanduser().resolve()
         if not workspace.is_dir():
@@ -308,6 +323,11 @@ class TaskManager:
             (model_base_url or "").strip() or self.settings.model_base_url
         )
         selected_key = model_api_key if model_api_key is not None else self.settings.model_api_key
+        picked_agent = (agent_id or "").strip()
+        picked_kind = (agent_kind or "").strip()
+        blocked = cursor_chat_block(selected_url)
+        if blocked:
+            raise ValueError(blocked)
         pinned = _pinned_window(context_window, self.settings.context_window)
         if continuous:
             with self._lock:
@@ -345,6 +365,9 @@ class TaskManager:
             triage_gate=picked_triage,
             approval_gate=picked_approval,
             requester_id=(requester_id or "").strip(),
+            agent_id=picked_agent,
+            agent_kind=picked_kind,
+            cursor_key=(cursor_key or "").strip(),
         )
         with self._lock:
             self._tasks[task.id] = task
@@ -445,6 +468,9 @@ class TaskManager:
             gate=old_task.gate,
             triage_gate=old_task.triage_gate,
             approval_gate=old_task.approval_gate,
+            agent_id=old_task.agent_id,
+            agent_kind=old_task.agent_kind,
+            cursor_key=old_task.cursor_key,
         )
 
     def rework(self, task_id: str, note: str) -> Task | None:
@@ -700,6 +726,7 @@ class TaskManager:
             requester_name=str((record.get("started_by") or {}).get("name") or ""),
             gates=[item for item in (record.get("gates") or []) if isinstance(item, dict)],
             review_notes=str(record.get("review_notes") or ""),
+            agent_id=str(record.get("agent_id") or ""),
         )
 
     def _run(self, task: Task) -> None:
@@ -719,7 +746,8 @@ class TaskManager:
                 task.model_api_key,
                 task.model_name,
             )
-        handler = _TaskLogHandler(task, threading.get_ident())
+        logging_task = _LOGGING_TASK.set(task.id)
+        handler = _TaskLogHandler(task)
         lbw_log = logging.getLogger("lbw")
         lbw_log.setLevel(logging.INFO)
         lbw_log.addHandler(handler)
@@ -751,6 +779,12 @@ class TaskManager:
             self._refresh_git_state(task)
             task.finished_at = _utcnow()
             task.status = result.status
+        except ModelRequestError as exc:
+            log.error("task %s failed: %s", task.id, exc)
+            task.error = str(exc)
+            task.reason = str(exc)
+            task.finished_at = _utcnow()
+            task.status = "error"
         except Exception as exc:
             log.exception("task %s crashed", task.id)
             task.error = str(exc)
@@ -762,6 +796,7 @@ class TaskManager:
             lbw_log.removeHandler(handler)
             for exchange_log in exchange_logs:
                 exchange_log.removeHandler(handler)
+            _LOGGING_TASK.reset(logging_task)
             self._sync_stored_task(task)
         self._maybe_continue(task)
 

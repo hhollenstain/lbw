@@ -3,6 +3,7 @@ export type Provider = {
   label: string;
   key: boolean;
   base_url: string;
+  gateway?: boolean;
 };
 
 export type AgentKind = {
@@ -18,6 +19,8 @@ export type Endpoint = {
   base_url: string;
   has_api_key: boolean;
   model_names: string[];
+  auth: "key" | "sso" | "personal";
+  signed_in: boolean;
 };
 
 export type OrgModel = {

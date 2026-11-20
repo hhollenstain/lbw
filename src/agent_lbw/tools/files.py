@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -124,10 +125,51 @@ def file_tools(workspace: Workspace) -> list[ToolSpec]:
             ),
         ),
         ToolSpec(
+            name="delete_file",
+            description=(
+                "Delete one file inside the workspace. Use this when the change "
+                "removes a file. Refuses a directory and a secret file."
+            ),
+            parameters=object_schema(
+                {
+                    "path": {
+                        "type": "string",
+                        "description": "File path inside the workspace.",
+                    }
+                },
+                ["path"],
+            ),
+            handler=lambda path: _delete_file(workspace, path),
+        ),
+        ToolSpec(
+            name="glob_files",
+            description=(
+                "Find files by name. Use a glob such as '*.py', 'test_*.py', or "
+                "'src/**/*.ts' before listing directories one by one. Skips VCS "
+                "and dependency directories."
+            ),
+            parameters=object_schema(
+                {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob matched against the workspace-relative path.",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Directory to search. Use '.' for the workspace root.",
+                    },
+                },
+                ["pattern"],
+            ),
+            handler=lambda pattern, path=".": _glob_files(workspace, pattern, path),
+        ),
+        ToolSpec(
             name="search_text",
             description=(
-                "Search workspace files for a regex or literal string. "
-                "Skips VCS and dependency dirs."
+                "Search workspace files for a regex or literal string. Use this to "
+                "find a symbol, route, or error before reading a whole file. "
+                "Optional path limits the search. Optional context includes that "
+                "many lines around each hit. Skips VCS and dependency dirs."
             ),
             parameters=object_schema(
                 {
@@ -136,10 +178,20 @@ def file_tools(workspace: Workspace) -> list[ToolSpec]:
                         "type": "string",
                         "description": "Optional glob such as '*.py' or 'src/**/*.ts'.",
                     },
+                    "path": {
+                        "type": "string",
+                        "description": "Optional file or directory. Default is the workspace.",
+                    },
+                    "context": {
+                        "type": "integer",
+                        "description": "Lines around each hit. Default 0, max 4.",
+                    },
                 },
                 ["query"],
             ),
-            handler=lambda query, glob=None: _search_text(workspace, query, glob),
+            handler=lambda query, glob=None, path=None, context=0: _search_text(
+                workspace, query, glob, path, context
+            ),
         ),
     ]
 
@@ -304,22 +356,130 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
-def _search_text(workspace: Workspace, query: str, glob: str | None) -> ToolResult:
+def _delete_file(workspace: Workspace, path: str) -> ToolResult:
+    file_path = workspace.resolve(path)
+    if not file_path.exists():
+        return ToolResult(False, f"not found: {path}")
+    if not file_path.is_file():
+        return ToolResult(False, f"not a file: {path}")
+    if is_probably_secret_path(file_path):
+        return ToolResult(False, f"refusing to delete a secret file: {path}")
+    rel = workspace.relative(file_path)
+    if rel == ".lbw/config.yaml" or rel.startswith(".git/"):
+        return ToolResult(False, f"refusing to delete {rel}")
+    try:
+        before = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        before = None
+    except OSError as exc:
+        return ToolResult(False, f"read failed: {exc}")
+    try:
+        file_path.unlink()
+    except OSError as exc:
+        return ToolResult(False, f"delete failed: {exc}")
+    record_file_change(rel, before=before, after="", created=False, deleted=True)
+    return ToolResult(True, f"deleted {rel}")
+
+
+def _glob_files(workspace: Workspace, pattern: str, path: str) -> ToolResult:
+    cleaned = (pattern or "").strip().lstrip("./")
+    if not cleaned:
+        return ToolResult(False, "pattern is required")
+    base = workspace.resolve(path or ".")
+    if not base.exists():
+        return ToolResult(False, f"not found: {path}")
+    if not base.is_dir():
+        return ToolResult(False, f"not a directory: {path}")
+    matches: list[str] = []
+    for file_path in _walk_files(base):
+        rel = workspace.relative(file_path)
+        if not _glob_match(rel, cleaned):
+            continue
+        matches.append(rel)
+    matches.sort()
+    if len(matches) > MAX_LIST_ENTRIES:
+        matches = matches[:MAX_LIST_ENTRIES]
+        matches.append(f"... truncated after {MAX_LIST_ENTRIES} files")
+    return ToolResult(True, "\n".join(matches) if matches else "no matches")
+
+
+def _walk_files(base: Path):
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(name for name in dirnames if name not in SKIP_DIR_NAMES)
+        for name in sorted(filenames):
+            yield Path(dirpath) / name
+
+
+def _glob_match(rel: str, pattern: str) -> bool:
+    if "/" not in pattern and "**" not in pattern:
+        return _name_match(Path(rel).name, pattern)
+    regex = (
+        re.escape(pattern)
+        .replace(r"\*\*/", "(?:.*/)?")
+        .replace(r"\*\*", ".*")
+        .replace(r"\*", "[^/]*")
+        .replace(r"\?", "[^/]")
+    )
+    return re.fullmatch(regex, rel) is not None
+
+
+def _name_match(name: str, pattern: str) -> bool:
+    return (
+        re.fullmatch(re.escape(pattern).replace(r"\*", ".*").replace(r"\?", "."), name) is not None
+    )
+
+
+def _search_text(
+    workspace: Workspace,
+    query: str,
+    glob: str | None,
+    path: str | None = None,
+    context: int = 0,
+) -> ToolResult:
     if not query:
         return ToolResult(False, "query is required")
-
+    root = workspace.root
+    if path:
+        target = workspace.resolve(path)
+        if not target.exists():
+            return ToolResult(False, f"not found: {path}")
+        root = target
+    lines = _clamp_context(context)
     rg = shutil.which("rg")
     if rg:
-        return _search_with_rg(workspace, rg, query, glob)
-    return _search_walk(workspace, query, glob)
+        return _search_with_rg(workspace, rg, query, glob, root, lines)
+    return _search_walk(workspace, query, glob, root, lines)
 
 
-def _search_with_rg(workspace: Workspace, rg: str, query: str, glob: str | None) -> ToolResult:
-    cmd = [rg, "--line-number", "--no-heading", "--color", "never", "--max-count", "5", query]
+def _clamp_context(value: object) -> int:
+    try:
+        number = int(value) if value is not None else 0
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(number, 4))
+
+
+def _search_with_rg(
+    workspace: Workspace,
+    rg: str,
+    query: str,
+    glob: str | None,
+    root: Path,
+    context: int,
+) -> ToolResult:
+    cmd = [rg, "--line-number", "--no-heading", "--color", "never", "--max-count", "5"]
+    if context:
+        cmd.extend(["-C", str(context)])
     if glob:
         cmd.extend(["--glob", glob])
     for name in SKIP_DIR_NAMES:
         cmd.extend(["--glob", f"!{name}"])
+    cmd.append(query)
+    try:
+        shown = root.relative_to(workspace.root).as_posix()
+    except ValueError:
+        shown = str(root)
+    cmd.append("." if shown == "." else shown)
     result = subprocess.run(
         cmd,
         cwd=workspace.root,
@@ -334,26 +494,38 @@ def _search_with_rg(workspace: Workspace, rg: str, query: str, glob: str | None)
     return ToolResult(True, "\n".join(hits) if hits else "no matches")
 
 
-def _search_walk(workspace: Workspace, query: str, glob: str | None) -> ToolResult:
+def _search_walk(
+    workspace: Workspace,
+    query: str,
+    glob: str | None,
+    root: Path,
+    context: int,
+) -> ToolResult:
     hits: list[str] = []
-    for path in workspace.root.rglob(glob or "*"):
+    files = [root] if root.is_file() else _walk_files(root)
+    for path in files:
         if not path.is_file():
             continue
-        if any(part in SKIP_DIR_NAMES for part in path.parts):
+        rel = workspace.relative(path)
+        if glob and not _glob_match(rel, glob.lstrip("./")):
             continue
         try:
-            file_hits = 0
-            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-                if query in line:
-                    rel = workspace.relative(path)
-                    hits.append(f"{rel}:{lineno}:{line.strip()}")
-                    if len(hits) >= MAX_SEARCH_HITS:
-                        return ToolResult(True, "\n".join(hits))
-                    file_hits += 1
-                    if file_hits >= MAX_HITS_PER_FILE:
-                        break
+            lines = path.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError):
             continue
+        file_hits = 0
+        for lineno, line in enumerate(lines, start=1):
+            if query not in line:
+                continue
+            start = max(1, lineno - context)
+            end = min(len(lines), lineno + context)
+            for shown in range(start, end + 1):
+                hits.append(f"{rel}:{shown}:{lines[shown - 1].strip()}")
+                if len(hits) >= MAX_SEARCH_HITS:
+                    return ToolResult(True, "\n".join(hits))
+            file_hits += 1
+            if file_hits >= MAX_HITS_PER_FILE:
+                break
     return ToolResult(True, "\n".join(hits) if hits else "no matches")
 
 

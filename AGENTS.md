@@ -42,7 +42,7 @@ itself is also in `skills/agent-lbw/SKILL.md`.
 - JavaScript in `index.html` uses double quotes and `function` declarations for
   named behavior. Iterate with `for...of`. Sections that have not moved keep
   those rules.
-- Rules, Skills, Schedules, Roles, and Models are rail sections beside Proposals,
+- Rules, Skills, Schedules, Agent teams, and Models are rail sections beside Proposals,
   Changes, and Releases. A schedule runs in the current project from a base
   branch, which defaults to main. A fix opens a pull request. When the tree
   already meets the goal, the run reports that it found nothing. The main
@@ -96,8 +96,10 @@ scheduler call.
   already holds every duty, so do not write a duty row for an owner. A new duty
   is a new value, not a new kind of person.
 - An organization owner or admin can use every project in the tenant. Everyone
-  else needs a `use` or `manage` grant on their team or on themselves. `manage`
-  includes `use`.
+ else needs a `use`, `write`, or `manage` grant on their team or on themselves.
+ `manage` includes `write`. `write` includes `use`. A proposal pauses at a
+ proposal group until a person with write access continues it. GitHub push is
+ `write`. Pull is `use`. Admin and maintain are `manage`.
 - Seal task goals and the GitHub App private key with `runtime/store/crypto.py`
   and the tenant key. The master key stays in `.lbw/master.key`. It does not go
   in the database, a prompt, or a commit. Do not add a second cipher. The
@@ -162,22 +164,41 @@ scheduler call.
   project. Organization settings stores skill repositories for the whole
   organization and resyncs them there. It does not assign a skill to a
   project. A project turns a loaded skill on. A project page shows the skills
-  assigned to it. Roles are chosen on the
-  project. `role_requirements` is the set an organization owner or admin
-  enforces on every project.
-- A model is a bring-your-own endpoint on the organization: OpenAI, Anthropic,
-  Google, Ollama, vLLM, LM Studio, or another OpenAI-compatible server. An
-  agent is a worker LBW can hand a change to: LBW's builder, Claude Code,
-  Codex, or Cursor. LBW remains the orchestrator. The API key is sealed with
-  the tenant key and is not returned. Turning a model or an agent on in
+  assigned to it. An organization can create many agent teams. A team has an
+  instruction and a model, and the model's endpoint is the service it calls.
+  An owner or admin can change all of them later. A team owns one or more
+  steps in `agent_team_steps`. A step plans, builds, or reviews, can wait for
+  other steps with `after`, and a build step can own plan steps by `paths`.
+  Step names are unique in the organization. The graph rules live in
+  `runtime/team_graph.py`: no loops, no wait on a later phase, and one plan
+  step writes the plan. Steps that do not wait on each other run side by side,
+  except steps on the same model and build steps, which take turns. A project
+  turns a team on. In a phase a team covers, the teams replace the ROLE.md
+  roles. A phase no team covers runs the roles, and enforced roles always run.
+  "Turn roles into teams" (`import_roles`) makes a team for each role a project
+  runs. The proposal pauses at a proposal group for a person with write
+  access. `role_requirements` is the set of bundled tasks an organization
+  owner or admin enforces on every project.
+- A model is a bring-your-own endpoint on the organization: OpenAI, Claude,
+  Google, Ollama, vLLM, LM Studio, Cursor, or another OpenAI-compatible server.
+  Claude takes an Anthropic API key and a proposal runs it through the Messages
+  API. Cursor takes an API key from the Cursor dashboard and lists that
+  account's models, such as Grok. Cursor does not serve chat completions, so a
+  proposal runs through a gateway that does. LiteLLM and other gateways speak the OpenAI
+  API. A gateway takes a virtual key, or a sign-in token when it accepts this
+  organization's Entra or Auth0 login. That token is sealed for the person who
+  signed in. It is not the session. An endpoint can instead ask each person
+  to check their own API key, or to sign in. A run uses that person's
+  credential, so the provider can attribute the spend. A
+  proposal runs the model chosen for the project. OpenAI, Claude, and the
+  other endpoints are that model. There is no separate agent to add. The API key is sealed with
+  the tenant key and is not returned. Turning a model on in
   organization settings makes it available on every project. A project turns
   one off from its Models page. That choice is kept when the organization
-  turns the model off and back on. An agent grant, in `agent_grants`, still
-  allows one that is off. Rank does not include a model or an agent. A team
+  turns the model off and back on. Rank does not include a model. A team
   grant applies on a project that team can use.
-  Every agent requires a person to accept the change before the task can
-  succeed. An endpoint stores the model names it returned. Refresh replaces
-  that list. Ids are `ep_`, `model_`, `agent_`, `mgr_`, and `agr_`.
+  An endpoint stores the model names it returned. Refresh replaces
+  that list. Ids are `ep_`, `model_`, and `mgr_`.
 - Extend these checks when adding access. Do not add a second permission table.
 
 ## Git

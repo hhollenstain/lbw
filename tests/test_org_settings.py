@@ -1,4 +1,4 @@
-"""Organization settings assign skills and enforce roles down to a project."""
+"""Organization settings assign skills and enforce agent-team tasks on a project."""
 
 from __future__ import annotations
 
