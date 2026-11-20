@@ -1,9 +1,10 @@
-"""Named jobs for one change: plan, build, and review.
+"""Agent teams for one proposal: plan, build, and review.
 
-A role is a ROLE.md file. Bundled roles ship with lbw. A workspace adds or
-replaces one by writing `.lbw/roles/<name>/ROLE.md` and enabling it. The
-cycle runs every enabled review role besides QA, which is the goal check
-that always runs. Builder and QA stay on; the rest can be switched off.
+A task is a ROLE.md file. Bundled tasks ship with lbw. A workspace adds or
+replaces one by writing `.lbw/roles/<name>/ROLE.md` and turning it on for
+its team. Plan pauses the proposal for a person with write access, then
+Build writes the change, then Review pauses it again. Builder and QA stay
+on; the rest of a team can be switched off.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ DEFAULT_ENABLED = ("architect", "builder", "qa")
 REQUIRED_ROLES = ("builder", "qa")
 ROLE_JOBS = frozenset({"plan", "build", "review"})
 _ORDER = {"architect": 0, "builder": 1, "qa": 2, "security": 3, "quality": 4}
+_TEAMS = {"plan": "Plan", "build": "Build", "review": "Review"}
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n(.*))?\Z", re.DOTALL)
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
@@ -55,11 +57,16 @@ class Role:
     path: str
     enabled: bool = False
 
+    @property
+    def team(self) -> str:
+        return _TEAMS.get(self.job, "Review")
+
     def public_dict(self) -> dict[str, str | bool]:
         return {
             "name": self.name,
             "title": self.title,
             "job": self.job,
+            "team": self.team,
             "description": self.description,
             "summary": skill_summary(self.description or self.body),
             "origin": self.origin,

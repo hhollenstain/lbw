@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from agent_lbw.config import Settings
 from agent_lbw.runtime.db import database
-from agent_lbw.runtime.store.catalog import _fetch_names
+from agent_lbw.runtime.store.catalog import _fetch_names, save_agent
 from agent_lbw.runtime.store.names import new_id
 from agent_lbw.runtime.store.rules import ensure_workspace_project
 from agent_lbw.runtime.store.tasks import save_task_request, touch_task
@@ -58,17 +58,16 @@ def test_a_model_is_sealed_and_an_agent_needs_a_grant_and_a_person(
         'id:"add-org-endpoint"',
         'id:"org-models"',
         'id:"add-org-model"',
-        'id:"org-agents"',
-        'id:"add-org-agent"',
         'id:"open-org-model"',
-        'id:"open-org-agent"',
         'id:"endpoint-remove-dialog"',
         'id:"confirm-endpoint-remove"',
         '"data-model-enable"',
         '"data-project-model"',
-        '"data-agent-remove"',
     ):
         assert token in script
+    assert 'id="agent"' not in page.text
+    assert 'id:"org-agents"' not in script
+    assert 'id:"open-org-agent"' not in script
     assert 'id="org-skill-repo-scope"' not in page.text
 
     client.get("/api/directory")
@@ -111,6 +110,9 @@ def test_a_model_is_sealed_and_an_agent_needs_a_grant_and_a_person(
             "ollama",
             "vllm",
             "lmstudio",
+            "cursor",
+            "litellm",
+            "gateway",
         }
         with database(tmp_path) as db:
             row = db.fetchone("SELECT api_key_ciphertext, models_json FROM model_endpoints")
@@ -143,15 +145,17 @@ def test_a_model_is_sealed_and_an_agent_needs_a_grant_and_a_person(
         assert again.status_code == 200
         assert again.json()["endpoints"][0]["model_names"] == ["gpt-4.1", "gpt-4.1-mini"]
 
-    agent = client.post(
+    refused_agent = client.post(
         "/api/org/agents",
         json={"name": "Builder", "kind": "lbw", "model_id": model["id"]},
     )
-    assert agent.status_code == 200
-    worker = agent.json()["agents"][0]
+    assert refused_agent.status_code == 400
+    assert "model" in refused_agent.json()["error"]
+    with database(tmp_path) as db:
+        stored = save_agent(db, name="Builder", kind="lbw", model_id=model["id"])
+    worker = stored["agents"][0]
     assert worker["id"].startswith("agent_")
     assert worker["human_review"] is True
-    assert any(item["id"] == "claude_code" for item in agent.json()["agent_kinds"])
 
     task_id = _task(tmp_path, project["id"], owner_id, tenant_id)
     refused = client.post(f"/api/tasks/{task_id}/builder", json={"agent_id": worker["id"]})
@@ -421,6 +425,108 @@ def test_an_ollama_endpoint_lists_model_names(monkeypatch: pytest.MonkeyPatch) -
     assert _fetch_names("ollama", "http://127.0.0.1:11434/v1", "") == ["qwen2.5-coder:14b"]
 
 
+def test_a_claude_endpoint_asks_anthropic_for_model_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_get(url, headers, timeout, follow_redirects):
+        assert url == "https://api.anthropic.com/v1/models?limit=100"
+        assert headers["x-api-key"] == "sk-ant-test"
+        assert headers["anthropic-version"] == "2023-06-01"
+        assert "Authorization" not in headers
+        assert timeout == 8.0
+        assert follow_redirects is False
+        return _Names(200, {"data": [{"id": "claude-sonnet-4-5"}, {"id": "claude-opus-4-5"}]})
+
+    monkeypatch.setattr("agent_lbw.runtime.store.catalog.httpx.get", fake_get)
+    assert _fetch_names("anthropic", "https://api.anthropic.com/v1", "sk-ant-test") == [
+        "claude-sonnet-4-5",
+        "claude-opus-4-5",
+    ]
+
+
+def test_a_cursor_endpoint_lists_account_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url, headers, timeout, follow_redirects):
+        assert url == "https://api.cursor.com/v1/models"
+        assert headers["Authorization"] == "Bearer cursor_test"
+        assert timeout == 8.0
+        assert follow_redirects is False
+        return _Names(
+            200,
+            {
+                "items": [
+                    {"id": "grok-4.5", "displayName": "Grok 4.5"},
+                    {"id": "composer-2.5", "displayName": "Composer 2.5"},
+                    {"displayName": "Missing id"},
+                ]
+            },
+        )
+
+    monkeypatch.setattr("agent_lbw.runtime.store.catalog.httpx.get", fake_get)
+    assert _fetch_names("cursor", "https://api.cursor.com/v1", "cursor_test") == [
+        "grok-4.5",
+        "composer-2.5",
+    ]
+
+
+def test_an_existing_model_table_accepts_cursor(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / ".lbw" / "lbw.db"
+    path.parent.mkdir(parents=True)
+    raw = sqlite3.connect(path)
+    raw.execute(
+        """
+        CREATE TABLE model_endpoints (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            provider TEXT NOT NULL CHECK (provider IN (
+                'openai', 'anthropic', 'google', 'ollama', 'vllm', 'lmstudio',
+                'openai_compatible'
+            )),
+            base_url TEXT NOT NULL DEFAULT '',
+            api_key_ciphertext TEXT,
+            models_json TEXT NOT NULL DEFAULT '[]'
+        )
+        """
+    )
+    raw.execute(
+        """
+        INSERT INTO model_endpoints (
+            id, tenant_id, name, provider, base_url, models_json
+        ) VALUES ('ep_old', 'ten_old', 'Desk', 'ollama', 'http://127.0.0.1:11434/v1', '[]')
+        """
+    )
+    raw.commit()
+    raw.close()
+    with database(tmp_path) as db:
+        db.execute(
+            """
+            INSERT INTO tenants (id, kind, name, slug, mode)
+            VALUES ('ten_old', 'personal', 'Ada', 'ada', 'local')
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO model_endpoints (
+                id, tenant_id, name, provider, base_url, models_json
+            ) VALUES (?, ?, ?, ?, ?, '[]')
+            """,
+            ("ep_cursor", "ten_old", "Cursor", "cursor", "https://api.cursor.com/v1"),
+        )
+        db.execute(
+            """
+            INSERT INTO model_endpoints (
+                id, tenant_id, name, provider, base_url, models_json
+            ) VALUES (?, ?, ?, ?, ?, '[]')
+            """,
+            ("ep_litellm", "ten_old", "Proxy", "litellm", "http://127.0.0.1:4000/v1"),
+        )
+        kept = db.fetchone("SELECT provider FROM model_endpoints WHERE id = 'ep_old'")
+    assert kept is not None
+    assert kept["provider"] == "ollama"
+
+
 def test_a_refused_endpoint_does_not_invent_names(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "agent_lbw.runtime.store.catalog.httpx.get",
@@ -452,11 +558,9 @@ def test_turning_a_model_and_agent_on_makes_them_available(
     )
     model = added.json()["models"][0]
     assert model["enabled"] is False
-    agent = client.post(
-        "/api/org/agents",
-        json={"name": "Builder", "kind": "lbw", "model_id": model["id"]},
-    )
-    worker = agent.json()["agents"][0]
+    with database(tmp_path) as db:
+        stored = save_agent(db, name="Builder", kind="lbw", model_id=model["id"])
+    worker = stored["agents"][0]
     task_id = _task(tmp_path, project["id"], account["current_user_id"], account["org"]["id"])
     refused = client.post(f"/api/tasks/{task_id}/builder", json={"agent_id": worker["id"]})
     assert refused.status_code == 403
@@ -523,3 +627,244 @@ def test_a_github_repository_shows_organization_models(settings: Settings, tmp_p
     named = client.get("/api/workspaces/models", params={"path": "acme/widget"})
     assert named.status_code == 200
     assert named.json()["models"][0]["id"] == model["id"]
+
+
+def test_a_litellm_gateway_uses_a_virtual_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url, headers, timeout, follow_redirects):
+        assert url == "http://127.0.0.1:4000/v1/models"
+        assert headers["Authorization"] == "Bearer sk-proxy"
+        assert timeout == 8.0
+        assert follow_redirects is False
+        return _Names(200, {"data": [{"id": "proxy-gpt"}]})
+
+    monkeypatch.setattr("agent_lbw.runtime.store.catalog.httpx.get", fake_get)
+    assert _fetch_names("litellm", "http://127.0.0.1:4000/v1", "sk-proxy") == ["proxy-gpt"]
+
+
+def test_a_gateway_keeps_sso_until_the_person_signs_in(settings: Settings, tmp_path: Path) -> None:
+    from agent_lbw.runtime.store.catalog import use_model
+    from agent_lbw.runtime.store.gateway import gateway_bearer, remember_gateway_login
+
+    client = TestClient(create_app(TaskManager(settings), default_workspace=tmp_path))
+    client.get("/api/directory")
+    client.post("/api/directory/promote")
+    account = client.get("/api/account").json()
+    with database(tmp_path) as db:
+        ensure_workspace_project(db, account["org"]["id"], tmp_path)
+
+    def fail_get(*_args, **_kwargs):
+        raise AssertionError("a gateway SSO save does not call the gateway")
+
+    with patch("agent_lbw.runtime.store.catalog.httpx.get", fail_get):
+        waiting = client.post(
+            "/api/org/endpoints",
+            json={
+                "name": "Proxy",
+                "provider": "litellm",
+                "base_url": "http://127.0.0.1:4000",
+                "auth": "sso",
+                "audience": "litellm-proxy",
+            },
+        )
+    assert waiting.status_code == 200
+    endpoint = waiting.json()["endpoints"][0]
+    assert endpoint["auth"] == "sso"
+    assert endpoint["signed_in"] is False
+    assert endpoint["has_api_key"] is False
+    assert endpoint["base_url"] == "http://127.0.0.1:4000/v1"
+    assert "litellm-proxy" not in waiting.text
+    hosted = client.post(
+        "/api/org/endpoints",
+        json={"name": "Open", "provider": "openai", "api_key": "sk-test", "auth": "sso"},
+    )
+    assert hosted.status_code == 400
+    assert hosted.json()["error"] == "only a gateway can use SSO"
+    missing = client.post(
+        "/api/org/endpoints",
+        json={"name": "Bare", "provider": "gateway", "base_url": ""},
+    )
+    assert missing.status_code == 400
+    assert missing.json()["error"] == "a gateway needs a base URL"
+    password = client.get(
+        f"/api/org/endpoints/{endpoint['id']}/sso",
+        follow_redirects=False,
+    )
+    assert password.status_code == 400
+    assert password.json()["error"] == "this organization uses a password"
+    with database(tmp_path) as db:
+        db.execute(
+            """
+            INSERT INTO sign_in (
+                tenant_id, provider, issuer, metadata_url, client_id, client_secret_ciphertext
+            ) VALUES (?, 'saml', '', '', '', '')
+            ON CONFLICT (tenant_id) DO UPDATE SET provider = 'saml'
+            """,
+            (account["org"]["id"],),
+        )
+    saml = client.get(f"/api/org/endpoints/{endpoint['id']}/sso", follow_redirects=False)
+    assert saml.status_code == 400
+    assert saml.json()["error"] == "a gateway sign-in needs Entra or Auth0"
+
+    with patch("agent_lbw.runtime.store.catalog._fetch_names", return_value=["proxy-gpt"]):
+        keyed = client.post(
+            "/api/org/endpoints",
+            json={
+                "name": "Keyed",
+                "provider": "gateway",
+                "base_url": "http://127.0.0.1:4000/v1",
+                "api_key": "sk-proxy",
+            },
+        )
+    assert keyed.status_code == 200
+    keyed_endpoint = next(item for item in keyed.json()["endpoints"] if item["name"] == "Keyed")
+    assert keyed_endpoint["model_names"] == ["proxy-gpt"]
+    assert keyed_endpoint["auth"] == "key"
+    added = client.post(
+        "/api/org/models",
+        json={"endpoint_id": keyed_endpoint["id"], "model_name": "proxy-gpt", "name": "Proxy"},
+    )
+    model = added.json()["models"][0]
+    assert (
+        client.put(f"/api/org/models/{model['id']}/enabled", json={"enabled": True}).status_code
+        == 200
+    )
+    with database(tmp_path) as db:
+        db.execute(
+            """
+            UPDATE model_endpoints
+            SET auth = 'sso', api_key_ciphertext = NULL
+            WHERE id = ?
+            """,
+            (keyed_endpoint["id"],),
+        )
+        remember_gateway_login(
+            db,
+            tmp_path,
+            keyed_endpoint["id"],
+            access_token="person-token",
+            refresh_token="refresh-token",
+            expires_in=30,
+        )
+        renewed = {
+            "access_token": "person-token-2",
+            "refresh_token": "refresh-token-2",
+            "expires_in": 3600,
+        }
+        with patch("agent_lbw.runtime.store.gateway.refresh_access", return_value=renewed):
+            assert gateway_bearer(db, tmp_path, keyed_endpoint["id"]) == "person-token-2"
+        used = use_model(db, tmp_path, tmp_path, model["id"])
+    assert used["api_key"] == "person-token-2"
+    shown = client.get("/api/org/settings")
+    assert shown.status_code == 200
+    assert "person-token" not in shown.text
+    listed = next(item for item in shown.json()["endpoints"] if item["id"] == keyed_endpoint["id"])
+    assert listed["signed_in"] is True
+    assert listed["auth"] == "sso"
+
+
+def test_each_person_checks_their_own_key_and_a_run_uses_it(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_lbw.runtime.store.catalog import use_model
+
+    def fake_get(url, headers, timeout, follow_redirects):
+        assert url == "http://127.0.0.1:4000/v1/models"
+        assert timeout == 8.0
+        assert follow_redirects is False
+        if headers.get("Authorization") == "Bearer sk-bad":
+            return _Names(401, {})
+        return _Names(200, {"data": [{"id": "proxy-gpt"}]})
+
+    monkeypatch.setattr("agent_lbw.runtime.store.catalog.httpx.get", fake_get)
+    client = TestClient(create_app(TaskManager(settings), default_workspace=tmp_path))
+    client.get("/api/directory")
+    client.post("/api/directory/promote")
+    account = client.get("/api/account").json()
+    with database(tmp_path) as db:
+        project = ensure_workspace_project(db, account["org"]["id"], tmp_path)
+    saved = client.post(
+        "/api/org/endpoints",
+        json={
+            "name": "Proxy",
+            "provider": "litellm",
+            "base_url": "http://127.0.0.1:4000",
+            "auth": "personal",
+        },
+    )
+    assert saved.status_code == 200
+    endpoint = next(item for item in saved.json()["endpoints"] if item["name"] == "Proxy")
+    assert endpoint["auth"] == "personal"
+    assert endpoint["signed_in"] is False
+    assert endpoint["has_api_key"] is False
+    refused = client.post(
+        f"/api/org/endpoints/{endpoint['id']}/credential",
+        json={"api_key": "sk-bad"},
+    )
+    assert refused.status_code == 400
+    assert refused.json()["error"] == "that endpoint refused the credentials"
+    checked = client.post(
+        f"/api/org/endpoints/{endpoint['id']}/credential",
+        json={"api_key": "sk-ada"},
+    )
+    assert checked.status_code == 200
+    assert "sk-ada" not in checked.text
+    mine = next(item for item in checked.json()["endpoints"] if item["id"] == endpoint["id"])
+    assert mine["signed_in"] is True
+    assert mine["model_names"] == ["proxy-gpt"]
+    assert mine["has_api_key"] is False
+    added = client.post(
+        "/api/org/models",
+        json={"endpoint_id": endpoint["id"], "model_name": "proxy-gpt", "name": "Proxy"},
+    )
+    model = added.json()["models"][0]
+    assert (
+        client.put(f"/api/org/models/{model['id']}/enabled", json={"enabled": True}).status_code
+        == 200
+    )
+    grace = client.post("/api/account/users", json={"name": "Grace"}).json()
+    grace_id = next(user["id"] for user in grace["users"] if user["name"] == "Grace")
+    client.post(
+        f"/api/directory/projects/{project['id']}/grants",
+        json={"subject_type": "identity", "subject_id": grace_id, "access": "use"},
+    )
+    _become(tmp_path, grace_id)
+    with database(tmp_path) as db:
+        with pytest.raises(PermissionError, match="add your API key"):
+            use_model(db, tmp_path, tmp_path, model["id"])
+    waiting = client.get("/api/workspaces/models", params={"path": str(tmp_path)})
+    assert waiting.json()["models"][0]["signed_in"] is False
+    hers = client.post(
+        f"/api/org/endpoints/{endpoint['id']}/credential",
+        json={"api_key": "sk-grace"},
+    )
+    assert hers.status_code == 200
+    assert "sk-grace" not in hers.text
+    ready = client.get("/api/workspaces/models", params={"path": str(tmp_path)})
+    assert ready.json()["models"][0]["signed_in"] is True
+    with database(tmp_path) as db:
+        assert use_model(db, tmp_path, tmp_path, model["id"])["api_key"] == "sk-grace"
+        row = db.fetchone(
+            "SELECT api_key_ciphertext FROM model_endpoints WHERE id = ?",
+            (endpoint["id"],),
+        )
+    assert row is not None
+    assert row["api_key_ciphertext"] is None
+    _become(tmp_path, account["current_user_id"])
+    with database(tmp_path) as db:
+        assert use_model(db, tmp_path, tmp_path, model["id"])["api_key"] == "sk-ada"
+    shared = client.post(
+        "/api/org/endpoints",
+        json={
+            "name": "Shared",
+            "provider": "litellm",
+            "base_url": "http://127.0.0.1:4000/v1",
+            "api_key": "sk-org",
+        },
+    )
+    shared_id = next(item["id"] for item in shared.json()["endpoints"] if item["name"] == "Shared")
+    blocked = client.post(
+        f"/api/org/endpoints/{shared_id}/credential",
+        json={"api_key": "sk-ada"},
+    )
+    assert blocked.status_code == 400
+    assert blocked.json()["error"] == "this endpoint uses one organization key"

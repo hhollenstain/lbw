@@ -67,6 +67,7 @@ def record_task(root: Path, database_url: str, task) -> None:
             branch=task.branch,
             pr_url=task.pr_url,
             run_ref=f".lbw/runs/{task.id}",
+            agent_id=str(getattr(task, "agent_id", "") or "") or None,
         )
         from agent_lbw.runtime.store.audit import record_audit
 
@@ -248,7 +249,7 @@ def _steps(events: list) -> list[dict]:
 def _final_diff(task) -> str:
     root = Path(str(getattr(task, "workspace", "") or ""))
     if not root.is_dir() or not (root / ".git").exists():
-        return ""
+        return _cap_diff(_event_diff(task))
     from agent_lbw.sandbox import Workspace
     from agent_lbw.tools.git import is_runtime_artifact, run_git
 
@@ -276,6 +277,24 @@ def _final_diff(task) -> str:
                 body = body[:_FILE_CAP] + "\n... truncated"
             chunks.append(_untracked_diff(path, body))
     text = "\n".join(chunks)
+    if not text.strip():
+        text = _event_diff(task)
+    return _cap_diff(text)
+
+
+def _event_diff(task) -> str:
+    """File changes an outside agent already reported, when the checkout has none."""
+    parts: list[str] = []
+    for event in getattr(task, "events", None) or []:
+        if not isinstance(event, dict) or event.get("kind") != "file":
+            continue
+        chunk = str(event.get("net_diff") or event.get("diff") or "").strip()
+        if chunk:
+            parts.append(chunk)
+    return "\n".join(parts)
+
+
+def _cap_diff(text: str) -> str:
     if len(text) > _DIFF_CAP:
         return text[:_DIFF_CAP] + "\n... truncated"
     return text
@@ -419,7 +438,8 @@ def _open_rows(root: Path, database_url: str) -> list[dict]:
                 """
                 SELECT tasks.id, tasks.status, tasks.branch, tasks.pr_url,
                        tasks.goal_ciphertext, tasks.result_ciphertext, tasks.created,
-                       tasks.tenant_id, tasks.requester_id, projects.locator
+                       tasks.tenant_id, tasks.requester_id, tasks.agent_id,
+                       projects.locator
                 FROM tasks
                 JOIN projects ON projects.id = tasks.project_id
                 WHERE tasks.tenant_id = ?
@@ -445,7 +465,8 @@ def _task_row(root: Path, database_url: str, task_id: str) -> dict | None:
                 """
                 SELECT tasks.id, tasks.status, tasks.branch, tasks.pr_url,
                        tasks.goal_ciphertext, tasks.result_ciphertext, tasks.created,
-                       tasks.tenant_id, tasks.requester_id, projects.locator
+                       tasks.tenant_id, tasks.requester_id, tasks.agent_id,
+                       projects.locator
                 FROM tasks
                 JOIN projects ON projects.id = tasks.project_id
                 WHERE tasks.tenant_id = ? AND tasks.id = ?
@@ -518,6 +539,7 @@ def _open_record(root: Path, database_url: str, row: dict) -> dict | None:
         "model_name": str(result.get("model_name") or ""),
         "model_base_url": str(result.get("model_base_url") or ""),
         "review_notes": str(result.get("review_notes") or ""),
+        "agent_id": str(row.get("agent_id") or ""),
         **_people(root, database_url, row),
     }
 

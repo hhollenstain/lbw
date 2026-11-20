@@ -164,3 +164,62 @@ def test_search_finds_literal(tmp_path: Path) -> None:
     result = _tool(workspace, "search_text").handler(query="lbw")
     assert result.ok
     assert "note.txt" in result.output
+
+
+def test_glob_files_finds_a_name_and_skips_dependencies(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+    nested = tmp_path / "node_modules" / "leftpad"
+    nested.mkdir(parents=True)
+    (nested / "index.js").write_text("module.exports = 1\n", encoding="utf-8")
+    found = _tool(workspace, "glob_files").handler(pattern="*.py")
+    assert found.ok
+    assert "src/app.py" in found.output
+    assert "node_modules" not in found.output
+    scoped = _tool(workspace, "glob_files").handler(pattern="src/**/*.py")
+    assert scoped.ok
+    assert "src/app.py" in scoped.output
+
+
+def test_search_can_stay_in_one_directory_and_show_context(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("before\nlbw_token\nafter\n", encoding="utf-8")
+    (tmp_path / "other.py").write_text("lbw_token\n", encoding="utf-8")
+    scoped = _tool(workspace, "search_text").handler(query="lbw_token", path="src")
+    assert scoped.ok
+    assert "src/app.py" in scoped.output
+    assert "other.py" not in scoped.output
+    around = _tool(workspace, "search_text").handler(
+        query="lbw_token", path="src/app.py", context=1
+    )
+    assert around.ok
+    assert "before" in around.output
+    assert "after" in around.output
+
+
+def test_delete_file_removes_one_file_and_refuses_a_directory(tmp_path: Path) -> None:
+    from agent_lbw.progress import bind_progress, current_events, reset_progress
+
+    workspace = Workspace(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "old.py").write_text("gone = True\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    token = bind_progress()
+    try:
+        removed = _tool(workspace, "delete_file").handler(path="src/old.py")
+        events = current_events()
+    finally:
+        reset_progress(token)
+    assert removed.ok
+    assert not (tmp_path / "src" / "old.py").exists()
+    assert events[-1]["action"] == "deleted"
+    assert events[-1]["path"] == "src/old.py"
+    assert "-gone = True" in events[-1]["diff"]
+    directory = _tool(workspace, "delete_file").handler(path="src")
+    assert not directory.ok
+    assert "not a file" in directory.output
+    secret = _tool(workspace, "delete_file").handler(path=".env")
+    assert not secret.ok
+    assert (tmp_path / ".env").is_file()

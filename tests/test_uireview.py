@@ -614,6 +614,7 @@ def test_lbw_review_clicks_include_main_and_task_tabs(tmp_path: Path) -> None:
     assert '[data-status-filter="failed"]' in clicks
     assert '[data-status-filter=""]' in clicks
     assert '[data-task-pane="screenshots"]' in clicks
+    assert '[data-task-pane="audit"]' in clicks
     assert '[data-task-pane="progress"]' in clicks
     assert clicks.index('[data-status-filter="failed"]') < clicks.index("#run-list button.task")
     assert clicks.index("#run-list button.task") < clicks.index('[data-task-pane="changes"]')

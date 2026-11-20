@@ -2671,14 +2671,14 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="8" width="14" height="11" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7 8V6.4A1.9 1.9 0 0 1 8.9 4.5h11.1A1.9 1.9 0 0 1 21.9 6.4V16" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
           <span>Skills</span>
         </button>
-        <button type="button" class="rail-item" data-rail="roles" aria-pressed="false" title="Roles">
+        <button type="button" class="rail-item" data-rail="roles" aria-pressed="false" title="Agent teams">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="8" cy="8" r="2.6" fill="none" stroke="currentColor" stroke-width="1.8"/>
             <circle cx="16" cy="9" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/>
             <path d="M3.4 19.2c.5-2.5 2.3-3.7 4.6-3.7s4.1 1.2 4.6 3.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
             <path d="M13.2 19.2c.35-1.7 1.5-2.7 3-2.7 1.4 0 2.5.9 3 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
           </svg>
-          <span>Roles</span>
+          <span>Agent teams</span>
         </button>
         <button type="button" class="rail-item" data-rail="models" aria-pressed="false" title="Models">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -2753,7 +2753,7 @@
 
       <label for="goal">Goal</label>
       <textarea id="goal" name="goal" placeholder="Leave blank to use .lbw/goals.md, failing tests, or keep improving">{{ default_goal }}</textarea>
-      <p class="hint">By default you review the plan before any code, then review again before the pull request. Uncheck a gate to skip that step, or bypass all gates. Waiting reviews from every project are under Changes. Keep improving passes the gates itself.</p>
+      <p class="hint">By default the proposal pauses at the plan-review group before any code, then again before the pull request. A person with write access to this repository continues it. Uncheck a gate to skip that step, or bypass all gates. Waiting reviews from every project are under Changes. Keep improving passes the gates itself.</p>
       <p class="hint" id="enabled-skills-hint"></p>
 
       <label for="base-branch">Base branch</label>
@@ -2768,7 +2768,7 @@
         <select id="model" name="model_id" aria-label="Model">
           <option value="">No models turned on</option>
         </select>
-        <p class="hint" id="model-hint">Add a host and its models in organization settings. This list shows the models turned on for this project.</p>
+        <p class="hint" id="model-hint">Add an OpenAI, Claude, or other endpoint in organization settings. This list shows the models turned on for this project.</p>
         <label for="context-window">Context window</label>
         <input id="context-window" name="context_window" type="number" min="512" max="1048576" step="1" inputmode="numeric" placeholder="server default" value="{{ default_context_window }}">
         <p class="hint">Tokens this model can hold on this machine. Leave blank to use the server window, or LBW_CONTEXT_WINDOW when that is set.</p>
@@ -2886,10 +2886,10 @@
       <div class="center-view" id="roles-view" data-section="roles" hidden>
         <div class="section-page">
           <p class="ask-kicker">Project</p>
-          <h1 class="ask-heading">Roles</h1>
-          <p class="hint">Each role has one job. A switch turns it on for this project. Builder and QA stay on. Hover a name for its summary. An organization admin can enforce a role on every project.</p>
+          <h1 class="ask-heading">Agent teams</h1>
+          <p class="hint">Create a team for one part of a proposal and choose the model that runs it. A switch turns that team on for this project. Builder and QA stay on. The proposal pauses at each proposal group for a person with write access to this repository.</p>
           <div class="settings-skills-list" id="workspace-roles"></div>
-          <p class="hint" id="roles-status">Loading roles…</p>
+          <p class="hint" id="roles-status">Loading agent teams…</p>
         </div>
       </div>
       <div class="center-view" id="models-view" data-section="models" hidden>
@@ -2957,13 +2957,13 @@
         <div class="section-page" id="organization-settings">
           <p class="ask-kicker">Account</p>
           <h1 class="ask-heading">Organization</h1>
-          <p class="hint">The hierarchy is organization, then teams, then projects. A project shows an organization or team rule, and an organization skill, only when it is assigned there. Roles are chosen on the project. An organization admin can enforce a role on every project.</p>
+          <p class="hint">The hierarchy is organization, then teams, then projects. A project shows an organization or team rule, and an organization skill, only when it is assigned there. Agent teams are chosen on the project. An organization admin can enforce a task on every project.</p>
           <div class="org-tabs" role="tablist" aria-label="Organization settings">
             <button type="button" class="secondary org-tab" id="org-tab-people" data-org-tab="people" aria-pressed="true">People</button>
             <button type="button" class="secondary org-tab" id="org-tab-teams" data-org-tab="teams" aria-pressed="false">Teams</button>
             <button type="button" class="secondary org-tab" id="org-tab-rules" data-org-tab="rules" aria-pressed="false">Rules</button>
             <button type="button" class="secondary org-tab" id="org-tab-skills" data-org-tab="skills" aria-pressed="false">Skills</button>
-            <button type="button" class="secondary org-tab" id="org-tab-roles" data-org-tab="roles" aria-pressed="false">Roles</button>
+            <button type="button" class="secondary org-tab" id="org-tab-roles" data-org-tab="roles" aria-pressed="false">Agent teams</button>
             <button type="button" class="secondary org-tab" id="org-tab-models" data-org-tab="models" aria-pressed="false">Models</button>
             <button type="button" class="secondary org-tab" id="org-tab-github" data-org-tab="github" aria-pressed="false">GitHub</button>
           </div>
@@ -3021,8 +3021,8 @@
             <div class="notice-slot" id="org-skills-error"></div>
           </div>
           <div class="org-panel" id="org-panel-roles" data-org-panel="roles" hidden>
-            <h2 class="rule-heading">Enforced roles</h2>
-            <p class="hint">A switch keeps that role on for every project. A project can still turn the others on.</p>
+            <h2 class="rule-heading">Agent teams</h2>
+            <p class="hint">Add a team for a part of a proposal and choose its model. The switches below keep a bundled task on for every project. A proposal pauses at each proposal group for a person with write access.</p>
             <div id="org-roles" class="settings-skills-list"></div>
           </div>
           <div class="org-panel" id="org-panel-models" data-org-panel="models" hidden>
@@ -5596,7 +5596,7 @@
       const path = workspaceEl.value;
       const res = await fetch(`/api/workspaces/roles?path=${encodeURIComponent(path)}`);
       const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "failed to load roles");
+      if (!res.ok) throw new Error(body.error || "failed to load agent teams");
       window.__lbwProjectRoles = body;
       document.dispatchEvent(new CustomEvent("lbw-project-roles", { detail: body }));
     }
@@ -6965,7 +6965,7 @@
     }
 
     function taskPaneFromTab(name) {
-      if (name === "changes" || name === "screenshots") return name;
+      if (name === "changes" || name === "screenshots" || name === "audit") return name;
       return "progress";
     }
 
@@ -7004,7 +7004,7 @@
       </ul>`;
     }
 
-    function renderTaskPanes(logHtml, changesHtml, fileCount, screenshotHtml, lineStats, screenshotCount) {
+    function renderTaskPanes(logHtml, changesHtml, fileCount, screenshotHtml, lineStats, screenshotCount, auditHtml, auditCount) {
       const pane = taskPaneFromTab(state.taskPane);
       const count = fileCount ? `<span class="task-pane-count">(${fileCount})</span>` : "";
       const lines = lineStats && (lineStats.added || lineStats.removed)
@@ -7013,15 +7013,20 @@
       const shots = screenshotCount
         ? `<span class="task-pane-count">(${screenshotCount})</span>`
         : "";
+      const audits = auditCount
+        ? `<span class="task-pane-count">(${auditCount})</span>`
+        : "";
       return `
         <div class="task-pane-tabs" role="tablist" aria-label="Task views">
           <button type="button" class="task-pane-tab" role="tab" data-task-pane="progress" aria-selected="${pane === "progress" ? "true" : "false"}">Log</button>
           <button type="button" class="task-pane-tab" role="tab" data-task-pane="changes" aria-selected="${pane === "changes" ? "true" : "false"}">Changes${count ? " " + count : ""}${lines ? " " + lines : ""}</button>
           <button type="button" class="task-pane-tab" role="tab" data-task-pane="screenshots" aria-selected="${pane === "screenshots" ? "true" : "false"}">Screenshots${shots ? " " + shots : ""}</button>
+          <button type="button" class="task-pane-tab" role="tab" data-task-pane="audit" aria-selected="${pane === "audit" ? "true" : "false"}">Audit${audits ? " " + audits : ""}</button>
         </div>
         <div class="task-pane" role="tabpanel" data-pane="progress"${pane === "progress" ? "" : " hidden"}>${logHtml}</div>
         <div class="task-pane" role="tabpanel" data-pane="changes"${pane === "changes" ? "" : " hidden"}>${changesHtml}</div>
         <div class="task-pane" role="tabpanel" data-pane="screenshots"${pane === "screenshots" ? "" : " hidden"}>${screenshotHtml}</div>
+        <div class="task-pane" role="tabpanel" data-pane="audit"${pane === "audit" ? "" : " hidden"}>${auditHtml}</div>
       `;
     }
 
@@ -7535,7 +7540,7 @@
 
       let triageBody = `<p class="step-copy">Waiting for a plan to review.</p>`;
       if (waiting && stage === "triage" && item.id) {
-        triageBody = `<p class="step-copy">The plan is ready. Build it, or hand it to a person.</p><div class="change-actions"><button type="button" data-change-decision="build"${taskAttr}>Build it</button><button type="button" class="secondary" data-change-decision="hand_off"${taskAttr}>Hand off</button></div>`;
+        triageBody = `<p class="step-copy">The plan is ready. A person with write access can build it, or hand it to a person.</p><div class="change-actions"><button type="button" data-change-decision="build"${taskAttr}>Build it</button><button type="button" class="secondary" data-change-decision="hand_off"${taskAttr}>Hand off</button></div>`;
       } else if (stage === "handed_off" || status === "handed_off") {
         triageBody = `<p class="hint">Handed to a person. Nothing was built.</p>`;
       } else if (past(2)) {
@@ -7545,7 +7550,12 @@
       let builderBody = `<p class="step-copy">The builder has not started.</p>`;
       if (waiting && stage === "ask") {
         builderBody = `<p class="step-copy">${escapeHtml(item.reason || item.summary || "The builder needs an answer.")}</p>${replyBox("Answer so the builder can continue.", item.id)}`;
-      } else if (past(3)) builderBody = `<p class="step-copy">The builder changed the tree.</p>`;
+      } else if (past(3)) {
+        const told = item.summary ? String(item.summary).trim() : "";
+        builderBody = told
+          ? `<pre class="change-plan">${escapeHtml(told)}</pre>`
+          : `<p class="step-copy">The builder changed the tree.</p>`;
+      }
       else if (here(3)) builderBody = `<p class="step-copy">The builder is changing the tree.</p>`;
       if (!(waiting && stage === "ask")) builderBody += stepLog(item, ["file"]);
 
@@ -7559,7 +7569,7 @@
       if (waiting && stage === "approval" && item.id && githubCommitBlocked(item)) {
         approvalBody = `<p class="step-copy">Connect GitHub before approving this commit.</p><div class="change-actions"><button type="button" class="secondary" data-change-decision="send_back"${taskAttr}>Send back</button></div>`;
       } else if (waiting && stage === "approval" && item.id) {
-        approvalBody = `<p class="step-copy">The reviews are in. Approve the change, or write what to change and send it back.</p><textarea class="reply-note" rows="3" spellcheck="false" placeholder="What should the builder change?"></textarea><div class="change-actions"><button type="button" data-change-decision="approve"${taskAttr}>Approve</button><button type="button" class="secondary" data-change-decision="send_back"${taskAttr}>Send back</button></div>`;
+        approvalBody = `<p class="step-copy">The reviews are in. A person with write access can approve the change, or write what to change and send it back.</p><textarea class="reply-note" rows="3" spellcheck="false" placeholder="What should the builder change?"></textarea><div class="change-actions"><button type="button" data-change-decision="approve"${taskAttr}>Approve</button><button type="button" class="secondary" data-change-decision="send_back"${taskAttr}>Send back</button></div>`;
       } else if (past(5)) {
         approvalBody = `<p class="step-copy">${approvalAuto ? "Approval ran on its own." : "A person approved the change."}</p>`;
       } else if (approvalPill[0] === "Skipped") {
@@ -7600,7 +7610,7 @@
 
       const chosen = steps.find((step) => step.id === (state.stepFocus || focus)) || steps[0];
       const usage = stepUsageHtml(metrics, chosen.id, chosen.pill);
-      return `<section class="change-board" aria-label="Change"><header class="step-head">${activityLogHtml(item)}</header><div class="step-rail" role="tablist" aria-label="Change steps">${steps.map(card).join("")}</div><div class="step-pane" role="tabpanel">${usage}<div class="step-body">${chosen.body}</div></div></section>`;
+      return `<section class="change-board" aria-label="Change"><div class="step-rail" role="tablist" aria-label="Change steps">${steps.map(card).join("")}</div><div class="step-pane" role="tabpanel">${usage}<div class="step-body">${chosen.body}</div></div></section>`;
     }
 
     function renderProgress(item, { running = false } = {}) {
@@ -7637,6 +7647,8 @@
         screenshotHtml,
         lineStats,
         screenshotEvents(events).length,
+        activityLogHtml(item),
+        activityRows(item).length,
       );
     }
 
@@ -7871,8 +7883,8 @@
       return raw.replace("T", " ").replace(/Z$/, " UTC");
     }
 
-    function activityLogHtml(task) {
-      if (!task) return "";
+    function activityRows(task) {
+      if (!task) return [];
       const rows = [];
       const starter = task.started_by && (task.started_by.name || task.started_by.id);
       if (starter) {
@@ -7889,16 +7901,21 @@
         if (seen.has(note)) continue;
         rows.push({ who: "Someone", what: "requested changes", note, at: "" });
       }
-      if (!rows.length) return "";
+      return rows;
+    }
+
+    function activityLogHtml(task) {
+      const rows = activityRows(task);
+      if (!rows.length) return `<p class="empty">No audit entries for this change.</p>`;
       const items = [];
-      for (const row of rows) {
+      for (const row of [...rows].reverse()) {
         const note = row.note ? `<span class="activity-note">${escapeHtml(row.note)}</span>` : "";
         const when = row.at ? `<time class="activity-when">${escapeHtml(activityWhen(row.at))}</time>` : "";
         items.push(
           `<li><span class="activity-who">${escapeHtml(row.who)}</span> ${escapeHtml(row.what)}${note}${when}</li>`
         );
       }
-      return `<ol class="activity-log" aria-label="Activity">${items.join("")}</ol>`;
+      return `<ol class="activity-log" aria-label="Audit">${items.join("")}</ol>`;
     }
 
     function inboxRowHtml(entry, items, section) {
@@ -8572,7 +8589,7 @@
       if (next === "rules") loadRulesSection();
       if (next === "skills") loadWorkspaceSkills();
       if (next === "roles") {
-        loadWorkspaceRoles().catch((err) => notify("error", err.message, { title: "Could not load roles" }));
+        loadWorkspaceRoles().catch((err) => notify("error", err.message, { title: "Could not load agent teams" }));
       }
       if (next === "models") {
         loadProjectModels().catch((err) => notify("error", err.message, { title: "Could not load models" }));

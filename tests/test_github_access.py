@@ -194,7 +194,7 @@ def test_github_app_places_a_repository_and_syncs_linked_access(
             (team["id"],),
         )
     assert team_grant is not None
-    assert team_grant["access"] == "use"
+    assert team_grant["access"] == "write"
 
     grace = next(user for user in summary["account"]["users"] if user["name"] == "Grace")
     _become(tmp_path, grace["id"])
@@ -408,7 +408,7 @@ def test_sync_keeps_a_renamed_team_and_copies_repository_access(
 
     original = team_rows()
     assert [(row["name"], row["github_slug"]) for row in original] == [("Platform", "platform")]
-    assert [row["access"] for row in team_access()] == ["use"]
+    assert [row["access"] for row in team_access()] == ["write"]
 
     state["name"] = "Platforms"
     renamed = client.post("/api/github/sync")

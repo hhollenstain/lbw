@@ -34,30 +34,51 @@ The agent process is the same on an Apple Silicon MacBook and on a Linux box wit
 | MacBook (Apple Silicon) | [Ollama](https://ollama.com) on the host | Docker Desktop cannot pass Metal into a Linux VM |
 | Home lab (NVIDIA, including RTX 5090) | Ollama or vLLM in Compose with GPU passthrough | Blackwell needs host driver **570+** and `nvidia-container-toolkit` |
 
-A change moves through roles you can turn on, turn off, or add:
+A change moves through agent teams you can turn on, turn off, or add:
 
 ```
-  ask → architect plans → you triage → builder
-      → reviewers (QA, and any role you enable)
-      → you approve → commit / pull request
+  ask → Plan team → proposal pauses for someone with write access
+      → Build team
+      → Review team (QA, and any review task you turn on)
+      → proposal pauses again → commit / pull request
 ```
 
-The web UI waits before any code and again before the pull request. Changes
-in the left menu groups every project into waiting for you, in progress, and
-done, and shows the step each change is on. Uncheck one gate
+The web UI pauses at those proposal groups before any code and again before
+the pull request. A person with write access to the repository continues it.
+Changes in the left menu groups every project into waiting for you, in
+progress, and done, and shows the step each change is on. Uncheck one gate
 to skip that review, or bypass all gates. Keep improving, `lbw run`, and
 `lbw watch` pass the gates themselves. Builder and QA stay on. Add a review
-role at `.lbw/roles/<name>/ROLE.md` (`job: review`) and enable it from the
-Roles panel or `roles.enabled` in `.lbw/config.yaml`. `lbw roles` lists
+task at `.lbw/roles/<name>/ROLE.md` (`job: review`) and turn it on from the
+Agent teams panel or `roles.enabled` in `.lbw/config.yaml`. `lbw teams` lists
 the catalog.
+
+With an organization database, an owner or admin sets up agent teams. Each
+team has its own instruction, service, and model, and any of them can be
+changed later. A team owns one or more steps. A step plans, builds, or
+reviews, and can wait for other steps:
+
+```
+  Plan     threats ─┐
+           architect ◄┘           (one plan step writes the plan)
+  Build    backend (src/**) → web (web/src/**)   (take turns on the checkout)
+  Review   qa-desk, security ─► release           (side by side, then release)
+```
+
+Steps that do not wait on each other run side by side when they use
+different models. A build step with paths carries out the plan steps for
+those files. When a project turns a team on, the teams replace its roles in
+the phases they cover. Roles the organization enforces still run. **Turn
+roles into teams** on a project's Agent teams panel copies the roles it
+runs into teams, so the switch keeps what the project already had.
 
 ```
   lbw run / watch          lbw ui
         │                       │
-        ├─ architect plans      ├─ architect plans, then waits
-        ├─ builder writes       ├─ you choose Build or Hand off
-        ├─ reviewers judge      ├─ builder, then each review role
-        ├─ tests and goal check ├─ you approve from the verdicts
+        ├─ Plan team            ├─ Plan team, then waits
+        ├─ Build team           ├─ a writer chooses Build or Hand off
+        ├─ Review team          ├─ Build, then each review task
+        ├─ tests and goal check ├─ a writer approves from the verdicts
         └─ commit / pull request└─ then commit / pull request
               │
               ▼
@@ -176,7 +197,7 @@ docker compose run --rm agent run -w /workspaces/repo --goal "Add a README.md"
 
 Public GitHub repositories can be added by URL with no credentials. Push, pull requests, and merge use one GitHub App. An LBW engineer saves its key on the engineer dashboard ([docs/github-app.md](docs/github-app.md)). Locally that host is [https://crossing-local.lookbothways.dev](https://crossing-local.lookbothways.dev). The organization site is [https://www-local.lookbothways.dev](https://www-local.lookbothways.dev). Both names resolve to `127.0.0.1`. Each organization, on its own site, installs the app on the GitHub account that owns that organization's repositories ([docs/github-organization.md](docs/github-organization.md)). An installation token is minted when a push, pull request, or merge needs it, and it is not stored. The first visit asks for the admin account: a name, email, and password. After that, sign in with that email and password. Each person has a name and an email. They connect GitHub from the GitHub tab on Personal once the organization has a GitHub App. Personal rules are listed by name. The plus button opens a dialog to add one, and a listed rule can be viewed as markdown, edited, or deleted. LBW sends them to GitHub and stores the login GitHub returns. The organization lists that username and the teams they are on. On a team, Edit selects several people to change their rank or remove them. The add button opens a search and adds several people at once. Remove team is available once nobody is left on it. The sign-in page can create another organization. LBW engineers open `/crossingguard`, which lists every organization. A menu there adds another LBW engineer. The page can unlock a person and save Entra, Auth0, or SAML sign-in. An organization admin does not open that page. It lists a job only when LBW failed, and it does not show code or a pull request. A later sign-in from Entra, Auth0, or another SSO or SAML provider matches the same person by email. The sign-in token is not stored. Sync then copies their organization role, teams, and repository access. Add a repository the app can see to the organization, a person, or a team.
 
-Models stay outside LBW. Organization settings are split into People, Rules, Skills, Roles, Models, and GitHub. On Models, add an OpenAI, Anthropic, Google, Ollama, vLLM, LM Studio, or other OpenAI-compatible endpoint and check it. LBW stores the model names that endpoint returns, and Refresh replaces that list. Choose one of those names, then grant it to a project, a team, or a person. Rank does not include it. An agent is a worker LBW can hand the change to: LBW's own builder, Claude Code, Codex, or Cursor. LBW still orchestrates the run. A person has to accept work an agent built before that task can succeed. The API key is sealed and is not shown again.
+Models stay outside LBW. Organization settings are split into People, Rules, Skills, Roles, Models, and GitHub. On Models, add an OpenAI, Claude, Google, Ollama, vLLM, LM Studio, Cursor, LiteLLM, other gateway, or other OpenAI-compatible endpoint and check it. Claude uses an Anthropic API key, and a proposal runs that model through Anthropic's Messages API. Cursor uses an API key from the Cursor dashboard and lists that account's models. Cursor does not serve chat completions, so a proposal runs through a gateway that does. A gateway uses a virtual key, or SSO when it accepts this organization's Entra or Auth0 sign-in token. That token is sealed for the person who signed in. An endpoint can ask each person to check their own key or sign in, and a run uses that credential so spend stays with them. LBW stores the model names that endpoint returns, and Refresh replaces that list. Choose one of those names, then grant it to a project, a team, or a person. Rank does not include it. A proposal runs that model. OpenAI, Claude, and the other endpoints are the model. There is no separate agent to add. The API key is sealed and is not shown again.
 
 Private GitHub repos can also use the SSH mount in `docker-compose.yml`, or be cloned on the host:
 

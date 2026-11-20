@@ -13,8 +13,9 @@ from agent_lbw import __version__
 from agent_lbw.config import Settings
 from agent_lbw.hardware import command_available, detect_hardware
 from agent_lbw.llm.client import (
-    OpenAICompatClient,
+    LLMClient,
     check_model_endpoint,
+    client_for,
     effective_context_window,
     normalize_model_base_url,
 )
@@ -116,16 +117,9 @@ def _settings(**overrides: dict[str, Any]) -> Settings:
     return settings
 
 
-def _llm(settings: Settings) -> OpenAICompatClient:
-    """Create an OpenAI-compatible client with the given settings.
-
-    Args:
-        settings: The configuration settings for the LLM client
-
-    Returns:
-        An OpenAICompatClient instance
-    """
-    return OpenAICompatClient(
+def _llm(settings: Settings) -> LLMClient:
+    """The model client for these settings. Claude uses Anthropic's Messages API."""
+    return client_for(
         model=settings.model_name,
         base_url=settings.model_base_url,
         api_key=settings.model_api_key,
@@ -338,29 +332,44 @@ def _serve_ui(
     )
 
 
+def _print_agent_teams(workspace: Path) -> None:
+    from agent_lbw.runtime.roles import list_roles
+
+    table = Table(title="Agent teams")
+    table.add_column("Team")
+    table.add_column("Task")
+    table.add_column("On")
+    table.add_column("What it does")
+    for role in list_roles(workspace):
+        table.add_row(
+            role.team,
+            role.title,
+            "yes" if role.enabled else "no",
+            role.description or role.name,
+        )
+    console.print(table)
+
+
 @app.command()
+def teams(
+    workspace: Annotated[
+        Path,
+        typer.Option("--workspace", "-w", exists=True, file_okay=False, resolve_path=True),
+    ] = Path("."),
+) -> None:
+    """List the agent teams on a proposal, and which tasks are on."""
+    _print_agent_teams(workspace)
+
+
+@app.command(hidden=True)
 def roles(
     workspace: Annotated[
         Path,
         typer.Option("--workspace", "-w", exists=True, file_okay=False, resolve_path=True),
     ] = Path("."),
 ) -> None:
-    """List the roles that carry a change, and which ones are enabled."""
-    from agent_lbw.runtime.roles import list_roles
-
-    table = Table(title="Roles")
-    table.add_column("Role")
-    table.add_column("Job")
-    table.add_column("Enabled")
-    table.add_column("What it does")
-    for role in list_roles(workspace):
-        table.add_row(
-            role.title,
-            role.job,
-            "yes" if role.enabled else "no",
-            role.description or role.name,
-        )
-    console.print(table)
+    """List the agent teams on a proposal, and which tasks are on."""
+    _print_agent_teams(workspace)
 
 
 @app.command()

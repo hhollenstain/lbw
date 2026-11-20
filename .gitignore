@@ -39,3 +39,8 @@ web/node_modules/
 .idea/
 .vscode/
 *.swp
+
+# Stray local files: scratch scripts in the root, and the sidecar a SQLite
+# ":memory:" path leaves on disk.
+/tmp_*.py
+:memory:*

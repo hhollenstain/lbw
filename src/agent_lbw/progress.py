@@ -70,8 +70,14 @@ def record_file_change(
     before: str | None,
     after: str,
     created: bool,
+    deleted: bool = False,
 ) -> dict[str, Any]:
-    action = "created" if created else "updated"
+    if deleted:
+        action = "deleted"
+    elif created:
+        action = "created"
+    else:
+        action = "updated"
     if before is None:
         diff = f"(could not read previous contents of {path})"
         net_diff = diff
@@ -85,9 +91,16 @@ def record_file_change(
         if path not in originals:
             originals[path] = "" if created else before
         original = originals[path]
-        net_created = original == ""
-        net_diff = unified_file_diff(path, original, after, created=net_created)
-        net_action = "created" if net_created else "updated"
+        if deleted and after == "":
+            net_action = "deleted"
+            if original == "":
+                net_diff = f"deleted {path}"
+            else:
+                net_diff = unified_file_diff(path, original, "", created=False)
+        else:
+            net_created = original == ""
+            net_diff = unified_file_diff(path, original, after, created=net_created)
+            net_action = "created" if net_created else "updated"
     event = record_event(
         kind="file",
         path=path,

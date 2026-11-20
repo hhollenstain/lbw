@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { ApiError, api } from "../../api";
-import type { Endpoint, OrgAgent, OrgCatalog, OrgModel } from "./types";
+import type { Endpoint, OrgCatalog, OrgModel } from "./types";
 
 const TRASH = (
   <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -13,7 +13,7 @@ const TRASH = (
   </svg>
 );
 
-type DialogName = "endpoint" | "model" | "agent" | "remove-endpoint" | "";
+type DialogName = "endpoint" | "model" | "remove-endpoint" | "own-key" | "";
 
 export function ModelsSection() {
   const [catalog, setCatalog] = useState<OrgCatalog | null>(null);
@@ -24,19 +24,19 @@ export function ModelsSection() {
   const [endpointProvider, setEndpointProvider] = useState("");
   const [endpointUrl, setEndpointUrl] = useState("");
   const [endpointKey, setEndpointKey] = useState("");
+  const [endpointAuth, setEndpointAuth] = useState("key");
+  const [endpointAudience, setEndpointAudience] = useState("");
+  const [ownKeyId, setOwnKeyId] = useState("");
+  const [ownKey, setOwnKey] = useState("");
   const [modelEndpoint, setModelEndpoint] = useState("");
   const [modelName, setModelName] = useState("");
   const [modelShown, setModelShown] = useState("");
-  const [agentName, setAgentName] = useState("");
-  const [agentKind, setAgentKind] = useState("");
-  const [agentModel, setAgentModel] = useState("");
 
   useEffect(() => {
     function onCatalog(event: Event) {
       const detail = (event as CustomEvent<OrgCatalog>).detail || {};
       setCatalog(detail);
       setEndpointProvider((current) => current || detail.providers?.[0]?.id || "");
-      setAgentKind((current) => current || detail.agent_kinds?.[0]?.id || "");
     }
     const cached = (window as OrgSettingsWindow).__lbwOrgSettings;
     if (cached) onCatalog(new CustomEvent("lbw-org-settings", { detail: cached }));
@@ -47,12 +47,12 @@ export function ModelsSection() {
   const providers = catalog?.providers || [];
   const endpoints = catalog?.endpoints || [];
   const models = catalog?.models || [];
-  const agents = catalog?.agents || [];
-  const kinds = catalog?.agent_kinds || [];
   const manage = Boolean(catalog?.can_manage);
   const chosenEndpoint = endpoints.find((item) => item.id === modelEndpoint);
   const modelNames = chosenEndpoint?.model_names || [];
   const removeTarget = endpoints.find((item) => item.id === removeId);
+  const chosenProvider = providers.find((item) => item.id === endpointProvider);
+  const authModes = endpointAuthModes(chosenProvider);
 
   function fail(err: unknown) {
     const message = err instanceof ApiError || err instanceof Error ? err.message : "request failed";
@@ -95,23 +95,46 @@ export function ModelsSection() {
     setDialog("model");
   }
 
-  function openAgent() {
-    setAgentKind((current) => current || kinds[0]?.id || "");
-    setDialog("agent");
-  }
-
   async function addEndpoint() {
+    const known = new Set(endpoints.map((item) => item.id));
     const body = await api<OrgCatalog>("/api/org/endpoints", {
       method: "POST",
       body: JSON.stringify({
         name: endpointName,
         provider: endpointProvider,
         base_url: endpointUrl,
-        api_key: endpointKey,
+        api_key: endpointAuth === "sso" ? "" : endpointKey,
+        auth: endpointAuth,
+        audience:
+          endpointAuth === "key" || !providers.find((item) => item.id === endpointProvider)?.gateway
+            ? ""
+            : endpointAudience,
       }),
     });
+    const saved = (body.endpoints || []).find((item) => item.auth === "sso" && !known.has(item.id));
     setEndpointName("");
     setEndpointKey("");
+    setEndpointAuth("key");
+    setEndpointAudience("");
+    setDialog("");
+    apply(body);
+    if (saved) {
+      window.location.assign(`/api/org/endpoints/${encodeURIComponent(saved.id)}/sso`);
+    }
+  }
+
+  async function saveOwnKey() {
+    const endpointId = ownKeyId;
+    if (!endpointId) return;
+    const body = await api<OrgCatalog>(
+      `/api/org/endpoints/${encodeURIComponent(endpointId)}/credential`,
+      {
+        method: "POST",
+        body: JSON.stringify({ api_key: ownKey }),
+      },
+    );
+    setOwnKey("");
+    setOwnKeyId("");
     setDialog("");
     apply(body);
   }
@@ -150,21 +173,7 @@ export function ModelsSection() {
     apply(body);
   }
 
-  async function addAgent() {
-    const body = await api<OrgCatalog>("/api/org/agents", {
-      method: "POST",
-      body: JSON.stringify({
-        name: agentName,
-        kind: agentKind,
-        model_id: agentModel,
-      }),
-    });
-    setAgentName("");
-    setDialog("");
-    apply(body);
-  }
-
-  async function setEnabled(kind: "models" | "agents", id: string, enabled: boolean) {
+  async function setEnabled(kind: "models", id: string, enabled: boolean) {
     const body = await api<OrgCatalog>(`/api/org/${kind}/${encodeURIComponent(id)}/enabled`, {
       method: "PUT",
       body: JSON.stringify({ enabled }),
@@ -172,7 +181,7 @@ export function ModelsSection() {
     apply(body);
   }
 
-  async function removeRow(kind: "models" | "agents", id: string) {
+  async function removeRow(kind: "models", id: string) {
     const body = await api<OrgCatalog>(`/api/org/${kind}/${encodeURIComponent(id)}`, {
       method: "DELETE",
     });
@@ -196,8 +205,12 @@ export function ModelsSection() {
         </button>
       </div>
       <p className="hint" id="org-models-hint">
-        Bring your own endpoint. Resync stores the model names it returns. The key is sealed and
-        is not shown again.
+        Bring your own endpoint. OpenAI, Claude, and Google take an API key. Claude runs through
+        the Messages API. A self-hosted server such as Ollama, vLLM, or LM Studio uses its own
+        address. LiteLLM and other gateways speak the OpenAI API. An organization key
+        is shared. Each person can check their own key, or sign in when the gateway accepts this
+        organization's sign-in token. A run uses that person's credential. Resync stores the names
+        it returns. The key is sealed and is not shown again.
       </p>
       <div id="org-endpoints">
         <OrgTable
@@ -205,12 +218,23 @@ export function ModelsSection() {
           empty="No endpoints yet."
           rows={endpoints.map((endpoint) => ({
             key: endpoint.id,
-            cells: endpointCells(endpoint, manage, (id) => {
-              syncEndpoint(id).catch(fail);
-            }, (id) => {
-              setRemoveId(id);
-              setDialog("remove-endpoint");
-            }),
+            cells: endpointCells(
+              endpoint,
+              manage,
+              Boolean(providers.find((item) => item.id === endpoint.provider)?.gateway),
+              (id) => {
+                syncEndpoint(id).catch(fail);
+              },
+              (id) => {
+                setRemoveId(id);
+                setDialog("remove-endpoint");
+              },
+              (id) => {
+                setOwnKeyId(id);
+                setOwnKey("");
+                setDialog("own-key");
+              },
+            ),
           }))}
         />
       </div>
@@ -244,40 +268,6 @@ export function ModelsSection() {
               });
             }, (id) => {
               removeRow("models", id).catch(fail);
-            }),
-          }))}
-        />
-      </div>
-      <div className="org-section-head">
-        <h2 className="rule-heading">Agents</h2>
-        <button
-          type="button"
-          className="secondary icon-button"
-          id="open-org-agent"
-          aria-label="Add an agent"
-          hidden={!manage}
-          onClick={openAgent}
-        >
-          +
-        </button>
-      </div>
-      <p className="hint">
-        LBW stays the orchestrator. Turn an agent on for the organization, or remove it. A person
-        must accept its work.
-      </p>
-      <div id="org-agents">
-        <OrgTable
-          headers={["Name", "Agent", "Model", "On", ""]}
-          empty="No agents yet."
-          rows={agents.map((agent) => ({
-            key: agent.id,
-            cells: agentCells(agent, models, kinds, manage, (id, enabled) => {
-              setEnabled("agents", id, enabled).catch((err: unknown) => {
-                revert();
-                fail(err);
-              });
-            }, (id) => {
-              removeRow("agents", id).catch(fail);
             }),
           }))}
         />
@@ -342,7 +332,9 @@ export function ModelsSection() {
               value={endpointProvider}
               onChange={(event) => {
                 const next = event.target.value;
+                const provider = providers.find((item) => item.id === next);
                 setEndpointUrl((current) => defaultUrl(next, current));
+                if (!endpointAuthModes(provider).includes(endpointAuth)) setEndpointAuth("key");
                 setEndpointProvider(next);
               }}
             >
@@ -365,22 +357,98 @@ export function ModelsSection() {
               onChange={(event) => setEndpointUrl(event.target.value)}
             />
           </label>
-          <label>
-            API key
-            <input
-              id="org-endpoint-key"
-              type="password"
-              placeholder="API key"
-              autoComplete="off"
-              value={endpointKey}
-              onChange={(event) => setEndpointKey(event.target.value)}
-            />
-          </label>
+          {authModes.length > 1 ? (
+            <label>
+              Sign-in
+              <select
+                id="org-endpoint-auth"
+                aria-label="Endpoint sign-in"
+                value={endpointAuth}
+                onChange={(event) => setEndpointAuth(event.target.value)}
+              >
+                {authModes.map((mode) => (
+                  <option key={mode} value={mode}>
+                    {mode === "personal" ? "Each person" : mode === "sso" ? "SSO" : "Organization key"}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {chosenProvider?.gateway && endpointAuth !== "key" ? (
+            <label>
+              Audience
+              <input
+                id="org-endpoint-audience"
+                type="text"
+                maxLength={200}
+                placeholder="Gateway audience, if the provider requires one"
+                autoComplete="off"
+                value={endpointAudience}
+                onChange={(event) => setEndpointAudience(event.target.value)}
+              />
+            </label>
+          ) : null}
+          {endpointAuth !== "sso" ? (
+            <label>
+              {endpointAuth === "personal" ? "Your API key" : "API key"}
+              <input
+                id="org-endpoint-key"
+                type="password"
+                placeholder={endpointAuth === "personal" ? "Checked for you. Optional." : "API key"}
+                autoComplete="off"
+                value={endpointKey}
+                onChange={(event) => setEndpointKey(event.target.value)}
+              />
+            </label>
+          ) : null}
           <div className="modal-actions">
             <button type="button" className="secondary" id="cancel-org-endpoint" onClick={() => setDialog("")}>
               Cancel
             </button>
             <button type="button" id="add-org-endpoint" onClick={() => addEndpoint().catch(fail)}>
+              {endpointAuth === "sso"
+                ? "Continue"
+                : endpointAuth === "personal" && !endpointKey.trim()
+                  ? "Add"
+                  : "Check"}
+            </button>
+          </div>
+        </form>
+      </Dialog>
+      <Dialog
+        id="org-own-key-dialog"
+        titleId="org-own-key-title"
+        title="Your API key"
+        open={dialog === "own-key"}
+        onClose={() => setDialog("")}
+      >
+        <form
+          className="org-form"
+          id="org-own-key-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            saveOwnKey().catch(fail);
+          }}
+        >
+          <p className="hint">
+            This key is checked against the endpoint and sealed for you. A run you start uses it.
+          </p>
+          <label>
+            API key
+            <input
+              id="org-own-key"
+              type="password"
+              placeholder="API key"
+              autoComplete="off"
+              value={ownKey}
+              onChange={(event) => setOwnKey(event.target.value)}
+            />
+          </label>
+          <div className="modal-actions">
+            <button type="button" className="secondary" id="cancel-org-own-key" onClick={() => setDialog("")}>
+              Cancel
+            </button>
+            <button type="button" id="check-org-own-key" onClick={() => saveOwnKey().catch(fail)}>
               Check
             </button>
           </div>
@@ -460,86 +528,47 @@ export function ModelsSection() {
           </div>
         </form>
       </Dialog>
-      <Dialog
-        id="org-agent-dialog"
-        titleId="org-agent-title"
-        title="Add an agent"
-        open={dialog === "agent"}
-        onClose={() => setDialog("")}
-      >
-        <form
-          className="org-form"
-          id="org-agent-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            addAgent().catch(fail);
-          }}
-        >
-          <label>
-            Name
-            <input
-              id="org-agent-name"
-              type="text"
-              maxLength={80}
-              placeholder="Name"
-              autoComplete="off"
-              value={agentName}
-              onChange={(event) => setAgentName(event.target.value)}
-            />
-          </label>
-          <label>
-            Agent
-            <select
-              id="org-agent-kind"
-              aria-label="Agent"
-              value={agentKind}
-              onChange={(event) => setAgentKind(event.target.value)}
-            >
-              {kinds.map((kind) => (
-                <option key={kind.id} value={kind.id}>
-                  {kind.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Model
-            <select
-              id="org-agent-model"
-              aria-label="Model this agent spends"
-              value={agentModel}
-              onChange={(event) => setAgentModel(event.target.value)}
-            >
-              <option value="">No model</option>
-              {models.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="modal-actions">
-            <button type="button" className="secondary" id="cancel-org-agent" onClick={() => setDialog("")}>
-              Cancel
-            </button>
-            <button type="button" id="add-org-agent" onClick={() => addAgent().catch(fail)}>
-              Add
-            </button>
-          </div>
-        </form>
-      </Dialog>
     </>
   );
+}
+
+function endpointAuthModes(provider: { key: boolean; gateway?: boolean } | undefined): string[] {
+  if (!provider) return [];
+  if (provider.gateway) return ["key", "personal", "sso"];
+  if (provider.key) return ["key", "personal"];
+  return [];
 }
 
 function endpointCells(
   endpoint: Endpoint,
   manage: boolean,
+  gateway: boolean,
   onSync: (id: string) => void,
   onRemove: (id: string) => void,
+  onOwnKey: (id: string) => void,
 ) {
-  const actions = manage ? (
-    <div className="org-row-actions">
+  const ownKey = endpoint.auth === "personal" ? (
+    <button
+      type="button"
+      className="secondary"
+      data-endpoint-key={endpoint.id}
+      onClick={() => onOwnKey(endpoint.id)}
+    >
+      {endpoint.signed_in ? "Replace key" : "Your key"}
+    </button>
+  ) : null;
+  const signIn =
+    !endpoint.signed_in && (endpoint.auth === "sso" || (endpoint.auth === "personal" && gateway)) ? (
+      <a
+        className="secondary"
+        href={`/api/org/endpoints/${encodeURIComponent(endpoint.id)}/sso`}
+        data-endpoint-sso={endpoint.id}
+      >
+        Sign in
+      </a>
+    ) : null;
+  const manageActions = manage ? (
+    <>
       <button
         type="button"
         className="secondary"
@@ -557,6 +586,13 @@ function endpointCells(
       >
         {TRASH}
       </button>
+    </>
+  ) : null;
+  const actions = ownKey || signIn || manageActions ? (
+    <div className="org-row-actions">
+      {ownKey}
+      {signIn}
+      {manageActions}
     </div>
   ) : null;
   return [
@@ -596,49 +632,6 @@ function modelCells(
             data-model-remove={model.id}
             aria-label={`Remove ${model.model_name}`}
             onClick={() => onRemove(model.id)}
-          >
-            {TRASH}
-          </button>
-        </div>
-      ) : null}
-    </td>,
-  ];
-}
-
-function agentCells(
-  agent: OrgAgent,
-  models: OrgModel[],
-  kinds: { id: string; label: string }[],
-  manage: boolean,
-  onEnabled: (id: string, enabled: boolean) => void,
-  onRemove: (id: string) => void,
-) {
-  const model = models.find((item) => item.id === agent.model_id);
-  const kind = kinds.find((item) => item.id === agent.kind);
-  return [
-    <td key="name">{agent.name}</td>,
-    <td key="kind">{kind ? kind.label : agent.kind}</td>,
-    <td key="model" className="muted">{model ? model.model_name : "—"}</td>,
-    <td key="on">
-      <input
-        type="checkbox"
-        className="org-switch"
-        checked={Boolean(agent.enabled)}
-        disabled={!manage}
-        data-agent-enable={agent.id}
-        aria-label={`Use ${agent.name}`}
-        onChange={(event) => onEnabled(agent.id, event.target.checked)}
-      />
-    </td>,
-    <td key="actions" className="org-table-actions">
-      {manage ? (
-        <div className="org-row-actions">
-          <button
-            type="button"
-            className="secondary icon-button"
-            data-agent-remove={agent.id}
-            aria-label={`Remove ${agent.name}`}
-            onClick={() => onRemove(agent.id)}
           >
             {TRASH}
           </button>

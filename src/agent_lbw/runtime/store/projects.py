@@ -57,7 +57,7 @@ def grant_project(
     if subject_type not in {"team", "identity"}:
         raise ValueError("subject must be team or identity")
     if access not in ACCESS_LEVELS:
-        raise ValueError("access must be use or manage")
+        raise ValueError("access must be use, write, or manage")
     project = db.fetchone("SELECT tenant_id FROM projects WHERE id = ?", (project_id,))
     if project is None:
         raise KeyError(project_id)
@@ -92,7 +92,7 @@ def grant_project(
 
 def can_access(db: Database, identity_id: str, project_id: str, *, need: str = "use") -> bool:
     if need not in ACCESS_LEVELS:
-        raise ValueError("access must be use or manage")
+        raise ValueError("access must be use, write, or manage")
     project = db.fetchone("SELECT tenant_id FROM projects WHERE id = ?", (project_id,))
     if project is None:
         return False
@@ -105,7 +105,12 @@ def can_access(db: Database, identity_id: str, project_id: str, *, need: str = "
         return False
     if membership["rank"] in {"owner", "admin"}:
         return True
-    wanted = ("manage",) if need == "manage" else ("use", "manage")
+    if need == "manage":
+        wanted = ("manage",)
+    elif need == "write":
+        wanted = ("write", "manage")
+    else:
+        wanted = ("use", "write", "manage")
     marks = ", ".join("?" for _ in wanted)
     direct = db.fetchone(
         f"""

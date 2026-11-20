@@ -53,6 +53,101 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuditList"
+  /api/org/endpoints/{endpoint_id}/credential:
+    post:
+      operationId: saveEndpointCredential
+      parameters:
+        - name: endpoint_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EndpointCredential"
+      responses:
+        "200":
+          description: The organization catalog after this person checks a key.
+  /api/org/endpoints:
+    post:
+      operationId: createEndpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EndpointWrite"
+      responses:
+        "200":
+          description: The organization catalog after the endpoint is saved.
+  /api/org/agent-teams:
+    post:
+      operationId: createAgentTeam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentTeamWrite"
+      responses:
+        "200":
+          description: Organization settings after the team is created.
+  /api/org/agent-teams/{team_id}:
+    put:
+      operationId: updateAgentTeam
+      parameters:
+        - name: team_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentTeamUpdate"
+      responses:
+        "200":
+          description: Organization settings after the team changes.
+    delete:
+      operationId: deleteAgentTeam
+      parameters:
+        - name: team_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Organization settings after the team is removed.
+  /api/workspaces/agent-teams/import-roles:
+    post:
+      operationId: importRolesAsAgentTeams
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentTeamImport"
+      responses:
+        "200":
+          description: Agent teams after this project's roles become teams that are on.
+  /api/workspaces/agent-teams:
+    put:
+      operationId: setProjectAgentTeam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentTeamProjectWrite"
+      responses:
+        "200":
+          description: Agent teams after one project switch changes.
   /api/workspaces/models:
     get:
       operationId: listProjectModels
@@ -215,6 +310,32 @@ components:
           type: string
         enabled:
           type: boolean
+    EndpointCredential:
+      type: object
+      required: [api_key]
+      properties:
+        api_key:
+          type: string
+    EndpointWrite:
+      type: object
+      required: [name, provider]
+      properties:
+        name:
+          type: string
+        provider:
+          type: string
+        base_url:
+          type: string
+          default: ""
+        api_key:
+          type: string
+          default: ""
+        auth:
+          type: string
+          default: key
+        audience:
+          type: string
+          default: ""
     ProjectModel:
       type: object
       required: [id, name, provider, model_name, endpoint_name, org_enabled, enabled]
@@ -234,6 +355,15 @@ components:
           type: boolean
         enabled:
           type: boolean
+        endpoint_id:
+          type: string
+          default: ""
+        auth:
+          type: string
+          default: key
+        signed_in:
+          type: boolean
+          default: true
     ProjectModelList:
       type: object
       required: [can_manage, models]
@@ -244,6 +374,72 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ProjectModel"
+    AgentTeamStep:
+      type: object
+      required: [key, job]
+      properties:
+        key:
+          type: string
+        job:
+          type: string
+        after:
+          type: array
+          items:
+            type: string
+        paths:
+          type: array
+          items:
+            type: string
+    AgentTeamWrite:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        job:
+          type: string
+          default: ""
+        instruction:
+          type: string
+          default: ""
+        model_id:
+          type: string
+          default: ""
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentTeamStep"
+    AgentTeamUpdate:
+      type: object
+      required: [name, instruction, model_id, steps]
+      properties:
+        name:
+          type: string
+        instruction:
+          type: string
+        model_id:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentTeamStep"
+    AgentTeamImport:
+      type: object
+      properties:
+        path:
+          type: string
+          default: ""
+    AgentTeamProjectWrite:
+      type: object
+      required: [team_id, enabled]
+      properties:
+        path:
+          type: string
+          default: ""
+        team_id:
+          type: string
+        enabled:
+          type: boolean
     ProjectModelWrite:
       type: object
       required: [model_id, enabled]

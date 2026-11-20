@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -43,6 +44,10 @@ from agent_lbw.runtime.review import (
     unwired_ui_markers,
 )
 from agent_lbw.runtime.roles import (
+    REQUIRED_ROLES,
+    Role,
+    RoleVerdict,
+    list_roles,
     optional_review_roles,
     plan_role,
     review_with_role,
@@ -51,6 +56,16 @@ from agent_lbw.runtime.roles import (
 from agent_lbw.runtime.rules import rules_for_prompt
 from agent_lbw.runtime.skills import compose_system_prompt
 from agent_lbw.runtime.steward import propose_improvement_goal
+from agent_lbw.runtime.team_graph import (
+    GraphError,
+    Step,
+    assign_plan_steps,
+    generations,
+    lead_planner,
+    ordered,
+    prepare,
+    run_wave,
+)
 from agent_lbw.runtime.uireview import (
     UiEvidence,
     collect_ui_evidence,
@@ -546,27 +561,25 @@ def _run_cycle(
         base_context = f"{base_context}\n\n{repo_text}"
     named_files = format_goal_files(workspace.root, selected_goal)
     plan = None
-    architect = plan_role(workspace.root)
-    if settings.plan_goals and architect is not None:
-        log_progress("Architect is breaking the goal into steps...")
-        plan = ground_plan(
-            plan_goal(
-                llm,
-                selected_goal,
-                context=base_context,
-                files=named_files,
-                opinions=architect.body,
-            ),
+    steps = _pipeline_steps(store_root, settings, workspace.root)
+    client_for = _step_clients(llm, store_root, settings, workspace.root)
+    lead = lead_planner(steps)
+    if settings.plan_goals and lead is not None:
+        plan = _plan_with_steps(
+            steps,
+            client_for,
             selected_goal,
             workspace.root,
+            context=base_context,
+            files=named_files,
         )
         _log_plan(plan)
     plan_text, criteria = _plan_record(plan, selected_goal)
-    if plan is not None and plan.steps:
+    if plan is not None and plan.steps and lead is not None:
         evidence.append(
             role_evidence(
-                architect.name if architect is not None else "architect",
-                architect.title if architect is not None else "Architect",
+                lead.key,
+                lead.title,
                 "plan",
                 "pass",
                 plan.cause or "Planned the change.",
@@ -595,9 +608,29 @@ def _run_cycle(
             "Do not start a different task.\n"
             f"{review_notes.strip()[:4000]}"
         )
-    log_progress("Builder is writing the change...")
+    builders = ordered(steps, "build")
+    if builders:
+        agent.llm = client_for(builders[0])
+    if len(builders) == 1:
+        log_progress(f"{builders[0].title} is writing the change...")
+        if builders[0].instruction.strip():
+            brief = f"{brief}\n\n{builders[0].title}: {builders[0].instruction.strip()[:4000]}"
+    elif not builders:
+        log_progress("Builder is writing the change...")
     code_before_agent = workspace_fingerprint(workspace.root)
-    if plan is not None and plan.steps:
+    if plan is not None and plan.steps and len(builders) > 1:
+        agent_result = _build_with_steps(
+            workspace,
+            agent,
+            plan,
+            builders,
+            client_for,
+            selected_goal,
+            brief,
+            sha_before,
+            research=_goal_needs_research(selected_goal),
+        )
+    elif plan is not None and plan.steps:
         agent_result = _run_plan_steps(
             workspace,
             agent,
@@ -730,6 +763,7 @@ def _run_cycle(
         allow_create_pr,
         stopped_reason=agent_result.stopped_reason,
         plan=plan,
+        replanner=(_step_as_role(lead), client_for(lead)) if lead is not None else None,
     )
     tests_passed = review["tests_passed"]
     agent_result_summary = review["summary"]
@@ -837,6 +871,7 @@ def _run_cycle(
         evidence,
         plan_text=plan_text,
         criteria=criteria,
+        store_root=store_root,
     )
     if role_failure is not None:
         return role_failure
@@ -1052,22 +1087,61 @@ def _apply_optional_reviews(
     *,
     plan_text: str,
     criteria: list[str],
+    store_root: Path | None = None,
 ) -> CycleResult | None:
-    """Run enabled review roles. A block or a second send-back stops the commit."""
-    roles = optional_review_roles(workspace.root)
-    if not roles:
+    """Run enabled review roles and review teams. A block or a second send-back stops the commit."""
+    steps = [
+        step
+        for step in _pipeline_steps(store_root, settings, workspace.root)
+        if step.job == "review"
+    ]
+    if not steps:
         return None
+    client_for = _step_clients(llm, store_root, settings, workspace.root)
     diff = collect_work_diff(workspace, sha_before, goal=goal)
-    for role in roles:
-        log_progress(f"{role.title} is reviewing the change...")
-        verdict = review_with_role(
-            llm,
-            role,
-            goal=goal,
-            diff=diff,
-            summary=agent_result.summary or "",
-            tests_passed=tests_passed,
-        )
+    queue: list[tuple[int, Role, LLMClient]] = [
+        (number, _step_as_role(step), client_for(step))
+        for number, wave in enumerate(generations(steps, "review"))
+        for step in wave
+    ]
+    early: dict[int, RoleVerdict] = {}
+    current_wave = -1
+    changed = False
+    for index, (number, role, reviewer) in enumerate(queue):
+        if number != current_wave:
+            current_wave = number
+            changed = False
+            members = [spot for spot, item in enumerate(queue) if item[0] == number]
+            if len({id(queue[spot][2]) for spot in members}) > 1:
+                names = _names(queue[spot][1].title for spot in members)
+                log_progress(f"{names} are reviewing the change side by side...")
+                for spot in members:
+                    log_progress(f"{queue[spot][1].title} is reviewing the change...")
+                found = run_wave(
+                    members,
+                    lambda spot, shown=diff: review_with_role(
+                        queue[spot][2],
+                        queue[spot][1],
+                        goal=goal,
+                        diff=shown,
+                        summary=agent_result.summary or "",
+                        tests_passed=tests_passed,
+                    ),
+                    lane=lambda spot: queue[spot][2],
+                )
+                early.update(zip(members, found, strict=True))
+        if index in early and not changed:
+            verdict = early[index]
+        else:
+            log_progress(f"{role.title} is reviewing the change...")
+            verdict = review_with_role(
+                reviewer,
+                role,
+                goal=goal,
+                diff=diff,
+                summary=agent_result.summary or "",
+                tests_passed=tests_passed,
+            )
         evidence.append(
             role_evidence(role.name, role.title, role.job, verdict.verdict, verdict.summary)
         )
@@ -1115,8 +1189,9 @@ def _apply_optional_reviews(
         if follow.summary:
             agent_result.summary = follow.summary
         diff = collect_work_diff(workspace, sha_before, goal=goal)
+        changed = True
         again = review_with_role(
-            llm,
+            reviewer,
             role,
             goal=goal,
             diff=diff,
@@ -1355,6 +1430,266 @@ def _scoped_skills(store_root: Path | None, settings: Settings, workspace: Path)
             )
     except (KiwiError, OSError, ValueError):
         return []
+
+
+def _pipeline_steps(store_root: Path | None, settings: Settings, workspace: Path) -> list[Step]:
+    """The steps a proposal runs: this project's agent teams, then its ROLE.md roles.
+
+    In a phase where a team that is on plans or reviews, the teams' steps replace
+    the roles. A phase no team covers still runs the project's roles, and roles
+    the organization enforces always run.
+    """
+    team_steps, enforced = _enabled_team_steps(store_root, settings, workspace)
+    if team_steps:
+        covered = {step.job for step in team_steps}
+        keys = {step.key for step in team_steps}
+        team_steps.extend(
+            step
+            for step in _role_steps(workspace)
+            if step.job not in covered and step.key not in keys
+        )
+        team_steps.extend(_enforced_role_steps(workspace, team_steps, enforced))
+        try:
+            return prepare(team_steps)
+        except GraphError as exc:
+            log_progress(f"Agent team steps were not used: {exc}. Running the project's roles.")
+    return _role_steps(workspace)
+
+
+def _enabled_team_steps(
+    store_root: Path | None, settings: Settings, workspace: Path
+) -> tuple[list[Step], list[str]]:
+    """This project's team steps, and the roles the organization enforces."""
+    if store_root is None:
+        return [], []
+    from agent_lbw.runtime.db import database, database_configured
+    from agent_lbw.runtime.store.agent_teams import enabled_steps
+    from agent_lbw.runtime.store.assignments import enforced_role_names
+
+    if not database_configured(store_root, settings.database_url):
+        return [], []
+    try:
+        with database(store_root, settings.database_url) as db:
+            return enabled_steps(db, workspace), enforced_role_names(db)
+    except (OSError, ValueError):
+        return [], []
+
+
+def _enforced_role_steps(workspace: Path, steps: list[Step], enforced: list[str]) -> list[Step]:
+    """Roles the organization enforces still run when a project uses agent teams.
+
+    An enforced review role runs beside the teams' reviews. An enforced plan
+    role runs only when no team plans. A team step with the role's name wins.
+    """
+    keys = {step.key for step in steps}
+    planned = any(step.job == "plan" for step in steps)
+    known = {role.name: role for role in list_roles(workspace)}
+    extra: list[Step] = []
+    for name in enforced:
+        role = known.get(name)
+        if role is None or name in keys or name in REQUIRED_ROLES:
+            continue
+        if role.job == "review" or (role.job == "plan" and not planned):
+            extra.append(_role_step(role, position=len(steps) + len(extra)))
+            planned = planned or role.job == "plan"
+    return extra
+
+
+def _role_steps(workspace: Path) -> list[Step]:
+    """The roles a project without agent teams runs, as steps that wait for nothing."""
+    roles = [role for role in [plan_role(workspace)] if role is not None]
+    roles.extend(optional_review_roles(workspace))
+    return [_role_step(role, position=index) for index, role in enumerate(roles)]
+
+
+def _role_step(role: Role, *, position: int) -> Step:
+    return Step(
+        key=role.name,
+        job=role.job,
+        team_name=role.title,
+        instruction=role.body,
+        position=position,
+        extra={"role": role},
+    )
+
+
+def _step_as_role(step: Step) -> Role:
+    role = step.extra.get("role")
+    if isinstance(role, Role):
+        return role
+    instruction = step.instruction.strip()
+    return Role(
+        name=step.key,
+        title=step.title[:80],
+        job=step.job,
+        description=(instruction or step.title)[:400],
+        body=instruction[:8000],
+        origin="team",
+        path="",
+        enabled=True,
+    )
+
+
+def _step_clients(
+    llm: LLMClient, store_root: Path | None, settings: Settings, workspace: Path
+) -> Callable[[Step], LLMClient]:
+    """One client per model, so steps on the same model share it and take turns."""
+    made: dict[str, LLMClient] = {}
+
+    def client_for(step: Step) -> LLMClient:
+        if not step.model_id:
+            return llm
+        if step.model_id not in made:
+            made[step.model_id] = _client_for_team(
+                {"model_id": step.model_id, "name": step.title},
+                llm,
+                store_root,
+                settings,
+                workspace,
+            )
+        return made[step.model_id]
+
+    return client_for
+
+
+def _names(titles: Iterable[str]) -> str:
+    shown = [title for title in titles if title]
+    if len(shown) <= 2:
+        return " and ".join(shown)
+    return f"{', '.join(shown[:-1])}, and {shown[-1]}"
+
+
+def _plan_with_steps(
+    steps: list[Step],
+    client_for: Callable[[Step], LLMClient],
+    goal: str,
+    root: Path,
+    *,
+    context: str,
+    files: str,
+) -> GoalPlan | None:
+    """Run plan steps in waves. The lead planner writes the plan the build follows.
+
+    A plan step reads the plans of the steps it waits for as opinions.
+    """
+    lead = lead_planner(steps)
+    if lead is None:
+        return None
+    notes: dict[str, str] = {}
+    result: GoalPlan | None = None
+    for wave in generations(steps, "plan"):
+        if len(wave) == 1 and isinstance(wave[0].extra.get("role"), Role):
+            log_progress("Architect is breaking the goal into steps...")
+        else:
+            verb = "are" if len(wave) > 1 else "is"
+            log_progress(f"{_names(step.title for step in wave)} {verb} planning the change...")
+
+        def draft(step: Step) -> GoalPlan | None:
+            opinions = [step.instruction.strip()]
+            opinions.extend(
+                f"{name} planned:\n{notes[name]}" for name in step.after if notes.get(name)
+            )
+            return plan_goal(
+                client_for(step),
+                goal,
+                context=context,
+                files=files,
+                opinions="\n\n".join(item for item in opinions if item).strip(),
+            )
+
+        drafts = run_wave(wave, draft, lane=client_for)
+        for step, made in zip(wave, drafts, strict=True):
+            if step.key == lead.key:
+                result = made
+            else:
+                notes[step.key] = format_plan(made) or "(no plan)"
+    return ground_plan(result, goal, root)
+
+
+def _build_with_steps(
+    workspace: Workspace,
+    agent: CodingAgent,
+    plan: GoalPlan,
+    builders: list[Step],
+    client_for: Callable[[Step], LLMClient],
+    goal: str,
+    brief: str,
+    sha_before: str | None,
+    *,
+    research: bool,
+) -> AgentResult:
+    """Each build step carries out the plan steps in its paths, one build step at a time.
+
+    Build steps share one checkout, so they never run at the same time.
+    """
+    owned = assign_plan_steps([step.file for step in plan.steps], builders)
+    full = format_plan(plan)
+    first = client_for(builders[0])
+    last: AgentResult | None = None
+    notes: list[str] = []
+    for builder in builders:
+        indexes = owned.get(builder.key, [])
+        if not indexes:
+            log_progress(f"{builder.title} has no plan steps in its paths.")
+            continue
+        agent.llm = client_for(builder)
+        log_progress(
+            f"{builder.title} is writing its part ({len(indexes)} of {len(plan.steps)} steps)..."
+        )
+        guide = builder.instruction.strip()[:4000]
+        part_brief = (
+            f"{brief}\n\nYou are {builder.title}. Other teams own the rest of this plan; "
+            "do only your steps." + (f"\n{guide}" if guide else "") + f"\nThe whole plan:\n{full}"
+        )
+        part = GoalPlan(steps=[plan.steps[index] for index in indexes], cause=plan.cause)
+        last = _run_plan_steps(
+            workspace,
+            agent,
+            part,
+            goal,
+            part_brief,
+            sha_before,
+            research=research and not notes,
+        )
+        if last.summary:
+            notes.append(f"{builder.title}: {last.summary}")
+        if last.stopped_reason in {"ask", "oscillating"}:
+            break
+    agent.llm = first
+    if last is None:
+        return agent.run(goal, brief, require_research=research)
+    if len(notes) > 1 and last.stopped_reason not in {"ask", "oscillating"}:
+        last.summary = "\n".join(notes)
+    return last
+
+
+def _client_for_team(
+    team: dict,
+    llm: LLMClient,
+    store_root: Path | None,
+    settings: Settings,
+    workspace: Path,
+) -> LLMClient:
+    """The model chosen for this team, or the proposal model when that one is unset."""
+    model_id = str(team.get("model_id") or "")
+    if not model_id or store_root is None:
+        return llm
+    from agent_lbw.llm.client import client_for
+    from agent_lbw.runtime.db import database
+    from agent_lbw.runtime.store.catalog import use_model
+
+    try:
+        with database(store_root, settings.database_url) as db:
+            creds = use_model(db, store_root, workspace, model_id)
+    except (OSError, ValueError, KeyError, PermissionError) as exc:
+        log_progress(f"{team.get('name') or 'A team'} keeps the proposal model: {exc}")
+        return llm
+    return client_for(
+        model=str(creds["model_name"]),
+        base_url=str(creds["base_url"]),
+        api_key=str(creds["api_key"]),
+        context_window=settings.context_window,
+    )
 
 
 def _assigned_skills(store_root: Path | None, database_url: str, workspace: Path) -> list[str]:
@@ -1994,6 +2329,7 @@ def _ensure_goal_met(
     *,
     stopped_reason: str | None = None,
     plan: GoalPlan | None = None,
+    replanner: tuple[Role, LLMClient] | None = None,
 ) -> dict[str, object]:
     base_context = collect_context(workspace.root, project, allow_publish=allow_create_pr)
     work_diff = collect_work_diff(workspace, sha_before, goal=goal)
@@ -2042,7 +2378,7 @@ def _ensure_goal_met(
         named_files = format_goal_files(workspace.root, goal)
         repeated = bool(verdict.ui_errors) and tuple(verdict.ui_errors) == last_errors
         last_errors = tuple(verdict.ui_errors)
-        architect = plan_role(workspace.root)
+        architect = replanner[0] if replanner is not None else None
         if (
             settings.plan_goals
             and architect is not None
@@ -2052,7 +2388,7 @@ def _ensure_goal_met(
             replanned = True
             log_progress("Two retries missed the goal; making a new plan from what failed...")
             fresh = plan_goal(
-                llm,
+                replanner[1],
                 goal,
                 context=base_context,
                 files=named_files,

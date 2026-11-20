@@ -1105,7 +1105,9 @@ def _access_level(permissions: object) -> str:
     perms = permissions if isinstance(permissions, dict) else {}
     if perms.get("admin") or perms.get("maintain"):
         return "manage"
-    if perms.get("push") or perms.get("triage") or perms.get("pull"):
+    if perms.get("push"):
+        return "write"
+    if perms.get("triage") or perms.get("pull"):
         return "use"
     return ""
 
