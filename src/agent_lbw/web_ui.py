@@ -1325,9 +1325,10 @@ def create_app(
                 return JSONResponse({"error": "this job is already in progress"}, status_code=409)
             return JSONResponse({"error": "this job cannot take more changes"}, status_code=409)
         _remember_gate(ui, updated, "rework", note, path=f"/api/tasks/{task_id}/rework")
+        reply = updated.to_dict()
         _note_credentials(ui, updated, actor)
         request.state.audit_explicit = True
-        return updated.to_dict()
+        return reply
 
     @app.post("/api/tasks/{task_id}/decide")
     def decide_task(task_id: str, request: Request, payload: DecidePayload | None = None) -> Any:
@@ -1366,10 +1367,11 @@ def create_app(
                 status_code=409,
             )
         _remember_gate(ui, updated, choice, body.note)
+        reply = updated.to_dict()
         if actor:
             _note_credentials(ui, updated, actor)
         request.state.audit_explicit = True
-        return updated.to_dict()
+        return reply
 
     @app.get("/api/branches")
     def branches(request: Request, workspace: str | None = None) -> Any:
