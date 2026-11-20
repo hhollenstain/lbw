@@ -86,6 +86,21 @@ runs into teams, so the switch keeps what the project already had.
      (Ollama Metal · Ollama CUDA · vLLM · cloud)
 ```
 
+## Integrations and usage
+
+An owner or admin turns an integration on by setting a model endpoint to
+personal keys or sign-in. Each person links their own account under
+Integrations on their profile: an API key, a gateway sign-in, or for Claude,
+**Link your Claude organization** (Claude Platform OAuth, beta). A job runs on
+the requester's credentials; a coworker who continues it at a gate runs the
+rest on theirs, or is asked to link first. The audit trail names whose
+credentials ran each part.
+
+Usage is recorded per run into daily rollups and shown on a project's Usage
+section, a person's Usage tab, and the organization's Usage tab: tokens,
+estimated cost, files changed by type, skills, and runs, by service, model,
+project, person, and agent step. See [docs/usage.md](docs/usage.md).
+
 ## Prerequisites
 
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
