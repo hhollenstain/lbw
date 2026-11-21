@@ -1,4 +1,4 @@
-.PHONY: sync test lint doctor run watch certs up-local restart-local restart-agent restart-crossing wipe export-github hydrate up-mac up-nvidia pull-model openapi openapi-check runner runner-test runner-dist runner-image
+.PHONY: sync test lint doctor run watch certs up-local restart-local restart-agent restart-crossing wipe export-github hydrate up-mac up-nvidia pull-model openapi openapi-check runner runner-test runner-dist runner-image web
 
 WORKSPACE ?= examples/demo-project
 GOAL ?= Make the test suite pass.
