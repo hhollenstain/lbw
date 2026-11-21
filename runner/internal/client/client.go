@@ -97,6 +97,14 @@ type Job struct {
 	Project     string `json:"project"`
 	Model       string `json:"model"`
 	MaxSeconds  int    `json:"max_seconds"`
+	// Phase is "plan" or "build". A plan reads the code and changes nothing.
+	Phase string `json:"phase"`
+	// Instruction is how this project plans: its plan steps' instructions.
+	Instruction string `json:"instruction"`
+	// Plan is the plan the build follows.
+	Plan string `json:"plan"`
+	// PriorPatch holds the runner's earlier commits on a sent-back change.
+	PriorPatch string `json:"prior_patch"`
 }
 
 // Event is one line of progress shown on the job in LBW.

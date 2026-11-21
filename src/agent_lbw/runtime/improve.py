@@ -1417,12 +1417,17 @@ def publish_runner_change(
     create_pr: bool,
     store_root: Path | None = None,
     pr_base: str | None = None,
+    hold: bool = False,
+    plan: str = "",
+    evidence: list[dict] | None = None,
 ) -> CycleResult:
     """Check and publish commits a person's runner built, already applied on a branch.
 
     LBW runs the project's tests on the applied branch, so a runner's work gets
     the same check a server run gets, then pushes and opens the pull request
     with the organization's GitHub App. The runner never needs push access.
+    With ``hold`` the change waits at the approval gate once the tests pass, and
+    a person with write access approves it before anything is published.
     """
     workspace = Workspace(root)
     project = load_project(workspace.root)
@@ -1445,6 +1450,22 @@ def publish_runner_change(
         _write_run_log(workspace.root, result)
         _append_to_history(workspace.root, result)
         return result
+    if hold:
+        log_progress("Tests passed. Waiting for you to approve the runner's change.")
+        return CycleResult(
+            status="waiting",
+            goal=selected,
+            summary=summary,
+            tests_passed=tests_passed,
+            committed=True,
+            published=False,
+            commit_sha=sha,
+            reason="waiting for approval",
+            branch=current_branch(workspace),
+            stage="approval",
+            plan=plan,
+            evidence=list(evidence or []),
+        )
     published = False
     pr_url = None
     if create_pr:
@@ -1479,10 +1500,23 @@ def publish_runner_change(
         pr_url=pr_url,
         branch=current_branch(workspace),
         stage="done",
+        plan=plan,
+        evidence=list(evidence or []),
     )
     _write_run_log(workspace.root, result)
     _append_to_history(workspace.root, result)
     return result
+
+
+def runner_plan_steps(store_root: Path | None, settings: Settings, workspace: Path) -> list[Step]:
+    """The plan steps a runner job runs first, in order. The last one writes the plan.
+
+    Empty when planning is off, or when this project's roles and agent teams
+    have no plan step. Then the runner builds straight from the goal.
+    """
+    if not settings.plan_goals:
+        return []
+    return ordered(_pipeline_steps(store_root, settings, workspace), "plan")
 
 
 def _scoped_skills(store_root: Path | None, settings: Settings, workspace: Path) -> list:

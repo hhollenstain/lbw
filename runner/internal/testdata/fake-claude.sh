@@ -9,7 +9,14 @@ if [ -n "$FAKE_CLAUDE_FAIL" ]; then
   echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":""}'
   exit 1
 fi
-printf 'hello from claude\n' > hello.txt
+case " $* " in
+  *" --disallowedTools "*)
+    # A plan: read-only, unless the test asks it to misbehave.
+    if [ -n "$FAKE_CLAUDE_PLAN_WRITES" ]; then printf 'oops\n' > oops.txt; fi
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"## Plan\n1. Add hello.txt\n2. Check it with cat"}'
+    exit 0 ;;
+esac
+printf 'hello from claude\n' >> hello.txt
 cat <<'JSON'
 {"type":"system","subtype":"init","model":"claude-sonnet-4-5","claude_code_version":"2.1.0"}
 not json, ignored
