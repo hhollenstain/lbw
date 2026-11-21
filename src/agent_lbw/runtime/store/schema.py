@@ -399,6 +399,51 @@ _STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS runners (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        identity_id TEXT NOT NULL REFERENCES identities (id),
+        name TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        platform TEXT NOT NULL DEFAULT '',
+        version TEXT NOT NULL DEFAULT '',
+        claude_version TEXT NOT NULL DEFAULT '',
+        claude_ready INTEGER NOT NULL DEFAULT 0,
+        command TEXT NOT NULL DEFAULT '',
+        created BIGINT NOT NULL,
+        last_seen BIGINT NOT NULL DEFAULT 0,
+        revoked BIGINT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS runner_links (
+        device_hash TEXT PRIMARY KEY,
+        user_code TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        platform TEXT NOT NULL DEFAULT '',
+        created BIGINT NOT NULL,
+        tenant_id TEXT REFERENCES tenants (id),
+        identity_id TEXT REFERENCES identities (id),
+        approved BIGINT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS runner_jobs (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        runner_id TEXT NOT NULL REFERENCES runners (id),
+        identity_id TEXT NOT NULL REFERENCES identities (id),
+        task_id TEXT NOT NULL,
+        status TEXT NOT NULL
+            CHECK (status IN ('queued', 'running', 'done', 'failed', 'cancelled')),
+        created BIGINT NOT NULL,
+        leased_until BIGINT NOT NULL DEFAULT 0,
+        started BIGINT,
+        finished BIGINT,
+        error TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS tenant_keys (
         tenant_id TEXT PRIMARY KEY REFERENCES tenants (id),
         wrapped_key TEXT NOT NULL
@@ -469,6 +514,9 @@ _STATEMENTS = (
 # Child rows go before the identity and tenant they point at.
 CLEAR_ORDER = (
     "audit_log",
+    "runner_jobs",
+    "runner_links",
+    "runners",
     "usage_daily",
     "usage_files_daily",
     "usage_skills_daily",
@@ -527,12 +575,13 @@ TASK_COLUMNS = frozenset(
         "reviewer_id",
         "fault",
         "result_ciphertext",
+        "agent_kind",
         "created",
     }
 )
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def read_schema_version(db: Database) -> int:
@@ -587,6 +636,7 @@ def apply_schema(db: Database) -> None:
     _add_column(db, "tasks", "reviewer_id", "TEXT")
     _add_column(db, "tasks", "fault", "TEXT")
     _add_column(db, "tasks", "result_ciphertext", "TEXT")
+    _add_column(db, "tasks", "agent_kind", "TEXT")
     _add_column(db, "sessions", "tenant_id", "TEXT")
     _add_column(db, "models", "endpoint_id", "TEXT")
     _add_column(db, "models", "enabled", "INTEGER NOT NULL DEFAULT 0")
@@ -609,6 +659,10 @@ def apply_schema(db: Database) -> None:
         db.execute(
             f"CREATE INDEX IF NOT EXISTS {table}_person ON {table} (tenant_id, identity_id, day)"
         )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS runner_jobs_queue ON runner_jobs (runner_id, status, created)"
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS runners_person ON runners (tenant_id, identity_id)")
     db.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS projects_provider

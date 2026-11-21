@@ -210,6 +210,14 @@ scheduler call.
   person's credential. The worker runs as that person (`set_actor`), and each
   run reads the credential again. The audit trail notes `task.credentials` at a
   gate and `task.usage` per run.
+- A runner is a person's own machine, linked with a device code
+  (`runtime/store/runners.py`, design in `docs/runner.md`). Only the token's
+  hash is stored. A job with `run_on: my_runner` (`agent_kind = claude_code`)
+  goes to the acting person's online runner and never to a coworker's. The
+  runner runs that person's Claude Code and sends commits back as a patch. LBW
+  applies them on `lbw/runner-<id>`, runs the tests, and publishes. The goal,
+  events, and patch pass through `runtime/runner_hub.py` in memory, not the
+  database. The runner is Go in `runner/`, standard library only.
 - Usage lives in daily rollups, never per model call: see `docs/usage.md`.
   Reports read only those rollups, inside a bounded range, behind a 60-second
   cache. Add a breakdown through the registry in `runtime/store/usage.py`.

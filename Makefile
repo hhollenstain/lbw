@@ -1,4 +1,4 @@
-.PHONY: sync test lint doctor run watch certs up-local restart-local restart-agent restart-crossing wipe export-github hydrate up-mac up-nvidia pull-model openapi openapi-check
+.PHONY: sync test lint doctor run watch certs up-local restart-local restart-agent restart-crossing wipe export-github hydrate up-mac up-nvidia pull-model openapi openapi-check runner runner-test runner-dist runner-image
 
 WORKSPACE ?= examples/demo-project
 GOAL ?= Make the test suite pass.
@@ -86,3 +86,15 @@ up-nvidia:
 
 pull-model:
 	ollama pull $(or $(MODEL),qwen2.5-coder:14b)
+
+runner:
+	$(MAKE) -C runner build
+
+runner-test:
+	$(MAKE) -C runner test
+
+runner-dist:
+	$(MAKE) -C runner dist
+
+runner-image:
+	$(MAKE) -C runner image

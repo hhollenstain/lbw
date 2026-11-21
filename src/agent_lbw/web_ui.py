@@ -25,8 +25,6 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from lbw_shared.directory import bind_directory
-from lbw_shared.hosts import crossing_url
 from pydantic import BaseModel
 
 from agent_lbw.auth_http import register_auth
@@ -42,6 +40,7 @@ from agent_lbw.openapi_models import (
     ScheduleWrite,
 )
 from agent_lbw.progress import attach_token_usage, clip_text, llm_turn_snippets, public_run_item
+from agent_lbw.runner_http import register_runners, runner_required_response
 from agent_lbw.runtime.account import (
     add_user,
     load_account,
@@ -110,6 +109,8 @@ from agent_lbw.tools.git import (
     valid_branch_name,
 )
 from agent_lbw.tools.kiwi import KiwiError
+from lbw_shared.directory import bind_directory
+from lbw_shared.hosts import crossing_url
 
 log = logging.getLogger("lbw")
 
@@ -225,6 +226,7 @@ class TaskCreate(BaseModel):
     gate: str | None = None
     triage_gate: str | None = None
     approval_gate: str | None = None
+    run_on: str | None = None
 
 
 class ContinuousStop(BaseModel):
@@ -1422,6 +1424,14 @@ def create_app(
         model_base_url = body.base_url
         model_api_key = body.api_key
         chosen_id = (body.model_id or "").strip()
+        run_on = (body.run_on or "lbw").strip()
+        if run_on not in {"lbw", "my_runner"}:
+            return JSONResponse({"error": "run_on must be lbw or my_runner"}, status_code=400)
+        if run_on == "my_runner":
+            refused = _check_runner(ui)
+            if refused is not None:
+                return refused
+            chosen_id = ""
         if chosen_id:
             from agent_lbw.runtime.db import database
             from agent_lbw.runtime.store.catalog import use_model
@@ -1460,8 +1470,9 @@ def create_app(
                 triage_gate=body.triage_gate or "",
                 approval_gate=body.approval_gate or "",
                 model_id=chosen_id or None,
+                agent_kind="claude_code" if run_on == "my_runner" else None,
             )
-            if not chosen_id:
+            if not chosen_id and run_on == "lbw":
                 ui.remember_server(task.model_base_url, model=task.model_name)
             ui.set_workspace(task.workspace)
         except ValueError as exc:
@@ -2141,8 +2152,28 @@ def create_app(
     register_github(app)
     register_org(app)
     register_integrations(app)
+    register_runners(app)
     _register_audit(app)
     return app
+
+
+def _check_runner(ui: UiState) -> JSONResponse | None:
+    """A job for the person's own machine needs one of their runners online now."""
+    from agent_lbw.runtime.db import database
+    from agent_lbw.runtime.store.install import require_account
+    from agent_lbw.runtime.store.runners import RunnerRequired, pick_runner
+
+    root = Path(ui.store_root)
+    try:
+        load_account(root, database_url=ui.manager.settings.database_url)
+        with database(root, ui.manager.settings.database_url) as db:
+            account = require_account(db)
+            pick_runner(db, account["org"]["id"], account["current_user_id"])
+    except RunnerRequired as exc:
+        return runner_required_response(exc)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return None
 
 
 def _audit_middleware(app: FastAPI) -> None:

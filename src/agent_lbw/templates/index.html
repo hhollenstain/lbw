@@ -2770,6 +2770,12 @@
 
       <div class="llm-block">
         <p class="llm-heading">Model</p>
+        <label for="run-on">Run on</label>
+        <select id="run-on" aria-label="Run on">
+          <option value="lbw">LBW, with the model below</option>
+          <option value="my_runner">My machine, with my Claude Code</option>
+        </select>
+        <p class="hint" id="run-on-hint">My machine sends the job to a runner you linked under Profile, Integrations. Your own Claude Code does the work there. LBW then applies its commits, runs the tests, and opens the pull request. The pull request is the review.</p>
         <label for="model">Model</label>
         <select id="model" name="model_id" aria-label="Model">
           <option value="">No models turned on</option>
@@ -2961,6 +2967,7 @@
           <div class="personal-panel" id="personal-panel-integrations" data-personal-panel="integrations" hidden>
             <p class="hint">Link your own account for each integration your organization turned on. A job you start, or continue at a gate, runs on your credentials, and the audit trail and usage name you.</p>
             <div id="personal-integrations-root"></div>
+            <div id="personal-runners-root"></div>
           </div>
           <div class="personal-panel" id="personal-panel-usage" data-personal-panel="usage" hidden>
             <div id="personal-usage-root"></div>
@@ -9099,7 +9106,44 @@
       }
     });
 
+    function runsOnMyRunner() {
+      const runOn = document.getElementById("run-on");
+      return Boolean(runOn && runOn.value === "my_runner");
+    }
+
+    function syncRunOn() {
+      const mine = runsOnMyRunner();
+      const select = document.getElementById("model");
+      const windowEl = document.getElementById("context-window");
+      if (select) select.disabled = mine;
+      if (windowEl) windowEl.disabled = mine;
+      for (const id of ["gate-triage", "gate-approval", "bypass-gates", "keep-improving"]) {
+        const box = document.getElementById(id);
+        if (box) box.disabled = mine;
+      }
+    }
+
+    const runOnEl = document.getElementById("run-on");
+    if (runOnEl) {
+      try {
+        const saved = localStorage.getItem("lbw-run-on");
+        if (saved === "lbw" || saved === "my_runner") runOnEl.value = saved;
+      } catch (_err) {
+        /* private mode */
+      }
+      runOnEl.addEventListener("change", function () {
+        try {
+          localStorage.setItem("lbw-run-on", runOnEl.value);
+        } catch (_err) {
+          /* private mode */
+        }
+        syncRunOn();
+      });
+      syncRunOn();
+    }
+
     function selectedModelPayload() {
+      if (runsOnMyRunner()) return { run_on: "my_runner" };
       const select = document.getElementById("model");
       const modelId = select ? select.value : "";
       if (!modelId) {

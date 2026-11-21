@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 
 import { ClaudeLinkSettings } from "./sections/integrations/ClaudeLinkSettings";
 import { IntegrationsSection } from "./sections/integrations/IntegrationsSection";
+import { RunnersSection } from "./sections/integrations/RunnersSection";
 import { ModelsSection } from "./sections/models/ModelsSection";
 import { ProjectModelsSection } from "./sections/models/ProjectModelsSection";
 import { OrgRolesSection } from "./sections/organization/OrgRolesSection";
@@ -28,4 +29,5 @@ mount("personal-usage-root", <UsageDashboard scope="me" />);
 mount("org-usage-root", <UsageDashboard scope="org" />);
 mount("org-prices-root", <PricesSection />);
 mount("personal-integrations-root", <IntegrationsSection />);
+mount("personal-runners-root", <RunnersSection />);
 mount("org-claude-link-root", <ClaudeLinkSettings />);

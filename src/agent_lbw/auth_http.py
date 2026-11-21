@@ -7,7 +7,6 @@ from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-from lbw_shared.directory import request_directory
 from pydantic import BaseModel
 
 from agent_lbw.runtime.account import load_account
@@ -28,7 +27,9 @@ from agent_lbw.runtime.store.auth import (
 )
 from agent_lbw.runtime.store.github import GitHubAppError, begin_github_login
 from agent_lbw.runtime.store.install import read_account
+from agent_lbw.runtime.store.runners import RUNNER_PREFIX
 from agent_lbw.runtime.store.sso import begin_sso, finish_sso
+from lbw_shared.directory import request_directory
 
 _COOKIE = "lbw_session"
 _MAX_AGE = 14 * 24 * 60 * 60
@@ -79,6 +80,7 @@ def register_auth(app: FastAPI) -> None:
                 and path.startswith("/api/")
                 and not path.startswith("/api/auth")
                 and path != "/api/github/callback"
+                and not path.startswith(RUNNER_PREFIX)
             ):
                 return JSONResponse({"error": "sign in"}, status_code=401)
             return await call_next(request)

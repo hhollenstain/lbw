@@ -75,6 +75,7 @@ def record_task(root: Path, database_url: str, task) -> None:
             run_ref=f".lbw/runs/{task.id}",
             agent_id=str(getattr(task, "agent_id", "") or "") or None,
             model_id=str(getattr(task, "model_id", "") or "") or None,
+            agent_kind=str(getattr(task, "agent_kind", "") or "") or None,
         )
         who = name or "Someone"
         record_audit(
@@ -520,7 +521,7 @@ def _open_rows(root: Path, database_url: str) -> list[dict]:
                 SELECT tasks.id, tasks.status, tasks.branch, tasks.pr_url,
                        tasks.goal_ciphertext, tasks.result_ciphertext, tasks.created,
                        tasks.tenant_id, tasks.requester_id, tasks.agent_id,
-                       tasks.model_id, projects.locator
+                       tasks.model_id, tasks.agent_kind, projects.locator
                 FROM tasks
                 JOIN projects ON projects.id = tasks.project_id
                 WHERE tasks.tenant_id = ?
@@ -547,7 +548,7 @@ def _task_row(root: Path, database_url: str, task_id: str) -> dict | None:
                 SELECT tasks.id, tasks.status, tasks.branch, tasks.pr_url,
                        tasks.goal_ciphertext, tasks.result_ciphertext, tasks.created,
                        tasks.tenant_id, tasks.requester_id, tasks.agent_id,
-                       tasks.model_id, projects.locator
+                       tasks.model_id, tasks.agent_kind, projects.locator
                 FROM tasks
                 JOIN projects ON projects.id = tasks.project_id
                 WHERE tasks.tenant_id = ? AND tasks.id = ?
@@ -622,6 +623,7 @@ def _open_record(root: Path, database_url: str, row: dict) -> dict | None:
         "review_notes": str(result.get("review_notes") or ""),
         "agent_id": str(row.get("agent_id") or ""),
         "model_id": str(row.get("model_id") or ""),
+        "agent_kind": str(row.get("agent_kind") or ""),
         "tenant_id": str(row.get("tenant_id") or ""),
         **_people(root, database_url, row),
     }

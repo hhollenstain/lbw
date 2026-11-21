@@ -101,6 +101,14 @@ section, a person's Usage tab, and the organization's Usage tab: tokens,
 estimated cost, files changed by type, skills, and runs, by service, model,
 project, person, and agent step. See [docs/usage.md](docs/usage.md).
 
+## Run jobs on your own machine
+
+A runner links your computer to your LBW account. Jobs you send to **My
+machine** run there with your own Claude Code, and LBW applies the commits,
+runs the tests, and opens the pull request. Build it with `make runner`, then
+`runner/bin/lbw-runner login --server <your LBW address>`. See
+[docs/runner.md](docs/runner.md).
+
 ## Prerequisites
 
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)

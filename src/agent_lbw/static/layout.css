@@ -2847,6 +2847,27 @@ a.usage-export {
   max-width: 28rem;
 }
 
+.runner-panel {
+  margin-top: 1.5rem;
+}
+
+.runner-panel code {
+  overflow-wrap: anywhere;
+}
+
+.runner-approve {
+  display: grid;
+  grid-template-columns: minmax(0, 14rem) auto;
+  gap: 0.4rem 0.6rem;
+  align-items: end;
+  max-width: 28rem;
+  margin: 0.6rem 0 1rem;
+}
+
+.runner-approve label {
+  grid-column: 1 / -1;
+}
+
 .claude-link-settings code {
   overflow-wrap: anywhere;
 }
