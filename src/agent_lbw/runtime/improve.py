@@ -1407,6 +1407,84 @@ def _publish_held(
     return result
 
 
+def publish_runner_change(
+    root: Path,
+    settings: Settings,
+    goal: str,
+    summary: str,
+    *,
+    base_sha: str | None,
+    create_pr: bool,
+    store_root: Path | None = None,
+    pr_base: str | None = None,
+) -> CycleResult:
+    """Check and publish commits a person's runner built, already applied on a branch.
+
+    LBW runs the project's tests on the applied branch, so a runner's work gets
+    the same check a server run gets, then pushes and opens the pull request
+    with the organization's GitHub App. The runner never needs push access.
+    """
+    workspace = Workspace(root)
+    project = load_project(workspace.root)
+    selected = goal.strip() or "Runner change"
+    tests_after = _maybe_test(workspace, project, settings, phase="after")
+    tests_passed = _tests_passed_value(tests_after)
+    sha = current_sha(workspace)
+    if settings.require_tests and _tests_block_commit(tests_after):
+        result = CycleResult(
+            status="failed",
+            goal=selected,
+            summary=_failure_notes("tests failed on the runner's change", summary),
+            tests_passed=False,
+            committed=True,
+            published=False,
+            commit_sha=sha,
+            reason="tests failed on the runner's change",
+            branch=current_branch(workspace),
+        )
+        _write_run_log(workspace.root, result)
+        _append_to_history(workspace.root, result)
+        return result
+    published = False
+    pr_url = None
+    if create_pr:
+        github_token = _github_token(store_root, settings.database_url)
+        published, pr_url, failed, _ = _publish_pull_request(
+            workspace,
+            project,
+            selected,
+            summary,
+            tests_passed=tests_passed,
+            sha=sha,
+            committed=True,
+            screenshot_files=[],
+            token=github_token,
+            settings=settings,
+            store_root=store_root,
+            pr_base=pr_base,
+            rewind_sha=base_sha,
+        )
+        sha = current_sha(workspace) or sha
+        if failed is not None:
+            return failed
+    result = CycleResult(
+        status="success",
+        goal=selected,
+        summary=summary,
+        tests_passed=tests_passed,
+        committed=True,
+        published=published,
+        commit_sha=sha,
+        reason="built on the person's runner",
+        pr_url=pr_url,
+        branch=current_branch(workspace),
+        stage="done",
+    )
+    _write_run_log(workspace.root, result)
+    _append_to_history(workspace.root, result)
+    return result
+
+
 def _scoped_skills(store_root: Path | None, settings: Settings, workspace: Path) -> list:
     if store_root is None:
         return []

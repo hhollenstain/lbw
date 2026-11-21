@@ -2,8 +2,7 @@
 
 An organization key bills everyone together. An endpoint an owner or admin
 sets to personal keys or sign-in is an integration each person links on their
-profile: a personal key, a gateway sign-in, or for Claude a linked Claude
-organization (``claude_link``). It is sealed for that person, and a run they
+profile: a personal key or a gateway sign-in. It is sealed for that person, and a run they
 start or continue at a gate uses it. The ordinary sign-in token is not stored.
 """
 
@@ -17,8 +16,6 @@ from agent_lbw.runtime.store.crypto import open_secret, seal
 from agent_lbw.runtime.store.install import require_account
 from agent_lbw.runtime.store.sso import begin_access, finish_access, refresh_access
 from agent_lbw.runtime.store.tasks import tenant_dek
-
-CLAUDE_LINK = "claude_link"
 
 
 def start_gateway_sign_in(db: Database, root: Path, endpoint_id: str, *, redirect_uri: str) -> str:
@@ -150,8 +147,7 @@ def person_credential(db: Database, root: Path, endpoint_id: str) -> dict:
     identity_id = account["current_user_id"]
     saved = db.fetchone(
         """
-        SELECT access_ciphertext, refresh_ciphertext, expires_at, kind,
-               connection_id, profile_id
+        SELECT access_ciphertext, refresh_ciphertext, expires_at, kind
         FROM endpoint_credentials
         WHERE endpoint_id = ? AND identity_id = ?
         """,
@@ -163,14 +159,6 @@ def person_credential(db: Database, root: Path, endpoint_id: str) -> dict:
     kind = str(saved["kind"] or "sso")
     if kind == "key":
         return {"api_key": open_secret(key, saved["access_ciphertext"]), "kind": kind}
-    if kind == CLAUDE_LINK:
-        from agent_lbw.runtime.store.claude_link import link_credential
-
-        try:
-            found = link_credential(db, root, tenant_id, endpoint_id, identity_id, saved)
-        except PermissionError as exc:
-            raise LinkRequired(row) from exc
-        return {**found, "kind": kind}
     expires_at = int(saved["expires_at"] or 0)
     if expires_at > int(time.time()) + 60:
         return {"api_key": open_secret(key, saved["access_ciphertext"]), "kind": kind}
@@ -205,19 +193,6 @@ def unlink(db: Database, root: Path, endpoint_id: str) -> None:
     tenant_id = account["org"]["id"]
     _member_endpoint(db, tenant_id, endpoint_id)
     identity_id = account["current_user_id"]
-    saved = db.fetchone(
-        """
-        SELECT kind, connection_id FROM endpoint_credentials
-        WHERE endpoint_id = ? AND identity_id = ?
-        """,
-        (endpoint_id, identity_id),
-    )
-    if saved is None:
-        return
-    if str(saved["kind"] or "") == CLAUDE_LINK:
-        from agent_lbw.runtime.store.claude_link import revoke_link
-
-        revoke_link(db, root, tenant_id, str(saved["connection_id"] or ""))
     db.execute(
         "DELETE FROM endpoint_credentials WHERE endpoint_id = ? AND identity_id = ?",
         (endpoint_id, identity_id),
@@ -229,10 +204,6 @@ def person_integrations(db: Database) -> list[dict]:
     account = require_account(db)
     tenant_id = account["org"]["id"]
     identity_id = account["current_user_id"]
-    claude_ready = (
-        db.fetchone("SELECT 1 AS found FROM claude_link_apps WHERE tenant_id = ?", (tenant_id,))
-        is not None
-    )
     rows = db.fetchall(
         """
         SELECT model_endpoints.id, model_endpoints.name, model_endpoints.provider,
@@ -250,7 +221,6 @@ def person_integrations(db: Database) -> list[dict]:
     found: list[dict] = []
     for row in rows:
         gateway = row["provider"] in {"litellm", "gateway"}
-        claude = row["provider"] == "anthropic" and row["auth"] == "personal"
         found.append(
             {
                 "endpoint_id": row["id"],
@@ -261,7 +231,6 @@ def person_integrations(db: Database) -> list[dict]:
                 "linked_with": str(row["linked_kind"] or ""),
                 "can_add_key": row["auth"] == "personal",
                 "can_sign_in": gateway,
-                "can_link_claude": claude and claude_ready,
             }
         )
     return found

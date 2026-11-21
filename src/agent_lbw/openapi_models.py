@@ -114,12 +114,6 @@ class AgentTeamUpdate(BaseModel):
     steps: list[AgentTeamStep] = Field(default_factory=list)
 
 
-class ClaudeLinkWrite(BaseModel):
-    client_id: str
-    assertion_file: str
-    profile_api_key: str = ""
-
-
 class PriceWrite(BaseModel):
     model: str
     input_per_mtok: float
@@ -160,3 +154,34 @@ class TaskGate(BaseModel):
     at: str
     actor: TaskActor
     note: str = ""
+
+
+class RunnerLinkStart(BaseModel):
+    name: str
+    platform: str = ""
+
+
+class RunnerLinkToken(BaseModel):
+    device_code: str
+
+
+class RunnerApprove(BaseModel):
+    user_code: str
+
+
+class RunnerHeartbeat(BaseModel):
+    version: str = ""
+    claude_version: str = ""
+    claude_ready: bool = False
+    platform: str = ""
+
+
+class RunnerEvents(BaseModel):
+    events: list[object] = Field(default_factory=list)
+
+
+class RunnerFinish(BaseModel):
+    status: str
+    summary: str = ""
+    error: str = ""
+    patch: str = ""

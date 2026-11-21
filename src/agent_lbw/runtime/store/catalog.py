@@ -1,8 +1,11 @@
 """Organization models a proposal can run.
 
 A model is a bring-your-own endpoint: OpenAI, Claude, Google, a local server,
-or a gateway. Turning it on makes it available on every project until that
-project turns it off. That project choice stays when the organization turns
+or a gateway. A Claude endpoint can instead run on each person's machine: a
+job on one of its models goes to the requester's own runner, which runs their
+Claude Code with that model, so LBW holds no Claude credential for it.
+Turning a model on makes it available on every project until that project
+turns it off. That project choice stays when the organization turns
 the model off and back on. There is no separate agent to add. Rank does not
 include a model.
 """
@@ -31,6 +34,7 @@ PROVIDERS = (
         "label": "Claude",
         "key": True,
         "base_url": "https://api.anthropic.com/v1",
+        "runner": True,
     },
     {
         "id": "google",
@@ -60,7 +64,11 @@ AGENT_KINDS = (
 _PROVIDER_IDS = {item["id"] for item in PROVIDERS}
 _HOSTED = frozenset({"ollama", "vllm", "lmstudio", "openai_compatible"})
 _GATEWAYS = {item["id"] for item in PROVIDERS if item.get("gateway")}
-_AUTH = frozenset({"key", "sso", "personal"})
+_AUTH = frozenset({"key", "sso", "personal", "runner"})
+RUNNER = "runner"
+_RUNNER_PROVIDERS = {item["id"] for item in PROVIDERS if item.get("runner")}
+# The names Claude Code takes for --model. Each one follows the latest model of that tier.
+CLAUDE_CODE_MODELS = ("sonnet", "opus", "haiku")
 _KIND_IDS = {item["id"] for item in AGENT_KINDS}
 _SCOPES = frozenset({"project", "team", "identity"})
 _KEY_PROVIDERS = {item["id"] for item in PROVIDERS if item["key"]}
@@ -109,9 +117,22 @@ def save_endpoint(
         raise ValueError("only a gateway can use SSO")
     if mode == "personal" and chosen not in _PERSONAL:
         raise ValueError("this endpoint cannot take a personal key")
+    if mode == RUNNER and chosen not in _RUNNER_PROVIDERS:
+        raise ValueError("only Claude runs on each person's machine")
     label = clean_name(name, "endpoint")
     if _named(db, "model_endpoints", tenant_id, label) is not None:
         raise ValueError("that name is already used")
+    if mode == RUNNER:
+        db.execute(
+            """
+            INSERT INTO model_endpoints (
+                id, tenant_id, name, provider, base_url, api_key_ciphertext, models_json,
+                auth, audience
+            ) VALUES (?, ?, ?, ?, '', NULL, ?, ?, '')
+            """,
+            (new_id("ep"), tenant_id, label, chosen, json.dumps(CLAUDE_CODE_MODELS), mode),
+        )
+        return ""
     url = _endpoint_url(chosen, base_url)
     own_key = api_key.strip() if mode == "personal" else ""
     secret = "" if mode in {"sso", "personal"} else api_key.strip()
@@ -517,7 +538,10 @@ def models_for_workspace(db: Database, workspace: Path) -> list[dict]:
 
 
 def use_model(db: Database, root: Path, workspace: Path, model_id: str) -> dict:
-    """The granted model's name, host, and key. The key is not returned to the page."""
+    """The granted model's name, host, and key. The key is not returned to the page.
+
+    ``runner`` is true when the job runs on the acting person's own machine.
+    """
     account = require_account(db)
     tenant_id = account["org"]["id"]
     project = _checkout_project(db, tenant_id, workspace)
@@ -533,12 +557,12 @@ def use_model(db: Database, root: Path, workspace: Path, model_id: str) -> dict:
         "model_name": row["model_name"],
         "base_url": row["base_url"] or "",
         "api_key": credential["api_key"],
-        "link": credential.get("link"),
         "model_id": row["id"],
         "endpoint_id": row["endpoint_id"] or "",
         "service": row["endpoint_name"] or row["name"],
         "provider": row["provider"],
         "personal": (row.get("endpoint_auth") or "key") in {"sso", "personal"},
+        "runner": (row.get("endpoint_auth") or "key") == RUNNER,
     }
 
 
@@ -689,8 +713,14 @@ def _endpoint_secret(db: Database, root: Path, row: dict) -> str:
 
 
 def _model_credential(db: Database, root: Path, tenant_id: str, row: dict) -> dict:
-    """The organization key, or the acting person's linked credential."""
-    if (row.get("endpoint_auth") or "key") in {"sso", "personal"}:
+    """The organization key, or the acting person's linked credential.
+
+    A runner model has none: the person's own Claude Code signs in on their machine.
+    """
+    mode = row.get("endpoint_auth") or "key"
+    if mode == RUNNER:
+        return {"api_key": ""}
+    if mode in {"sso", "personal"}:
         return person_credential(db, root, row["endpoint_id"])
     token = row["api_key_ciphertext"]
     if not token:
@@ -706,6 +736,12 @@ def _provider_url(provider: str) -> str:
 
 
 def _refresh_names(db: Database, root: Path, row: dict) -> str:
+    if (row.get("auth") or "key") == RUNNER:
+        db.execute(
+            "UPDATE model_endpoints SET models_json = ? WHERE id = ?",
+            (json.dumps(CLAUDE_CODE_MODELS), row["id"]),
+        )
+        return ""
     try:
         secret = _endpoint_secret(db, root, row)
         names = _fetch_names(row["provider"], row["base_url"], secret)
@@ -914,6 +950,7 @@ def _model_choice(row: dict) -> dict:
         "provider": row["provider"],
         "model_name": row["model_name"],
         "endpoint_name": row["endpoint_name"] or "",
+        "runner": (row.get("endpoint_auth") or "key") == RUNNER,
     }
 
 

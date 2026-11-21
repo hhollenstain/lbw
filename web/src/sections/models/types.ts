@@ -4,6 +4,7 @@ export type Provider = {
   key: boolean;
   base_url: string;
   gateway?: boolean;
+  runner?: boolean;
 };
 
 export type AgentKind = {
@@ -19,7 +20,7 @@ export type Endpoint = {
   base_url: string;
   has_api_key: boolean;
   model_names: string[];
-  auth: "key" | "sso" | "personal";
+  auth: "key" | "sso" | "personal" | "runner";
   signed_in: boolean;
 };
 
