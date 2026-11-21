@@ -137,3 +137,56 @@ func TestModelPrefersTheJobOverTheRunnerSetting(t *testing.T) {
 		t.Fatalf("runner fallback: got %q", got)
 	}
 }
+
+func TestAPlanReadsTheCodeAndChangesNothing(t *testing.T) {
+	remote, base := Repo(t)
+	r := &Runner{Config: &config.Config{WorkDir: t.TempDir(), PermissionMode: "acceptEdits", AllowedTools: []string{"Edit", "Write"}}, Claude: fakeClaude(t)}
+	got := r.Run(context.Background(), &client.Job{JobID: "p", TaskID: "t", Phase: "plan", Goal: "Add a hello file", BaseSHA: base, RemoteURL: remote}, func(client.Event) {})
+	if got.Status != "done" || got.Patch != "" || !strings.Contains(got.Summary, "## Plan") {
+		t.Fatalf("result = %+v", got)
+	}
+}
+
+func TestAPlanThatEditsFilesFails(t *testing.T) {
+	t.Setenv("FAKE_CLAUDE_PLAN_WRITES", "1")
+	remote, base := Repo(t)
+	r := &Runner{Config: &config.Config{WorkDir: t.TempDir()}, Claude: fakeClaude(t)}
+	got := r.Run(context.Background(), &client.Job{JobID: "p", Phase: "plan", Goal: "g", BaseSHA: base, RemoteURL: remote}, func(client.Event) {})
+	if got.Status != "failed" || !strings.Contains(got.Error, "must not edit") {
+		t.Fatalf("result = %+v", got)
+	}
+}
+
+func TestPlanToolsAreReadOnly(t *testing.T) {
+	args := strings.Join(claudeArgsForPlan(), " ")
+	for _, want := range []string{"--allowedTools Read,Glob,Grep", "--disallowedTools Edit,Write,MultiEdit,NotebookEdit", "--permission-mode default"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("plan args are missing %q: %s", want, args)
+		}
+	}
+}
+
+func TestABuildFollowsThePlanAndContinuesFromEarlierCommits(t *testing.T) {
+	remote, base := Repo(t)
+	cfg := &config.Config{WorkDir: t.TempDir()}
+	r := &Runner{Config: cfg, Claude: fakeClaude(t)}
+	first := r.Run(context.Background(), &client.Job{JobID: "a", TaskID: "t", Goal: "Add a hello file", BaseSHA: base, RemoteURL: remote}, func(client.Event) {})
+	if first.Status != "done" {
+		t.Fatalf("first = %+v", first)
+	}
+	again := r.Run(context.Background(), &client.Job{JobID: "b", TaskID: "t", Goal: "Add a hello file", BaseSHA: base, RemoteURL: remote, PriorPatch: first.Patch, ReviewNotes: "Say it twice"}, func(client.Event) {})
+	if again.Status != "done" {
+		t.Fatalf("again = %+v", again)
+	}
+	if strings.Count(again.Patch, "Subject: [PATCH") != 2 {
+		t.Fatalf("the sent-back build should carry both commits:\n%s", again.Patch)
+	}
+	text := Prompt(&client.Job{Goal: "g", Plan: "1. Do the thing"})
+	if !strings.Contains(text, "Follow this plan:\n1. Do the thing") {
+		t.Fatalf("prompt = %s", text)
+	}
+}
+
+func claudeArgsForPlan() []string {
+	return planOptions("claude", "/tmp/x", &client.Job{Goal: "g"}, &config.Config{}).Args()
+}

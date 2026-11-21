@@ -218,9 +218,14 @@ scheduler call.
   the acting person's online runner and never to a coworker's. Starting,
   continuing, or rerunning one without an online runner is refused with
   `409 runner_required`. The job hands the runner the model name for
-  `claude --model`. The
-  runner runs that person's Claude Code and sends commits back as a patch. LBW
-  applies them on `lbw/runner-<id>`, runs the tests, and publishes. The goal,
+  `claude --model`. A runner job is gated like any proposal: unless planning
+  is off or no role or agent team plans, the plan steps run first on the
+  runner, read-only, and the triage gate holds the plan. The build follows it.
+  The runner runs that person's Claude Code and sends commits back as a patch.
+  LBW applies them on `lbw/runner-<id>`, runs the tests, holds the change at
+  the approval gate, and then publishes. Approving needs no runner. Building,
+  continuing, and sending back do. A sent-back change gets its earlier
+  commits back, so the runner continues from them. The goal,
   events, and patch pass through `runtime/runner_hub.py` in memory, not the
   database. The runner is Go in `runner/`, standard library only.
 - Usage lives in daily rollups, never per model call: see `docs/usage.md`.

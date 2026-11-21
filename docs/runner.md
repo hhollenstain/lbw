@@ -135,7 +135,26 @@ Linux Secret Service, or, when neither exists, a file only the user can read.
 - LBW applies the commits on `lbw/runner-<job>` with `git am`, keeping the
   person as author and LBW's committer. It then runs the project's tests and, if
   the job asked for one, pushes and opens the pull request with the
-  organization's GitHub App. The pull request is the review in the prototype.
+  organization's GitHub App.
+
+### Plan and gates
+
+A runner job goes through the same plan and gates as a job LBW runs.
+
+- **Plan.** Unless planning is off, or no role or agent team on the project
+  plans, the runner first runs a plan job. It gets the goal and the plan steps'
+  instructions. Claude Code may only read (`Read`, `Glob`, `Grep`, and git read
+  commands), and edits are refused. If any file changed anyway, the plan
+  fails. The plan comes back as the job's plan.
+- **Triage gate.** When it asks, the job waits with the plan. **Build** sends the
+  build to the acting person's own runner with the plan. **Hand off** stops.
+- **Build.** Claude Code follows the plan.
+- **Approval gate.** After LBW applies the commits and the tests pass, the job
+  waits on its `lbw/runner-…` branch. LBW's checkout goes back to the base
+  branch meanwhile.
+  - **Approve** tests that branch again and publishes it. No runner is needed.
+  - **Send back** builds again on the acting person's runner, starting from the
+    earlier commits and carrying the note.
 
 ### What is stored
 
@@ -198,7 +217,6 @@ Runner (`runner/`, Go 1.24, standard library only):
 
 Known limits of the prototype, each tracked as an issue:
 
-- Runner jobs skip the plan and approval gates. The pull request is the review.
 - The hub is in memory: one LBW process, and a restart fails running runner jobs.
 - No signed releases or self-update yet.
 - No organization policy for who may use runners or which tools they allow.

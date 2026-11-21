@@ -1353,7 +1353,7 @@ def create_app(
                 return JSONResponse({"error": blocked}, status_code=403)
         actor = None
         if current is not None and choice != "hand_off":
-            credential_block, actor = _acting_credential(ui, current)
+            credential_block, actor = _acting_credential(ui, current, on_runner=choice != "approve")
             if credential_block is not None:
                 return credential_block
         try:
@@ -1445,6 +1445,11 @@ def create_app(
             model_base_url = creds["base_url"]
             model_api_key = creds["api_key"]
             on_runner = bool(creds.get("runner"))
+            if on_runner and body.continuous:
+                return JSONResponse(
+                    {"error": "keep improving runs in LBW; choose a model LBW calls"},
+                    status_code=400,
+                )
             if on_runner:
                 refused = _check_runner(ui)
                 if refused is not None:
@@ -2596,12 +2601,15 @@ def _schedule_model(ui: UiState, workspace: Path, model_id: str) -> tuple[str, s
     return (str(creds.get("model_name") or ""), host, str(creds.get("api_key") or ""))
 
 
-def _acting_credential(ui: UiState, task) -> tuple[JSONResponse | None, str | None]:
+def _acting_credential(
+    ui: UiState, task, *, on_runner: bool = True
+) -> tuple[JSONResponse | None, str | None]:
     """Check the person acting now has linked the integration this job's model runs on.
 
     Work that continues runs on their credentials, never on the requester's, so a
     person who has not linked it is asked to link it first. A model on a person's
-    machine runs on the acting person's own runner, so one of theirs must be online.
+    machine runs on the acting person's own runner, so one of theirs must be online
+    when what follows runs there. Approving publishes from LBW, so it needs none.
     """
     from agent_lbw.runtime.account import load_account
     from agent_lbw.runtime.db import database, database_configured
@@ -2629,7 +2637,7 @@ def _acting_credential(ui: UiState, task) -> tuple[JSONResponse | None, str | No
         return JSONResponse({"error": str(exc)}, status_code=403), None
     except (KeyError, ValueError) as exc:
         return JSONResponse({"error": str(exc) or "that model is gone"}, status_code=409), None
-    if creds.get("runner"):
+    if creds.get("runner") and on_runner:
         refused = _check_runner(ui)
         if refused is not None:
             return refused, None

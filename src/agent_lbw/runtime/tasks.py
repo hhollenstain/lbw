@@ -841,9 +841,11 @@ class TaskManager:
                 task.criteria = list(result.criteria)
             if getattr(result, "evidence", None):
                 task.evidence = list(result.evidence)
-            if getattr(result, "branch", None):
-                task.branch = result.branch
             self._refresh_git_state(task)
+            if getattr(result, "branch", None):
+                # The result's branch wins: a held runner change waits on its own branch
+                # while the checkout goes back to where the next job starts.
+                task.branch = result.branch
             task.finished_at = _utcnow()
             task.status = result.status
         except ModelRequestError as exc:

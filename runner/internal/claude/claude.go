@@ -61,6 +61,9 @@ func Update(ctx context.Context, program string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// MaxSummary is the longest result LBW keeps: room for a plan.
+const MaxSummary = 20000
+
 // Options are the flags one job runs with.
 type Options struct {
 	Program        string
@@ -68,8 +71,10 @@ type Options struct {
 	Prompt         string
 	PermissionMode string
 	AllowedTools   []string
-	MaxTurns       int
-	Model          string
+	// DisallowedTools are refused even when another rule would allow them.
+	DisallowedTools []string
+	MaxTurns        int
+	Model           string
 }
 
 // Args are the command-line arguments for a headless, streamed run.
@@ -80,6 +85,9 @@ func (o Options) Args() []string {
 	}
 	if len(o.AllowedTools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(o.AllowedTools, ","))
+	}
+	if len(o.DisallowedTools) > 0 {
+		args = append(args, "--disallowedTools", strings.Join(o.DisallowedTools, ","))
 	}
 	if o.MaxTurns > 0 {
 		args = append(args, "--max-turns", fmt.Sprint(o.MaxTurns))
@@ -224,7 +232,7 @@ func (p *Parser) Line(raw []byte, emit func(client.Event)) {
 	case "result":
 		p.sawResult = true
 		p.outcome.OK = !item.IsError && (item.Subtype == "" || item.Subtype == "success")
-		p.outcome.Summary = clip(item.Result, 4000)
+		p.outcome.Summary = clip(item.Result, MaxSummary)
 		if !p.outcome.OK {
 			p.outcome.Error = "Claude Code stopped: " + strings.TrimPrefix(item.Subtype, "error_")
 			if item.Subtype == "" {

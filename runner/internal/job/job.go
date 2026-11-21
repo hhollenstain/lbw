@@ -54,6 +54,15 @@ func (r *Runner) Run(ctx context.Context, job *client.Job, emit func(client.Even
 		_, _ = git(context.Background(), repo, "worktree", "prune")
 	}()
 	emit(client.Event{Kind: "step", Message: fmt.Sprintf("Working in a fresh worktree at %s", short(job.BaseSHA))})
+	if job.Phase == "plan" {
+		return r.plan(ctx, tree, job, emit)
+	}
+	if job.PriorPatch != "" {
+		if err := applyPrior(ctx, r.Config.WorkDir, tree, job); err != nil {
+			return failed(err)
+		}
+		emit(client.Event{Kind: "step", Message: "Picked up the earlier commits on this change"})
+	}
 	outcome := claude.Run(ctx, claude.Options{
 		Program:        r.Claude,
 		Dir:            tree,
@@ -73,6 +82,66 @@ func (r *Runner) Run(ctx context.Context, job *client.Job, emit func(client.Even
 	return client.Result{Status: "done", Summary: outcome.Summary, Patch: patch}
 }
 
+// PlanTools let a plan read the code and git history. A plan changes nothing.
+var PlanTools = []string{
+	"Read", "Glob", "Grep",
+	"Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
+}
+
+// EditTools are refused during a plan, whatever the runner's config allows.
+var EditTools = []string{"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+// plan runs the plan phase read-only and returns the plan as the summary.
+func (r *Runner) plan(ctx context.Context, tree string, job *client.Job, emit func(client.Event)) client.Result {
+	outcome := claude.Run(ctx, planOptions(r.Claude, tree, job, r.Config), emit)
+	if !outcome.OK {
+		return client.Result{Status: "failed", Summary: outcome.Summary, Error: outcome.Error}
+	}
+	if changed, _ := git(ctx, tree, "status", "--porcelain"); strings.TrimSpace(changed) != "" {
+		return client.Result{Status: "failed", Summary: outcome.Summary, Error: "the plan changed files; a plan must not edit the code"}
+	}
+	if strings.TrimSpace(outcome.Summary) == "" {
+		return client.Result{Status: "failed", Error: "Claude Code returned no plan"}
+	}
+	return client.Result{Status: "done", Summary: outcome.Summary}
+}
+
+func planOptions(program, tree string, job *client.Job, cfg *config.Config) claude.Options {
+	return claude.Options{
+		Program:         program,
+		Dir:             tree,
+		Prompt:          PlanPrompt(job),
+		PermissionMode:  "default",
+		AllowedTools:    PlanTools,
+		DisallowedTools: EditTools,
+		MaxTurns:        cfg.MaxTurns,
+		Model:           model(job, cfg.Model),
+	}
+}
+
+// PlanPrompt asks for a plan of the change, following how this project plans.
+func PlanPrompt(job *client.Job) string {
+	var b strings.Builder
+	b.WriteString("You are planning a job from LBW in a git worktree of this repository. ")
+	b.WriteString("Read what you need, but do not change any file: a person reviews this plan before anything is built.\n\n")
+	b.WriteString("Goal:\n")
+	b.WriteString(strings.TrimSpace(job.Goal))
+	b.WriteString("\n")
+	if how := strings.TrimSpace(job.Instruction); how != "" {
+		b.WriteString("\nHow this project plans:\n")
+		b.WriteString(how)
+		b.WriteString("\n")
+	}
+	if notes := strings.TrimSpace(job.ReviewNotes); notes != "" {
+		b.WriteString("\nA reviewer asked for these changes:\n")
+		b.WriteString(notes)
+		b.WriteString("\n")
+	}
+	b.WriteString("\nReply with only the plan, in markdown: the cause or approach, each file to change and what changes there, ")
+	b.WriteString("and how to check the change works, including the tests to add or run. Keep it focused on the goal.\n")
+	return b.String()
+}
+
 // Prompt is the instruction Claude Code receives. The repository's own
 // CLAUDE.md and AGENTS.md still apply, because Claude Code reads them itself.
 func Prompt(job *client.Job) string {
@@ -81,6 +150,11 @@ func Prompt(job *client.Job) string {
 	b.WriteString("Goal:\n")
 	b.WriteString(strings.TrimSpace(job.Goal))
 	b.WriteString("\n")
+	if plan := strings.TrimSpace(job.Plan); plan != "" {
+		b.WriteString("\nFollow this plan:\n")
+		b.WriteString(plan)
+		b.WriteString("\n")
+	}
 	if notes := strings.TrimSpace(job.ReviewNotes); notes != "" {
 		b.WriteString("\nA reviewer asked for these changes:\n")
 		b.WriteString(notes)
@@ -216,6 +290,24 @@ func firstNonEmpty(values ...string) string {
 
 func failed(err error) client.Result {
 	return client.Result{Status: "failed", Error: err.Error()}
+}
+
+// applyPrior replays the runner's earlier commits on a sent-back change, so the
+// new work continues from them instead of starting over.
+func applyPrior(ctx context.Context, workDir, tree string, job *client.Job) error {
+	if len(job.PriorPatch) > MaxPatchBytes {
+		return fmt.Errorf("the earlier commits are larger than LBW accepts")
+	}
+	mbox := filepath.Join(workDir, "jobs", safe(job.JobID)+".mbox")
+	if err := os.WriteFile(mbox, []byte(job.PriorPatch), 0o600); err != nil {
+		return err
+	}
+	defer os.Remove(mbox)
+	if _, err := gitAuthor(ctx, tree, "am", "--3way", "--keep-cr", mbox); err != nil {
+		_, _ = git(ctx, tree, "am", "--abort")
+		return fmt.Errorf("could not pick up the earlier commits: %w", err)
+	}
+	return nil
 }
 
 // model is the Claude Code model for a job: the one the organization chose for

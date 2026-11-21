@@ -2774,7 +2774,7 @@
         <select id="model" name="model_id" aria-label="Model">
           <option value="">No models turned on</option>
         </select>
-        <p class="hint" id="model-hint">Add an OpenAI, Claude, or other endpoint in organization settings. This list shows the models turned on for this project. A model marked "your machine" runs on the runner you linked under Profile, Integrations, with your own Claude Code. LBW then applies its commits, runs the tests, and opens the pull request. The pull request is the review.</p>
+        <p class="hint" id="model-hint">Add an OpenAI, Claude, or other endpoint in organization settings. This list shows the models turned on for this project. A model marked "your machine" runs on the runner you linked under Profile, Integrations, with your own Claude Code. It plans first and stops at the same gates as any proposal. LBW applies its commits, runs the tests, and opens the pull request.</p>
         <label for="context-window">Context window</label>
         <input id="context-window" name="context_window" type="number" min="512" max="1048576" step="1" inputmode="numeric" placeholder="server default" value="{{ default_context_window }}">
         <p class="hint">Tokens this model can hold on this machine. Leave blank to use the server window, or LBW_CONTEXT_WINDOW when that is set.</p>
@@ -8915,13 +8915,15 @@
       const keepEl = document.getElementById("keep-improving");
       const keepOn = keepEl.checked;
       const mine = runsOnMyRunner();
+      if (mine && keepOn) keepEl.checked = false;
+      const keeping = keepEl.checked;
       const bypassEl = document.getElementById("bypass-gates");
-      const locked = mine || keepOn || Boolean(bypassEl && bypassEl.checked);
+      const locked = keeping || Boolean(bypassEl && bypassEl.checked);
       const triageEl = document.getElementById("gate-triage");
       const approvalEl = document.getElementById("gate-approval");
       if (triageEl) triageEl.disabled = locked;
       if (approvalEl) approvalEl.disabled = locked;
-      if (bypassEl) bypassEl.disabled = mine || keepOn;
+      if (bypassEl) bypassEl.disabled = keeping;
       keepEl.disabled = mine;
     }
 

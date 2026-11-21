@@ -359,3 +359,133 @@ def test_runner_events_keep_only_known_fields() -> None:
     assert kept["prompt_tokens"] == 12
     assert kept["completion_tokens"] == 0
     assert kept["service"] == "claude-code (runner)"
+
+
+def test_a_runner_job_plans_first_and_stops_at_both_gates(
+    settings: Settings, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    base = _repo(workspace)
+    manager = TaskManager(settings.model_copy(update={"plan_goals": True}))
+    client = TestClient(create_app(manager, default_workspace=workspace))
+    try:
+        client.get("/api/directory")
+        model_id = _runner_model(client, workspace, workspace)
+        token = _link(client)
+        _beat(client, token)
+        auth = {"Authorization": f"Bearer {token}"}
+        created = client.post(
+            "/api/tasks",
+            json={
+                "workspace": str(workspace),
+                "goal": "Add a hello file",
+                "model_id": model_id,
+                "triage_gate": "ask",
+                "approval_gate": "ask",
+            },
+        )
+        assert created.status_code == 201, created.text
+        task_id = created.json()["id"]
+
+        planning = client.get("/api/runner/jobs/next?wait=10", headers=auth).json()
+        assert planning["phase"] == "plan"
+        assert "Architect" in planning["instruction"]
+        assert planning["base_sha"] == base
+        plan = "## Plan\n1. Add hello.txt"
+        client.post(
+            f"/api/runner/jobs/{planning['job_id']}/finish",
+            headers=auth,
+            json={"status": "done", "summary": plan},
+        )
+        held = _wait(client, task_id, "waiting")
+        assert held["stage"] == "triage"
+        assert held["plan"] == plan
+        assert _git(workspace, "rev-parse", "HEAD").strip() == base
+
+        _beat(client, token)
+        built = client.post(f"/api/tasks/{task_id}/decide", json={"decision": "build"})
+        assert built.status_code == 200, built.text
+        building = client.get("/api/runner/jobs/next?wait=10", headers=auth).json()
+        assert building["phase"] == "build"
+        assert building["plan"] == plan
+        assert building["base_sha"] == base
+
+        clone = tmp_path / "runner-worktree"
+        subprocess.run(["git", "clone", "-q", str(workspace), str(clone)], check=True)
+        (clone / "hello.txt").write_text("hello\n", encoding="utf-8")
+        _git(clone, "add", "hello.txt")
+        _git(clone, "commit", "-q", "-m", "Add a hello file")
+        patch = _git(clone, "format-patch", "--stdout", f"{base}..HEAD")
+        client.post(
+            f"/api/runner/jobs/{building['job_id']}/finish",
+            headers=auth,
+            json={"status": "done", "summary": "Added hello.txt", "patch": patch},
+        )
+        waiting = _wait(client, task_id, "waiting")
+        assert waiting["stage"] == "approval"
+        assert waiting["branch"].startswith("lbw/runner-")
+        assert _git(workspace, "rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
+        assert not (workspace / "hello.txt").exists()
+
+        approved = client.post(f"/api/tasks/{task_id}/decide", json={"decision": "approve"})
+        assert approved.status_code == 200, approved.text
+        done = _wait(client, task_id, "success")
+        assert done["branch"] == waiting["branch"]
+        assert (workspace / "hello.txt").read_text(encoding="utf-8") == "hello\n"
+        assert client.get("/api/runner/jobs/next", headers=auth).status_code == 204
+    finally:
+        manager.shutdown(wait=False)
+
+
+def test_a_sent_back_runner_change_continues_from_its_commits(
+    settings: Settings, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    base = _repo(workspace)
+    manager = TaskManager(settings)
+    client = TestClient(create_app(manager, default_workspace=workspace))
+    try:
+        client.get("/api/directory")
+        model_id = _runner_model(client, workspace, workspace)
+        token = _link(client)
+        _beat(client, token)
+        auth = {"Authorization": f"Bearer {token}"}
+        task_id = client.post(
+            "/api/tasks",
+            json={
+                "workspace": str(workspace),
+                "goal": "Add a hello file",
+                "model_id": model_id,
+                "approval_gate": "ask",
+            },
+        ).json()["id"]
+        first = client.get("/api/runner/jobs/next?wait=10", headers=auth).json()
+        assert first["phase"] == "build"
+        assert first["prior_patch"] == ""
+        clone = tmp_path / "runner-worktree"
+        subprocess.run(["git", "clone", "-q", str(workspace), str(clone)], check=True)
+        (clone / "hello.txt").write_text("hello\n", encoding="utf-8")
+        _git(clone, "add", "hello.txt")
+        _git(clone, "commit", "-q", "-m", "Add a hello file")
+        patch = _git(clone, "format-patch", "--stdout", f"{base}..HEAD")
+        client.post(
+            f"/api/runner/jobs/{first['job_id']}/finish",
+            headers=auth,
+            json={"status": "done", "summary": "Added", "patch": patch},
+        )
+        assert _wait(client, task_id, "waiting")["stage"] == "approval"
+
+        _beat(client, token)
+        sent = client.post(
+            f"/api/tasks/{task_id}/decide",
+            json={"decision": "send_back", "note": "Say hello twice"},
+        )
+        assert sent.status_code == 200, sent.text
+        again = client.get("/api/runner/jobs/next?wait=10", headers=auth).json()
+        assert again["phase"] == "build"
+        assert "Subject: [PATCH] Add a hello file" in again["prior_patch"]
+        assert "Say hello twice" in again["review_notes"]
+    finally:
+        manager.shutdown(wait=False)
