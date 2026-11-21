@@ -2774,7 +2774,7 @@
         <select id="model" name="model_id" aria-label="Model">
           <option value="">No models turned on</option>
         </select>
-        <p class="hint" id="model-hint">Add an OpenAI, Claude, or other endpoint in organization settings. This list shows the models turned on for this project.</p>
+        <p class="hint" id="model-hint">Add an OpenAI, Claude, or other endpoint in organization settings. This list shows the models turned on for this project. A model marked "your machine" runs on the runner you linked under Profile, Integrations, with your own Claude Code. LBW then applies its commits, runs the tests, and opens the pull request. The pull request is the review.</p>
         <label for="context-window">Context window</label>
         <input id="context-window" name="context_window" type="number" min="512" max="1048576" step="1" inputmode="numeric" placeholder="server default" value="{{ default_context_window }}">
         <p class="hint">Tokens this model can hold on this machine. Leave blank to use the server window, or LBW_CONTEXT_WINDOW when that is set.</p>
@@ -2961,6 +2961,7 @@
           <div class="personal-panel" id="personal-panel-integrations" data-personal-panel="integrations" hidden>
             <p class="hint">Link your own account for each integration your organization turned on. A job you start, or continue at a gate, runs on your credentials, and the audit trail and usage name you.</p>
             <div id="personal-integrations-root"></div>
+            <div id="personal-runners-root"></div>
           </div>
           <div class="personal-panel" id="personal-panel-usage" data-personal-panel="usage" hidden>
             <div id="personal-usage-root"></div>
@@ -3051,7 +3052,6 @@
           </div>
           <div class="org-panel" id="org-panel-models" data-org-panel="models" hidden>
             <div id="org-models-root"></div>
-            <div id="org-claude-link-root"></div>
           </div>
           <div class="org-panel" id="org-panel-usage" data-org-panel="usage" hidden>
             <p class="hint">Usage across every project and person. Owners, admins, and people with the billing duty see it.</p>
@@ -8912,14 +8912,17 @@
     }
 
     function syncHumanGates() {
-      const keepOn = document.getElementById("keep-improving").checked;
+      const keepEl = document.getElementById("keep-improving");
+      const keepOn = keepEl.checked;
+      const mine = runsOnMyRunner();
       const bypassEl = document.getElementById("bypass-gates");
-      const locked = keepOn || Boolean(bypassEl && bypassEl.checked);
+      const locked = mine || keepOn || Boolean(bypassEl && bypassEl.checked);
       const triageEl = document.getElementById("gate-triage");
       const approvalEl = document.getElementById("gate-approval");
       if (triageEl) triageEl.disabled = locked;
       if (approvalEl) approvalEl.disabled = locked;
-      if (bypassEl) bypassEl.disabled = keepOn;
+      if (bypassEl) bypassEl.disabled = mine || keepOn;
+      keepEl.disabled = mine;
     }
 
     function syncKeepImproving() {
@@ -9099,6 +9102,21 @@
       }
     });
 
+    function runsOnMyRunner() {
+      const select = document.getElementById("model");
+      const option = select ? select.selectedOptions[0] : null;
+      return Boolean(option && option.dataset.runner === "1");
+    }
+
+    function syncRunOn() {
+      const windowEl = document.getElementById("context-window");
+      if (windowEl) windowEl.disabled = runsOnMyRunner();
+      syncHumanGates();
+    }
+
+    const modelChoiceEl = document.getElementById("model");
+    if (modelChoiceEl) modelChoiceEl.addEventListener("change", syncRunOn);
+
     function selectedModelPayload() {
       const select = document.getElementById("model");
       const modelId = select ? select.value : "";
@@ -9125,6 +9143,7 @@
           option.textContent = "No models granted";
           select.append(option);
           select.disabled = true;
+          syncRunOn();
           return;
         }
         select.disabled = false;
@@ -9132,10 +9151,13 @@
           const option = document.createElement("option");
           option.value = model.id;
           const host = model.endpoint_name ? " · " + model.endpoint_name : "";
-          option.textContent = (model.name || model.model_name) + host;
+          const mine = model.runner ? " (your machine)" : "";
+          option.textContent = (model.name || model.model_name) + host + mine;
+          if (model.runner) option.dataset.runner = "1";
           if (model.id === previous) option.selected = true;
           select.append(option);
         }
+        syncRunOn();
       } catch (err) {
         showNotice(errorEl, "error", err.message);
       }
@@ -9726,7 +9748,9 @@
         const res = await fetch("/api/org/models?workspace=" + encodeURIComponent(workspace));
         const body = await res.json();
         if (!res.ok) throw new Error(body.error || "Could not list models");
-        const models = body.models || [];
+        const models = (body.models || []).filter(function (model) {
+          return !model.runner;
+        });
         scheduleModelEl.replaceChildren();
         if (!models.length) {
           const option = document.createElement("option");

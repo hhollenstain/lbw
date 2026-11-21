@@ -326,6 +326,7 @@ def test_the_proposal_chooses_a_granted_model(settings: Settings, tmp_path: Path
                 "provider": "openai",
                 "model_name": "gpt-4.1",
                 "endpoint_name": "Work",
+                "runner": False,
             }
         ]
         assert "sk-test-secret" not in listed.text

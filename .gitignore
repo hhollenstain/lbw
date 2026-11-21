@@ -44,3 +44,7 @@ web/node_modules/
 # ":memory:" path leaves on disk.
 /tmp_*.py
 :memory:*
+
+# Runner build output
+/runner/bin/
+/runner/dist/

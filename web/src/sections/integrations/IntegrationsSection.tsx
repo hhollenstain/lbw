@@ -12,15 +12,13 @@ type Integration = {
   linked_with: string;
   can_add_key: boolean;
   can_sign_in: boolean;
-  can_link_claude: boolean;
 };
 
-type Mine = { integrations: Integration[]; claude_link_ready: boolean };
+type Mine = { integrations: Integration[] };
 
 const LINKED_WITH: Record<string, string> = {
   key: "your API key",
   sso: "your sign-in",
-  claude_link: "your Claude organization",
 };
 
 /** The integrations the organization turned on, and this person's link to each.
@@ -39,10 +37,6 @@ export function IntegrationsSection() {
 
   useEffect(() => {
     load();
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("link_error")) {
-      notify("error", "Claude did not link. Try again, or ask an admin.", "Integrations");
-    }
     function onShow() {
       load();
     }
@@ -64,20 +58,6 @@ export function IntegrationsSection() {
     } catch (err) {
       notify("error", message(err), "Could not check that key");
     } finally {
-      setBusy(false);
-    }
-  }
-
-  async function linkClaude(item: Integration) {
-    setBusy(true);
-    try {
-      const body = await api<{ url: string }>(
-        `/api/me/integrations/${encodeURIComponent(item.endpoint_id)}/claude-link`,
-        { method: "POST" },
-      );
-      window.location.assign(body.url);
-    } catch (err) {
-      notify("error", message(err), "Could not start the Claude link");
       setBusy(false);
     }
   }
@@ -169,17 +149,6 @@ export function IntegrationsSection() {
                 Sign in
               </a>
             ) : null}
-            {item.can_link_claude ? (
-              <button
-                type="button"
-                className="secondary"
-                data-integration-claude={item.endpoint_id}
-                disabled={busy}
-                onClick={() => void linkClaude(item)}
-              >
-                Link your Claude organization
-              </button>
-            ) : null}
             {item.linked ? (
               <button
                 type="button"
@@ -194,13 +163,6 @@ export function IntegrationsSection() {
           </div>
         </div>
       ))}
-      {mine.integrations.some((item) => item.provider === "anthropic") &&
-      !mine.claude_link_ready ? (
-        <p className="hint">
-          To pay for Claude from your own Claude organization instead of a key, an owner or admin
-          sets up the Claude link under Organization, Models.
-        </p>
-      ) : null}
     </div>
   );
 }

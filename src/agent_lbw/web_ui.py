@@ -42,6 +42,7 @@ from agent_lbw.openapi_models import (
     ScheduleWrite,
 )
 from agent_lbw.progress import attach_token_usage, clip_text, llm_turn_snippets, public_run_item
+from agent_lbw.runner_http import register_runners, runner_required_response
 from agent_lbw.runtime.account import (
     add_user,
     load_account,
@@ -1422,6 +1423,7 @@ def create_app(
         model_base_url = body.base_url
         model_api_key = body.api_key
         chosen_id = (body.model_id or "").strip()
+        on_runner = False
         if chosen_id:
             from agent_lbw.runtime.db import database
             from agent_lbw.runtime.store.catalog import use_model
@@ -1442,6 +1444,11 @@ def create_app(
             model_name = creds["model_name"]
             model_base_url = creds["base_url"]
             model_api_key = creds["api_key"]
+            on_runner = bool(creds.get("runner"))
+            if on_runner:
+                refused = _check_runner(ui)
+                if refused is not None:
+                    return refused
         try:
             task = ui.manager.submit(
                 Path(workspace_raw),
@@ -1460,6 +1467,7 @@ def create_app(
                 triage_gate=body.triage_gate or "",
                 approval_gate=body.approval_gate or "",
                 model_id=chosen_id or None,
+                agent_kind="claude_code" if on_runner else None,
             )
             if not chosen_id:
                 ui.remember_server(task.model_base_url, model=task.model_name)
@@ -2141,8 +2149,28 @@ def create_app(
     register_github(app)
     register_org(app)
     register_integrations(app)
+    register_runners(app)
     _register_audit(app)
     return app
+
+
+def _check_runner(ui: UiState) -> JSONResponse | None:
+    """A job for the person's own machine needs one of their runners online now."""
+    from agent_lbw.runtime.db import database
+    from agent_lbw.runtime.store.install import require_account
+    from agent_lbw.runtime.store.runners import RunnerRequired, pick_runner
+
+    root = Path(ui.store_root)
+    try:
+        load_account(root, database_url=ui.manager.settings.database_url)
+        with database(root, ui.manager.settings.database_url) as db:
+            account = require_account(db)
+            pick_runner(db, account["org"]["id"], account["current_user_id"])
+    except RunnerRequired as exc:
+        return runner_required_response(exc)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return None
 
 
 def _audit_middleware(app: FastAPI) -> None:
@@ -2560,6 +2588,8 @@ def _schedule_model(ui: UiState, workspace: Path, model_id: str) -> tuple[str, s
         return "That model is off for this project."
     except (OSError, ValueError) as exc:
         return str(exc)
+    if creds.get("runner"):
+        return "That model runs on a person's machine. A schedule needs a model LBW calls."
     host = str(creds.get("base_url") or "").strip()
     if not host:
         return "That model has no server."
@@ -2570,7 +2600,8 @@ def _acting_credential(ui: UiState, task) -> tuple[JSONResponse | None, str | No
     """Check the person acting now has linked the integration this job's model runs on.
 
     Work that continues runs on their credentials, never on the requester's, so a
-    person who has not linked it is asked to link it first.
+    person who has not linked it is asked to link it first. A model on a person's
+    machine runs on the acting person's own runner, so one of theirs must be online.
     """
     from agent_lbw.runtime.account import load_account
     from agent_lbw.runtime.db import database, database_configured
@@ -2591,13 +2622,17 @@ def _acting_credential(ui: UiState, task) -> tuple[JSONResponse | None, str | No
         return None, actor
     try:
         with database(root, url) as db:
-            use_model(db, root, Path(task.workspace), model_id)
+            creds = use_model(db, root, Path(task.workspace), model_id)
     except LinkRequired as exc:
         return link_required_response(exc), None
     except PermissionError as exc:
         return JSONResponse({"error": str(exc)}, status_code=403), None
     except (KeyError, ValueError) as exc:
         return JSONResponse({"error": str(exc) or "that model is gone"}, status_code=409), None
+    if creds.get("runner"):
+        refused = _check_runner(ui)
+        if refused is not None:
+            return refused, None
     return None, actor
 
 

@@ -32,6 +32,7 @@ from agent_lbw.progress import (
     token_usage_from_events,
 )
 from agent_lbw.runtime.improve import CycleResult, resolve_human_gates, run_cycle
+from agent_lbw.runtime.runner_hub import RunnerHub
 
 log = logging.getLogger("lbw")
 
@@ -145,6 +146,11 @@ def _stop_acting(tokens: tuple) -> None:
         reset_tenant(tenant)
     if actor is not None:
         reset_actor(actor)
+
+
+def _on_runner(task: Task) -> bool:
+    """A Claude Code job runs on the acting person's own machine through their runner."""
+    return task.agent_kind == "claude_code"
 
 
 def _service_host(base_url: str) -> str:
@@ -270,6 +276,7 @@ class Task:
             ),
             "gates": [dict(gate) for gate in self.gates if isinstance(gate, dict)],
             "model_id": self.model_id,
+            "agent_kind": self.agent_kind,
             "actor_id": self.actor_id or self.requester_id,
         }
         if include_logs:
@@ -324,6 +331,7 @@ class TaskManager:
         self._tasks: dict[str, Task] = {}
         self._continuous_stopped: set[str] = set()
         self.store_root: Path | None = None
+        self.runner_hub = RunnerHub()
         self._executor = ThreadPoolExecutor(
             max_workers=max_concurrent,
             thread_name_prefix="lbw-task",
@@ -780,6 +788,7 @@ class TaskManager:
             review_notes=str(record.get("review_notes") or ""),
             agent_id=str(record.get("agent_id") or ""),
             model_id=str(record.get("model_id") or ""),
+            agent_kind=str(record.get("agent_kind") or ""),
             tenant_id=str(record.get("tenant_id") or ""),
             actor_id=str((record.get("started_by") or {}).get("id") or ""),
         )
@@ -795,7 +804,7 @@ class TaskManager:
                 from agent_lbw.runtime.store.recording import accept_recorded_review
 
                 accept_recorded_review(self.store_root, self.settings.database_url, task.id)
-        if self._runner is None and task.context_window is None:
+        if self._runner is None and task.context_window is None and not _on_runner(task):
             task.context_window = lookup_context_window(
                 task.model_base_url,
                 task.model_api_key,
@@ -864,6 +873,14 @@ class TaskManager:
         self._resume_workspace(task)
         if self._runner is not None:
             return self._runner(task)
+        if _on_runner(task):
+            from agent_lbw.runtime.local_runner import run_on_runner
+
+            if self.store_root is None:
+                raise ValueError("a runner job needs the directory database")
+            return run_on_runner(
+                task, settings=self.settings, store_root=self.store_root, hub=self.runner_hub
+            )
         credential = self._fresh_credential(task)
         if credential is not None:
             task.model_name = str(credential["model_name"])

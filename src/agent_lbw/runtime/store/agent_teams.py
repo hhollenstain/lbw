@@ -503,14 +503,24 @@ def _team_named(db: Database, tenant_id: str, name: str) -> dict | None:
 
 def _checked_model(db: Database, tenant_id: str, model_id: str) -> str:
     linked = (model_id or "").strip()
-    if linked and _model(db, tenant_id, linked) is None:
+    if not linked:
+        return linked
+    found = _model(db, tenant_id, linked)
+    if found is None:
         raise ValueError("unknown model")
+    if found["auth"] == "runner":
+        raise ValueError("a team runs in LBW, so it cannot use a model on a person's machine")
     return linked
 
 
 def _model(db: Database, tenant_id: str, model_id: str) -> dict | None:
     return db.fetchone(
-        "SELECT id FROM models WHERE id = ? AND tenant_id = ?",
+        """
+        SELECT models.id, COALESCE(model_endpoints.auth, 'key') AS auth
+        FROM models
+        LEFT JOIN model_endpoints ON model_endpoints.id = models.endpoint_id
+        WHERE models.id = ? AND models.tenant_id = ?
+        """,
         (model_id, tenant_id),
     )
 
@@ -522,7 +532,7 @@ def _model_rows(db: Database, tenant_id: str) -> list[dict]:
                model_endpoints.name AS service
         FROM models
         LEFT JOIN model_endpoints ON model_endpoints.id = models.endpoint_id
-        WHERE models.tenant_id = ?
+        WHERE models.tenant_id = ? AND COALESCE(model_endpoints.auth, 'key') <> 'runner'
         ORDER BY model_endpoints.name, models.name, models.id
         """,
         (tenant_id,),

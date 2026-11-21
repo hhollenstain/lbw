@@ -142,46 +142,6 @@ paths:
       responses:
         "200":
           description: This person's integrations after the link is removed.
-  /api/me/integrations/{endpoint_id}/claude-link:
-    post:
-      operationId: startClaudeLink
-      parameters:
-        - name: endpoint_id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: The Anthropic approval page to open.
-  /api/integrations/claude/callback:
-    get:
-      operationId: finishClaudeLink
-      responses:
-        "303":
-          description: Back to the profile after Anthropic's approval page.
-  /api/org/claude-link:
-    get:
-      operationId: readClaudeLinkApp
-      responses:
-        "200":
-          description: Whether people can link a Claude organization. No secret is returned.
-    put:
-      operationId: saveClaudeLinkApp
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ClaudeLinkWrite"
-      responses:
-        "200":
-          description: The saved Claude link settings.
-    delete:
-      operationId: removeClaudeLinkApp
-      responses:
-        "200":
-          description: The Claude link settings after removal.
   /api/org/prices:
     get:
       operationId: listModelPrices
@@ -320,6 +280,137 @@ paths:
       responses:
         "200":
           description: The repositories after one switch changes.
+  /api/runner/link:
+    post:
+      operationId: startRunnerLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunnerLinkStart"
+      responses:
+        "200":
+          description: A device code for the runner to keep and a short code for the person to enter.
+  /api/runner/link/token:
+    post:
+      operationId: claimRunnerToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunnerLinkToken"
+      responses:
+        "200":
+          description: The runner's own token, returned once after the person approves.
+        "428":
+          description: The person has not entered the code yet.
+  /api/runner/heartbeat:
+    post:
+      operationId: runnerHeartbeat
+      description: Runner-token auth. Reports health and returns maintenance commands.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunnerHeartbeat"
+      responses:
+        "200":
+          description: Commands for the runner, such as update_claude.
+  /api/runner/jobs/next:
+    get:
+      operationId: leaseRunnerJob
+      description: Runner-token auth. Waits up to `wait` seconds for a job.
+      parameters:
+        - name: wait
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The leased job, with its goal and the commit to start from.
+        "204":
+          description: No job is waiting.
+  /api/runner/jobs/{job_id}/events:
+    post:
+      operationId: postRunnerEvents
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunnerEvents"
+      responses:
+        "200":
+          description: Extends the lease. Says whether the job was cancelled.
+  /api/runner/jobs/{job_id}/finish:
+    post:
+      operationId: finishRunnerJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunnerFinish"
+      responses:
+        "200":
+          description: The result was handed to the waiting job.
+  /api/me/runners:
+    get:
+      operationId: listRunners
+      responses:
+        "200":
+          description: This person's runners, or everyone's for an owner or admin.
+  /api/me/runners/approve:
+    post:
+      operationId: approveRunner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunnerApprove"
+      responses:
+        "200":
+          description: The runner showing this code now belongs to the signed-in person.
+  /api/me/runners/{runner_id}:
+    delete:
+      operationId: revokeRunner
+      parameters:
+        - name: runner_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The runner's token stops working and its waiting jobs are cancelled.
+  /api/me/runners/{runner_id}/update-claude:
+    post:
+      operationId: updateRunnerClaude
+      parameters:
+        - name: runner_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The runner runs `claude update` at its next heartbeat.
 components:
   schemas:
     ScheduleCadence:
@@ -558,17 +649,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AgentTeamStep"
-    ClaudeLinkWrite:
-      type: object
-      required: [client_id, assertion_file]
-      properties:
-        client_id:
-          type: string
-        assertion_file:
-          type: string
-        profile_api_key:
-          type: string
-          default: ""
     PriceWrite:
       type: object
       required: [model, input_per_mtok, output_per_mtok]
@@ -645,3 +725,61 @@ components:
           default: ""
         actor:
           $ref: "#/components/schemas/TaskActor"
+    RunnerLinkStart:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        platform:
+          type: string
+          default: ""
+    RunnerLinkToken:
+      type: object
+      required: [device_code]
+      properties:
+        device_code:
+          type: string
+    RunnerApprove:
+      type: object
+      required: [user_code]
+      properties:
+        user_code:
+          type: string
+    RunnerHeartbeat:
+      type: object
+      properties:
+        version:
+          type: string
+          default: ""
+        claude_version:
+          type: string
+          default: ""
+        claude_ready:
+          type: boolean
+          default: false
+        platform:
+          type: string
+          default: ""
+    RunnerEvents:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+    RunnerFinish:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+        summary:
+          type: string
+          default: ""
+        error:
+          type: string
+          default: ""
+        patch:
+          type: string
+          default: ""
