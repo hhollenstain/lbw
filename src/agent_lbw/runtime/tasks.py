@@ -2,22 +2,26 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from agent_lbw.config import Settings
 from agent_lbw.llm.client import (
     LLMClient,
     ModelRequestError,
+    apply_credential,
     client_for,
     cursor_chat_block,
     list_remote_models,
     lookup_context_window,
     normalize_model_base_url,
+    tag_client,
 )
 from agent_lbw.logging import UtcFormatter, utcnow_iso
 from agent_lbw.progress import (
@@ -123,6 +127,33 @@ def sibling_task_records(manager: TaskManager, task: Task) -> list[dict]:
     return records
 
 
+def _act_as(task: Task) -> tuple:
+    """Run as the person whose credentials this job uses, in their organization."""
+    from agent_lbw.runtime.store.auth import set_actor, set_tenant
+
+    who = task.actor_id or task.requester_id
+    actor = set_actor(who) if who else None
+    tenant = set_tenant(task.tenant_id) if task.tenant_id else None
+    return actor, tenant
+
+
+def _stop_acting(tokens: tuple) -> None:
+    from agent_lbw.runtime.store.auth import reset_actor, reset_tenant
+
+    actor, tenant = tokens
+    if tenant is not None:
+        reset_tenant(tenant)
+    if actor is not None:
+        reset_actor(actor)
+
+
+def _service_host(base_url: str) -> str:
+    try:
+        return urlparse(base_url).netloc.lower()
+    except ValueError:
+        return ""
+
+
 def _default_llm(settings: Settings) -> LLMClient:
     return client_for(
         model=settings.model_name,
@@ -189,6 +220,10 @@ class Task:
     agent_id: str = ""
     agent_kind: str = ""
     cursor_key: str = ""
+    model_id: str = ""
+    actor_id: str = ""
+    tenant_id: str = ""
+    recorded_files: dict = field(default_factory=dict)
 
     def to_dict(self, *, include_logs: bool = True) -> dict:
         payload = {
@@ -234,6 +269,8 @@ class Task:
                 else None
             ),
             "gates": [dict(gate) for gate in self.gates if isinstance(gate, dict)],
+            "model_id": self.model_id,
+            "actor_id": self.actor_id or self.requester_id,
         }
         if include_logs:
             payload["logs"] = list(self.logs)
@@ -314,6 +351,7 @@ class TaskManager:
         agent_id: str | None = None,
         agent_kind: str | None = None,
         cursor_key: str | None = None,
+        model_id: str | None = None,
     ) -> Task:
         workspace = workspace.expanduser().resolve()
         if not workspace.is_dir():
@@ -368,6 +406,8 @@ class TaskManager:
             agent_id=picked_agent,
             agent_kind=picked_kind,
             cursor_key=(cursor_key or "").strip(),
+            model_id=(model_id or "").strip(),
+            actor_id=(requester_id or "").strip(),
         )
         with self._lock:
             self._tasks[task.id] = task
@@ -435,6 +475,7 @@ class TaskManager:
         task_id: str,
         from_sha: str | None = None,
         goal: str | None = None,
+        actor_id: str | None = None,
     ) -> Task | None:
         """Queue a new cycle on the task's branch, with an optional revised goal."""
         with self._lock:
@@ -471,9 +512,11 @@ class TaskManager:
             agent_id=old_task.agent_id,
             agent_kind=old_task.agent_kind,
             cursor_key=old_task.cursor_key,
+            model_id=old_task.model_id,
+            requester_id=actor_id or old_task.actor_id or old_task.requester_id,
         )
 
-    def rework(self, task_id: str, note: str) -> Task | None:
+    def rework(self, task_id: str, note: str, *, actor_id: str | None = None) -> Task | None:
         """Put this job back in progress and keep the request on it.
 
         A later note extends the same job. It does not open a second one.
@@ -490,6 +533,8 @@ class TaskManager:
             if task.status not in {"success", "failed", "error"}:
                 return None
             task.review_notes = _join_notes(task.review_notes, f"Rework request: {reply}")
+            if actor_id:
+                task.actor_id = actor_id
             task.decision = "continue"
             task.stage = "building"
             task.status = "queued"
@@ -537,8 +582,13 @@ class TaskManager:
             return None
         return self._adopt(record, start=False)
 
-    def decide(self, task_id: str, decision: str, note: str = "") -> Task | None:
-        """Resume a change that is waiting, or continue one that was sent back."""
+    def decide(
+        self, task_id: str, decision: str, note: str = "", *, actor_id: str | None = None
+    ) -> Task | None:
+        """Resume a change that is waiting, or continue one that was sent back.
+
+        The person who decides becomes the one whose credentials run what follows.
+        """
         choice = (decision or "").strip()
         reply = " ".join((note or "").split())
         if self.get(task_id) is None:
@@ -570,6 +620,8 @@ class TaskManager:
                 raise ValueError(APPROVE_GITHUB)
             if choice == "approve":
                 self._stamp_committer(task)
+            if actor_id:
+                task.actor_id = actor_id
             task.decision = choice
             if choice == "send_back":
                 task.review_notes = _join_notes(_review_notes(task.evidence), f"From you: {reply}")
@@ -727,6 +779,9 @@ class TaskManager:
             gates=[item for item in (record.get("gates") or []) if isinstance(item, dict)],
             review_notes=str(record.get("review_notes") or ""),
             agent_id=str(record.get("agent_id") or ""),
+            model_id=str(record.get("model_id") or ""),
+            tenant_id=str(record.get("tenant_id") or ""),
+            actor_id=str((record.get("started_by") or {}).get("id") or ""),
         )
 
     def _run(self, task: Task) -> None:
@@ -747,6 +802,9 @@ class TaskManager:
                 task.model_name,
             )
         logging_task = _LOGGING_TASK.set(task.id)
+        acting = _act_as(task)
+        first_event = len(task.events)
+        started = time.monotonic()
         handler = _TaskLogHandler(task)
         lbw_log = logging.getLogger("lbw")
         lbw_log.setLevel(logging.INFO)
@@ -798,12 +856,19 @@ class TaskManager:
                 exchange_log.removeHandler(handler)
             _LOGGING_TASK.reset(logging_task)
             self._sync_stored_task(task)
+            self._record_usage(task, first_event, started)
+            _stop_acting(acting)
         self._maybe_continue(task)
 
     def _execute(self, task: Task) -> CycleResult:
         self._resume_workspace(task)
         if self._runner is not None:
             return self._runner(task)
+        credential = self._fresh_credential(task)
+        if credential is not None:
+            task.model_name = str(credential["model_name"])
+            task.model_base_url = normalize_model_base_url(str(credential["base_url"]))
+            task.model_api_key = str(credential["api_key"])
         updates: dict[str, object] = {
             "auto_commit": task.auto_commit,
             "model_name": task.model_name,
@@ -814,6 +879,10 @@ class TaskManager:
             updates["context_window"] = task.context_window
         settings = self.settings.model_copy(update=updates)
         llm = self._llm_factory(settings)
+        if credential is not None:
+            apply_credential(llm, credential)
+        else:
+            tag_client(llm, service=_service_host(task.model_base_url))
         from agent_lbw.tools.git import reset_committer, use_committer
 
         committer = use_committer(task.committer_name, task.committer_email)
@@ -844,6 +913,37 @@ class TaskManager:
             )
         finally:
             reset_committer(committer)
+
+    def _fresh_credential(self, task: Task) -> dict | None:
+        """The acting person's credential for the task's model, read again for this run.
+
+        A linked token may have been refreshed, and a gate may have handed the job
+        to a coworker, so each run reads it as the person acting now.
+        """
+        if self.store_root is None or not task.model_id:
+            return None
+        from agent_lbw.runtime.db import database
+        from agent_lbw.runtime.store.catalog import use_model
+
+        with database(self.store_root, self.settings.database_url) as db:
+            return use_model(db, self.store_root, Path(task.workspace), task.model_id)
+
+    def _record_usage(self, task: Task, first_event: int, started: float) -> None:
+        """Add this run's tokens, skills, and file changes to the usage rollups."""
+        if self.store_root is None:
+            return
+        try:
+            from agent_lbw.runtime.store.recording import record_usage
+
+            record_usage(
+                self.store_root,
+                self.settings.database_url,
+                task,
+                list(task.events[first_event:]),
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+        except Exception as exc:
+            log.warning("task %s usage was not stored: %s", task.id, exc)
 
     def _sync_stored_task(self, task: Task) -> None:
         if self.store_root is None:
@@ -876,6 +976,8 @@ class TaskManager:
                 model_api_key=task.model_api_key,
                 base_branch=task.base_branch,
                 continuous=True,
+                model_id=task.model_id,
+                requester_id=task.actor_id or task.requester_id or None,
             )
         except RuntimeError as exc:
             log.warning("could not queue next keep-improving cycle: %s", exc)

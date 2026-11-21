@@ -114,6 +114,21 @@ class AgentTeamUpdate(BaseModel):
     steps: list[AgentTeamStep] = Field(default_factory=list)
 
 
+class ClaudeLinkWrite(BaseModel):
+    client_id: str
+    assertion_file: str
+    profile_api_key: str = ""
+
+
+class PriceWrite(BaseModel):
+    model: str
+    input_per_mtok: float
+    output_per_mtok: float
+    provider: str = ""
+    cache_read_per_mtok: float = 0
+    cache_write_per_mtok: float = 0
+
+
 class AgentTeamImport(BaseModel):
     path: str = ""
 

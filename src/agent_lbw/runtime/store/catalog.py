@@ -18,7 +18,7 @@ from agent_lbw.llm.client import model_ids_from_payload, normalize_model_base_ur
 from agent_lbw.runtime.db import Database
 from agent_lbw.runtime.store.assignments import can_manage_org
 from agent_lbw.runtime.store.crypto import open_secret, seal
-from agent_lbw.runtime.store.gateway import gateway_bearer, signed_in
+from agent_lbw.runtime.store.gateway import gateway_bearer, person_credential, signed_in
 from agent_lbw.runtime.store.install import require_account
 from agent_lbw.runtime.store.names import clean_name, new_id
 from agent_lbw.runtime.store.projects import can_access
@@ -528,11 +528,17 @@ def use_model(db: Database, root: Path, workspace: Path, model_id: str) -> dict:
     row = next((item for item in _model_rows(db, tenant_id) if item["id"] == model_id), None)
     if row is None:
         raise KeyError(model_id)
-    secret = _model_secret(db, root, tenant_id, row)
+    credential = _model_credential(db, root, tenant_id, row)
     return {
         "model_name": row["model_name"],
         "base_url": row["base_url"] or "",
-        "api_key": secret,
+        "api_key": credential["api_key"],
+        "link": credential.get("link"),
+        "model_id": row["id"],
+        "endpoint_id": row["endpoint_id"] or "",
+        "service": row["endpoint_name"] or row["name"],
+        "provider": row["provider"],
+        "personal": (row.get("endpoint_auth") or "key") in {"sso", "personal"},
     }
 
 
@@ -682,13 +688,14 @@ def _endpoint_secret(db: Database, root: Path, row: dict) -> str:
     return open_secret(tenant_dek(db, root, row["tenant_id"]), token)
 
 
-def _model_secret(db: Database, root: Path, tenant_id: str, row: dict) -> str:
+def _model_credential(db: Database, root: Path, tenant_id: str, row: dict) -> dict:
+    """The organization key, or the acting person's linked credential."""
     if (row.get("endpoint_auth") or "key") in {"sso", "personal"}:
-        return gateway_bearer(db, root, row["endpoint_id"])
+        return person_credential(db, root, row["endpoint_id"])
     token = row["api_key_ciphertext"]
     if not token:
-        return ""
-    return open_secret(tenant_dek(db, root, tenant_id), token)
+        return {"api_key": ""}
+    return {"api_key": open_secret(tenant_dek(db, root, tenant_id), token)}
 
 
 def _provider_url(provider: str) -> str:

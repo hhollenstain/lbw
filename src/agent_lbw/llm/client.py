@@ -43,6 +43,8 @@ class AssistantTurn:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
 
 
 class LLMClient(Protocol):
@@ -144,6 +146,7 @@ class OpenAICompatClient:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            cache_read_tokens=cached_prompt_tokens(response),
         )
 
     def _create(
@@ -186,6 +189,20 @@ class AnthropicClient:
         self.base_url = normalize_model_base_url(base_url).rstrip("/")
         self.api_key = api_key.strip()
         self.context_window = context_window if context_window and context_window >= 512 else None
+        self.bearer = False
+        self.extra_headers: dict[str, str] = {}
+        self.extra_body: dict[str, Any] = {}
+
+    def use_link(self, *, headers: dict[str, str], body: dict[str, Any]) -> None:
+        """Send the key as a bearer token, with the headers and body a linked account needs.
+
+        A Claude organization linked through Claude Platform OAuth bills its own
+        usage. Its connection token goes in Authorization, and the request names
+        the customer's user profile and billing policy.
+        """
+        self.bearer = True
+        self.extra_headers = {str(key): str(value) for key, value in headers.items()}
+        self.extra_body = dict(body)
 
     def complete(
         self,
@@ -244,13 +261,19 @@ class AnthropicClient:
         if converted:
             body["tools"] = converted
             body["tool_choice"] = {"type": "auto"}
+        body.update(self.extra_body)
+        headers = {
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            **self.extra_headers,
+        }
+        if self.bearer:
+            headers["authorization"] = f"Bearer {self.api_key}"
+        else:
+            headers["x-api-key"] = self.api_key
         response = httpx.post(
             f"{self.base_url}/messages",
-            headers={
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
+            headers=headers,
             json=body,
             timeout=600.0,
         )
@@ -458,8 +481,14 @@ def _anthropic_turn(payload: object) -> AssistantTurn:
                 )
             )
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    prompt = _positive_int(usage.get("input_tokens"))
+    fresh = _positive_int(usage.get("input_tokens"))
+    cache_read = _positive_int(usage.get("cache_read_input_tokens"))
+    cache_write = _positive_int(usage.get("cache_creation_input_tokens"))
     completion = _positive_int(usage.get("output_tokens"))
+    # Claude counts cached input apart from input_tokens. Input here is every
+    # input token, cached or not, as the OpenTelemetry GenAI conventions ask.
+    parts = [value for value in (fresh, cache_read, cache_write) if value is not None]
+    prompt = sum(parts) if parts else None
     total = prompt + completion if prompt is not None and completion is not None else None
     return AssistantTurn(
         text="\n".join(texts) or None,
@@ -467,6 +496,8 @@ def _anthropic_turn(payload: object) -> AssistantTurn:
         prompt_tokens=prompt,
         completion_tokens=completion,
         total_tokens=total,
+        cache_read_tokens=cache_read,
+        cache_write_tokens=cache_write,
     )
 
 
@@ -575,6 +606,53 @@ def completion_usage(response: object) -> tuple[int | None, int | None, int | No
         _usage_int(usage, "completion_tokens"),
         _usage_int(usage, "total_tokens"),
     )
+
+
+def cached_prompt_tokens(response: object) -> int | None:
+    """Prompt tokens an OpenAI-compatible server served from its cache."""
+    usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+    if usage is None:
+        return None
+    details = (
+        usage.get("prompt_tokens_details")
+        if isinstance(usage, dict)
+        else getattr(usage, "prompt_tokens_details", None)
+    )
+    if details is None:
+        return None
+    return _usage_int(details, "cached_tokens")
+
+
+def tag_client(
+    client: object, *, model_id: str = "", service: str = "", provider: str = ""
+) -> None:
+    """Label a client with the catalog model and service it runs, for usage records."""
+    for name, value in (
+        ("usage_model_id", model_id),
+        ("usage_service", service),
+        ("usage_provider", provider),
+    ):
+        if value:
+            try:
+                setattr(client, name, value)
+            except AttributeError:
+                return
+
+
+def apply_credential(client: object, credential: dict) -> None:
+    """Tag the client, and switch a linked Claude account to its bearer token and headers."""
+    tag_client(
+        client,
+        model_id=str(credential.get("model_id") or ""),
+        service=str(credential.get("service") or ""),
+        provider=str(credential.get("provider") or ""),
+    )
+    link = credential.get("link")
+    use_link = getattr(client, "use_link", None)
+    if isinstance(link, dict) and callable(use_link):
+        use_link(headers=dict(link.get("headers") or {}), body=dict(link.get("body") or {}))
 
 
 def effective_context_window(

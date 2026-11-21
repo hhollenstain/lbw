@@ -199,6 +199,20 @@ scheduler call.
   grant applies on a project that team can use.
   An endpoint stores the model names it returned. Refresh replaces
   that list. Ids are `ep_`, `model_`, and `mgr_`.
+- An integration is an endpoint an owner or admin sets to personal keys or
+  sign-in. Each person links it from Integrations on their profile: a personal
+  key, a gateway sign-in, or for Claude a linked Claude organization through
+  Claude Platform OAuth (`runtime/store/claude_link.py`, beta). A Claude Pro or
+  Max subscription is never used: Anthropic does not allow it in other apps.
+  A job runs on the requester's link. Whoever continues it at a gate, asks for
+  rework, or reruns it has their own link used from then on, and is refused
+  with `409 link_required` until they link it. Never fall back to another
+  person's credential. The worker runs as that person (`set_actor`), and each
+  run reads the credential again. The audit trail notes `task.credentials` at a
+  gate and `task.usage` per run.
+- Usage lives in daily rollups, never per model call: see `docs/usage.md`.
+  Reports read only those rollups, inside a bounded range, behind a 60-second
+  cache. Add a breakdown through the registry in `runtime/store/usage.py`.
 - Extend these checks when adding access. Do not add a second permission table.
 
 ## Git
