@@ -1,6 +1,7 @@
 # Runners: jobs on a person's own machine
 
-Status: prototype (branch `local-runner`). This page is the design and the plan.
+Status: prototype (branch `local-runner`). This page is the design of the prototype.
+What to build next, including the security model, is `docs/runner-spec.md`.
 
 ## Why
 
