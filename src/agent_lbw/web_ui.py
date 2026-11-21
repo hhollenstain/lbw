@@ -25,6 +25,8 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from lbw_shared.directory import bind_directory
+from lbw_shared.hosts import crossing_url
 from pydantic import BaseModel
 
 from agent_lbw.auth_http import register_auth
@@ -109,8 +111,6 @@ from agent_lbw.tools.git import (
     valid_branch_name,
 )
 from agent_lbw.tools.kiwi import KiwiError
-from lbw_shared.directory import bind_directory
-from lbw_shared.hosts import crossing_url
 
 log = logging.getLogger("lbw")
 
