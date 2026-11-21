@@ -61,7 +61,7 @@ func (r *Runner) Run(ctx context.Context, job *client.Job, emit func(client.Even
 		PermissionMode: r.Config.PermissionMode,
 		AllowedTools:   r.Config.AllowedTools,
 		MaxTurns:       r.Config.MaxTurns,
-		Model:          r.Config.Model,
+		Model:          model(job, r.Config.Model),
 	}, emit)
 	if !outcome.OK {
 		return client.Result{Status: "failed", Summary: outcome.Summary, Error: outcome.Error}
@@ -216,4 +216,13 @@ func firstNonEmpty(values ...string) string {
 
 func failed(err error) client.Result {
 	return client.Result{Status: "failed", Error: err.Error()}
+}
+
+// model is the Claude Code model for a job: the one the organization chose for
+// it in LBW, or the runner's own setting when LBW did not name one.
+func model(job *client.Job, fallback string) string {
+	if job.Model != "" {
+		return job.Model
+	}
+	return fallback
 }

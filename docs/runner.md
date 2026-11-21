@@ -15,7 +15,8 @@ usage, tests, and the pull request.
 
 - A person links a machine once, with a short code, and can disconnect it from
   their profile at any time.
-- A job they send to **My machine** runs there, with their own Claude Code.
+- A job on a model the organization set to run on each person's machine runs
+  there, with their own Claude Code.
 - LBW never sees, stores, or forwards a Claude credential for those jobs.
 - The runner never needs push access to the repository.
 - Progress, usage, and audit look the same as a job LBW runs itself.
@@ -87,7 +88,7 @@ sequenceDiagram
         R->>L: heartbeat (runner + Claude Code version)
         L-->>R: commands (update_claude)
     end
-    P->>L: POST /api/tasks run_on=my_runner
+    P->>L: POST /api/tasks model_id=<a model on each person's machine>
     R->>L: GET /api/runner/jobs/next (long poll)
     L-->>R: goal, base commit, repository
     R->>C: claude -p … --output-format stream-json (in a worktree)
@@ -108,11 +109,18 @@ Linux Secret Service, or, when neither exists, a file only the user can read.
 
 ### Jobs
 
-- The job form has **Run on: LBW / My machine**. My machine needs one of the
-  person's runners to be online (seen in the last 90 seconds), or the request is
-  refused with `409 runner_required`.
+- An owner or admin adds a Claude endpoint under Organization, Models with the
+  sign-in **Each person's machine**. It takes no key. Its model names are
+  Claude Code's `sonnet`, `opus`, and `haiku`, and each model added from it
+  is listed on the job form as "(your machine)". Choosing one needs one of the
+  person's runners to be online (seen in the last 90 seconds), or the request
+  is refused with `409 runner_required`. The same holds for whoever continues
+  or reruns the job. Schedules and agent teams run in LBW, so they cannot use
+  such a model.
 - LBW records the request as usual, with `agent_kind = claude_code`, and sends
   it to the acting person's most recently seen runner.
+- The job carries the model name, and the runner passes it to `claude --model`.
+  The runner's own `model` setting applies only when a job names none.
 - The runner long-polls `/api/runner/jobs/next`. Leasing is atomic, so two polls
   cannot take the same job. A lease lasts two minutes, and each event post
   renews it. If the runner stops checking in, the job fails with a clear reason.
@@ -207,7 +215,8 @@ runner/bin/lbw-runner doctor
 runner/bin/lbw-runner run
 ```
 
-Then start a job with **Run on: My machine**. To use a checkout you already
+Then add a Claude endpoint with the sign-in **Each person's machine** under
+Organization, Models, add a model from it, and start a job on that model. To use a checkout you already
 have instead of a fresh clone, add it to `~/Library/Application Support/lbw-runner/config.json`
 (macOS) or `~/.config/lbw-runner/config.json` (Linux):
 

@@ -2195,6 +2195,11 @@ button.inbox-fold {
   justify-self: start;
 }
 
+.org-form > .hint {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 .org-section-head {
   display: flex;
   align-items: center;
@@ -2866,8 +2871,4 @@ a.usage-export {
 
 .runner-approve label {
   grid-column: 1 / -1;
-}
-
-.claude-link-settings code {
-  overflow-wrap: anywhere;
 }

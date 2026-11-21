@@ -226,7 +226,6 @@ class TaskCreate(BaseModel):
     gate: str | None = None
     triage_gate: str | None = None
     approval_gate: str | None = None
-    run_on: str | None = None
 
 
 class ContinuousStop(BaseModel):
@@ -1424,14 +1423,7 @@ def create_app(
         model_base_url = body.base_url
         model_api_key = body.api_key
         chosen_id = (body.model_id or "").strip()
-        run_on = (body.run_on or "lbw").strip()
-        if run_on not in {"lbw", "my_runner"}:
-            return JSONResponse({"error": "run_on must be lbw or my_runner"}, status_code=400)
-        if run_on == "my_runner":
-            refused = _check_runner(ui)
-            if refused is not None:
-                return refused
-            chosen_id = ""
+        on_runner = False
         if chosen_id:
             from agent_lbw.runtime.db import database
             from agent_lbw.runtime.store.catalog import use_model
@@ -1452,6 +1444,11 @@ def create_app(
             model_name = creds["model_name"]
             model_base_url = creds["base_url"]
             model_api_key = creds["api_key"]
+            on_runner = bool(creds.get("runner"))
+            if on_runner:
+                refused = _check_runner(ui)
+                if refused is not None:
+                    return refused
         try:
             task = ui.manager.submit(
                 Path(workspace_raw),
@@ -1470,9 +1467,9 @@ def create_app(
                 triage_gate=body.triage_gate or "",
                 approval_gate=body.approval_gate or "",
                 model_id=chosen_id or None,
-                agent_kind="claude_code" if run_on == "my_runner" else None,
+                agent_kind="claude_code" if on_runner else None,
             )
-            if not chosen_id and run_on == "lbw":
+            if not chosen_id:
                 ui.remember_server(task.model_base_url, model=task.model_name)
             ui.set_workspace(task.workspace)
         except ValueError as exc:
@@ -2591,6 +2588,8 @@ def _schedule_model(ui: UiState, workspace: Path, model_id: str) -> tuple[str, s
         return "That model is off for this project."
     except (OSError, ValueError) as exc:
         return str(exc)
+    if creds.get("runner"):
+        return "That model runs on a person's machine. A schedule needs a model LBW calls."
     host = str(creds.get("base_url") or "").strip()
     if not host:
         return "That model has no server."
@@ -2601,7 +2600,8 @@ def _acting_credential(ui: UiState, task) -> tuple[JSONResponse | None, str | No
     """Check the person acting now has linked the integration this job's model runs on.
 
     Work that continues runs on their credentials, never on the requester's, so a
-    person who has not linked it is asked to link it first.
+    person who has not linked it is asked to link it first. A model on a person's
+    machine runs on the acting person's own runner, so one of theirs must be online.
     """
     from agent_lbw.runtime.account import load_account
     from agent_lbw.runtime.db import database, database_configured
@@ -2622,13 +2622,17 @@ def _acting_credential(ui: UiState, task) -> tuple[JSONResponse | None, str | No
         return None, actor
     try:
         with database(root, url) as db:
-            use_model(db, root, Path(task.workspace), model_id)
+            creds = use_model(db, root, Path(task.workspace), model_id)
     except LinkRequired as exc:
         return link_required_response(exc), None
     except PermissionError as exc:
         return JSONResponse({"error": str(exc)}, status_code=403), None
     except (KeyError, ValueError) as exc:
         return JSONResponse({"error": str(exc) or "that model is gone"}, status_code=409), None
+    if creds.get("runner"):
+        refused = _check_runner(ui)
+        if refused is not None:
+            return refused, None
     return None, actor
 
 

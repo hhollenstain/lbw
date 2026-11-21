@@ -182,7 +182,10 @@ scheduler call.
 - A model is a bring-your-own endpoint on the organization: OpenAI, Claude,
   Google, Ollama, vLLM, LM Studio, Cursor, or another OpenAI-compatible server.
   Claude takes an Anthropic API key and a proposal runs it through the Messages
-  API. Cursor takes an API key from the Cursor dashboard and lists that
+  API, or its sign-in is "Each person's machine" (`auth = runner`): no key, the
+  model names are Claude Code's `sonnet`, `opus`, and `haiku`, and a job on
+  that model goes to the acting person's runner. Schedules and agent teams run
+  in LBW and cannot use a runner model. LBW has no Claude OAuth link. Cursor takes an API key from the Cursor dashboard and lists that
   account's models, such as Grok. Cursor does not serve chat completions, so a
   proposal runs through a gateway that does. LiteLLM and other gateways speak the OpenAI
   API. A gateway takes a virtual key, or a sign-in token when it accepts this
@@ -201,9 +204,8 @@ scheduler call.
   that list. Ids are `ep_`, `model_`, and `mgr_`.
 - An integration is an endpoint an owner or admin sets to personal keys or
   sign-in. Each person links it from Integrations on their profile: a personal
-  key, a gateway sign-in, or for Claude a linked Claude organization through
-  Claude Platform OAuth (`runtime/store/claude_link.py`, beta). A Claude Pro or
-  Max subscription is never used: Anthropic does not allow it in other apps.
+  key or a gateway sign-in. LBW never takes a Claude login. Claude on a person's
+  own account runs through their runner.
   A job runs on the requester's link. Whoever continues it at a gate, asks for
   rework, or reruns it has their own link used from then on, and is refused
   with `409 link_required` until they link it. Never fall back to another
@@ -212,8 +214,11 @@ scheduler call.
   gate and `task.usage` per run.
 - A runner is a person's own machine, linked with a device code
   (`runtime/store/runners.py`, design in `docs/runner.md`). Only the token's
-  hash is stored. A job with `run_on: my_runner` (`agent_kind = claude_code`)
-  goes to the acting person's online runner and never to a coworker's. The
+  hash is stored. A job on a runner model (`agent_kind = claude_code`) goes to
+  the acting person's online runner and never to a coworker's. Starting,
+  continuing, or rerunning one without an online runner is refused with
+  `409 runner_required`. The job hands the runner the model name for
+  `claude --model`. The
   runner runs that person's Claude Code and sends commits back as a patch. LBW
   applies them on `lbw/runner-<id>`, runs the tests, and publishes. The goal,
   events, and patch pass through `runtime/runner_hub.py` in memory, not the

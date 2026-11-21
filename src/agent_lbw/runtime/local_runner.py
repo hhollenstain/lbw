@@ -139,6 +139,7 @@ def run_on_runner(
             "goal": task.goal or "",
             "review_notes": task.review_notes or "",
             "base_branch": task.base_branch or current_branch(workspace) or "",
+            "model": task.model_name if task.model_id else "",
             "max_seconds": int(job_seconds),
             **facts,
         },

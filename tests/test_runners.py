@@ -13,6 +13,8 @@ from fastapi.testclient import TestClient
 from agent_lbw.config import Settings
 from agent_lbw.runtime.db import database
 from agent_lbw.runtime.local_runner import clean_remote, runner_event
+from agent_lbw.runtime.store.rules import ensure_workspace_project
+from agent_lbw.runtime.store.schema import apply_schema
 from agent_lbw.runtime.tasks import TaskManager
 from agent_lbw.web_ui import create_app
 
@@ -70,6 +72,46 @@ def _beat(client: TestClient, token: str) -> dict:
     return sent.json()
 
 
+def _runner_model(client: TestClient, workspace: Path, root: Path, name: str = "opus") -> str:
+    """A Claude endpoint on each person's machine, and one of its models turned on."""
+    account = client.get("/api/account").json()
+    with database(root) as db:
+        ensure_workspace_project(db, account["org"]["id"], workspace)
+    saved = client.post(
+        "/api/org/endpoints",
+        json={"name": "Claude Code", "provider": "anthropic", "auth": "runner"},
+    )
+    assert saved.status_code == 200, saved.text
+    endpoint = next(item for item in saved.json()["endpoints"] if item["name"] == "Claude Code")
+    assert endpoint["auth"] == "runner"
+    assert endpoint["base_url"] == ""
+    assert endpoint["has_api_key"] is False
+    assert endpoint["model_names"] == ["sonnet", "opus", "haiku"]
+    added = client.post(
+        "/api/org/models",
+        json={"endpoint_id": endpoint["id"], "model_name": name, "name": f"Claude {name}"},
+    )
+    assert added.status_code == 200, added.text
+    model = next(item for item in added.json()["models"] if item["model_name"] == name)
+    turned = client.put(f"/api/org/models/{model['id']}/enabled", json={"enabled": True})
+    assert turned.status_code == 200
+    listed = client.get("/api/org/models", params={"workspace": str(workspace)}).json()
+    assert [item["runner"] for item in listed["models"]] == [True]
+    return model["id"]
+
+
+def _usage_rows(root: Path) -> list[dict]:
+    """Usage is rolled up just after the task reports its status, so wait for it."""
+    rows: list[dict] = []
+    for _ in range(100):
+        with database(root) as db:
+            rows = db.fetchall("SELECT service, model, input_tokens, calls FROM usage_daily")
+        if rows:
+            return rows
+        time.sleep(0.05)
+    return rows
+
+
 def _wait(client: TestClient, task_id: str, status: str) -> dict:
     body: dict = {}
     for _ in range(200):
@@ -125,15 +167,58 @@ def test_a_wrong_or_reused_code_is_refused(settings: Settings, tmp_path: Path) -
     assert wrong.status_code == 400
 
 
-def test_a_job_for_my_machine_needs_a_runner_online(settings: Settings, tmp_path: Path) -> None:
+def test_a_job_on_a_runner_model_needs_a_runner_online(settings: Settings, tmp_path: Path) -> None:
     _repo(tmp_path)
     client = TestClient(create_app(TaskManager(settings), default_workspace=tmp_path))
     client.get("/api/directory")
-    refused = client.post("/api/tasks", json={"goal": "Add a file", "run_on": "my_runner"})
+    model_id = _runner_model(client, tmp_path, tmp_path)
+    refused = client.post(
+        "/api/tasks",
+        json={"workspace": str(tmp_path), "goal": "Add a file", "model_id": model_id},
+    )
     assert refused.status_code == 409
     assert refused.json()["code"] == "runner_required"
-    odd = client.post("/api/tasks", json={"goal": "Add a file", "run_on": "elsewhere"})
-    assert odd.status_code == 400
+
+
+def test_only_claude_runs_on_each_persons_machine(settings: Settings, tmp_path: Path) -> None:
+    client = TestClient(create_app(TaskManager(settings), default_workspace=tmp_path))
+    client.get("/api/directory")
+    refused = client.post(
+        "/api/org/endpoints",
+        json={"name": "Desk", "provider": "openai", "auth": "runner"},
+    )
+    assert refused.status_code == 400
+    assert "only Claude" in refused.json()["error"]
+
+
+def test_a_runner_model_stays_out_of_teams_and_schedules(
+    settings: Settings, tmp_path: Path
+) -> None:
+    _repo(tmp_path)
+    client = TestClient(create_app(TaskManager(settings), default_workspace=tmp_path))
+    client.get("/api/directory")
+    client.post("/api/directory/promote")
+    model_id = _runner_model(client, tmp_path, tmp_path)
+    team = client.post(
+        "/api/org/agent-teams",
+        json={"name": "Local", "job": "build", "model_id": model_id},
+    )
+    assert team.status_code == 400
+    assert "person's machine" in team.json()["error"]
+    listed = client.get("/api/org/agent-teams").json()
+    assert model_id not in [item["id"] for item in listed.get("models", [])]
+
+
+def test_the_claude_oauth_link_is_dropped_on_upgrade(tmp_path: Path) -> None:
+    with database(tmp_path) as db:
+        db.execute("CREATE TABLE claude_link_apps (tenant_id TEXT PRIMARY KEY)")
+        db.execute("CREATE TABLE link_pending (state TEXT PRIMARY KEY)")
+        apply_schema(db)
+        left = db.fetchall(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN "
+            "('claude_link_apps', 'claude_profiles', 'link_pending')"
+        )
+    assert left == []
 
 
 def test_a_job_runs_on_the_persons_runner_and_lands_on_a_branch(
@@ -146,6 +231,7 @@ def test_a_job_runs_on_the_persons_runner_and_lands_on_a_branch(
     client = TestClient(create_app(manager, default_workspace=workspace))
     try:
         client.get("/api/directory")
+        model_id = _runner_model(client, workspace, workspace)
         token = _link(client)
         _beat(client, token)
         auth = {"Authorization": f"Bearer {token}"}
@@ -153,7 +239,7 @@ def test_a_job_runs_on_the_persons_runner_and_lands_on_a_branch(
 
         created = client.post(
             "/api/tasks",
-            json={"workspace": str(workspace), "goal": "Add a hello file", "run_on": "my_runner"},
+            json={"workspace": str(workspace), "goal": "Add a hello file", "model_id": model_id},
         )
         assert created.status_code == 201, created.text
         task_id = created.json()["id"]
@@ -164,6 +250,7 @@ def test_a_job_runs_on_the_persons_runner_and_lands_on_a_branch(
         assert job["task_id"] == task_id
         assert job["goal"] == "Add a hello file"
         assert job["base_sha"] == base
+        assert job["model"] == "opus"
 
         clone = tmp_path / "runner-worktree"
         subprocess.run(["git", "clone", "-q", str(workspace), str(clone)], check=True)
@@ -206,8 +293,8 @@ def test_a_job_runs_on_the_persons_runner_and_lands_on_a_branch(
         assert author.strip() == "Ada"
         messages = [event.get("message") for event in body.get("events", [])]
         assert "dropped" not in messages
+        usage = _usage_rows(workspace)
         with database(workspace) as db:
-            usage = db.fetchall("SELECT service, model, input_tokens, calls FROM usage_daily")
             jobs = db.fetchall("SELECT status FROM runner_jobs")
             audit = [row["action"] for row in db.fetchall("SELECT action FROM audit_log")]
         assert [(row["service"], row["model"], row["calls"]) for row in usage] == [
@@ -228,12 +315,13 @@ def test_a_runner_failure_fails_the_job(settings: Settings, tmp_path: Path) -> N
     client = TestClient(create_app(manager, default_workspace=workspace))
     try:
         client.get("/api/directory")
+        model_id = _runner_model(client, workspace, workspace)
         token = _link(client)
         _beat(client, token)
         auth = {"Authorization": f"Bearer {token}"}
         created = client.post(
             "/api/tasks",
-            json={"workspace": str(workspace), "goal": "Break", "run_on": "my_runner"},
+            json={"workspace": str(workspace), "goal": "Break", "model_id": model_id},
         )
         job = client.get("/api/runner/jobs/next?wait=10", headers=auth).json()
         client.post(

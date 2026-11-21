@@ -19,7 +19,7 @@ type Runner = {
 
 type Runners = { runners: Runner[]; can_manage: boolean };
 
-/** This person's own machines. A job set to run on "My machine" goes to one
+/** This person's own machines. A job on a "your machine" model goes to one
  * that is online and runs there with their own Claude Code. */
 export function RunnersSection() {
   const [data, setData] = useState<Runners | null>(null);
@@ -72,7 +72,7 @@ export function RunnersSection() {
       <p className="hint">
         Install <code>lbw-runner</code> on your computer, sign in to Claude Code there, then run{" "}
         <code>lbw-runner login --server {window.location.origin}</code>. Enter the code it shows
-        here. Jobs you send to My machine then run with your own Claude Code, and LBW never sees
+        here. Jobs on a "your machine" model then run with your own Claude Code, and LBW never sees
         your Claude login.
       </p>
       <div className="runner-approve">

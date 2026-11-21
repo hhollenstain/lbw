@@ -142,46 +142,6 @@ paths:
       responses:
         "200":
           description: This person's integrations after the link is removed.
-  /api/me/integrations/{endpoint_id}/claude-link:
-    post:
-      operationId: startClaudeLink
-      parameters:
-        - name: endpoint_id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: The Anthropic approval page to open.
-  /api/integrations/claude/callback:
-    get:
-      operationId: finishClaudeLink
-      responses:
-        "303":
-          description: Back to the profile after Anthropic's approval page.
-  /api/org/claude-link:
-    get:
-      operationId: readClaudeLinkApp
-      responses:
-        "200":
-          description: Whether people can link a Claude organization. No secret is returned.
-    put:
-      operationId: saveClaudeLinkApp
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ClaudeLinkWrite"
-      responses:
-        "200":
-          description: The saved Claude link settings.
-    delete:
-      operationId: removeClaudeLinkApp
-      responses:
-        "200":
-          description: The Claude link settings after removal.
   /api/org/prices:
     get:
       operationId: listModelPrices
@@ -689,17 +649,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AgentTeamStep"
-    ClaudeLinkWrite:
-      type: object
-      required: [client_id, assertion_file]
-      properties:
-        client_id:
-          type: string
-        assertion_file:
-          type: string
-        profile_api_key:
-          type: string
-          default: ""
     PriceWrite:
       type: object
       required: [model, input_per_mtok, output_per_mtok]

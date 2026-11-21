@@ -114,12 +114,6 @@ class AgentTeamUpdate(BaseModel):
     steps: list[AgentTeamStep] = Field(default_factory=list)
 
 
-class ClaudeLinkWrite(BaseModel):
-    client_id: str
-    assertion_file: str
-    profile_api_key: str = ""
-
-
 class PriceWrite(BaseModel):
     model: str
     input_per_mtok: float

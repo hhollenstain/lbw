@@ -372,33 +372,6 @@ _STATEMENTS = (
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS claude_link_apps (
-        tenant_id TEXT PRIMARY KEY REFERENCES tenants (id),
-        client_id TEXT NOT NULL,
-        assertion_file TEXT NOT NULL,
-        profile_key_ciphertext TEXT NOT NULL,
-        updated BIGINT NOT NULL DEFAULT 0
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS claude_profiles (
-        tenant_id TEXT NOT NULL REFERENCES tenants (id),
-        identity_id TEXT NOT NULL REFERENCES identities (id),
-        profile_id TEXT NOT NULL,
-        PRIMARY KEY (tenant_id, identity_id)
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS link_pending (
-        state TEXT PRIMARY KEY,
-        tenant_id TEXT NOT NULL REFERENCES tenants (id),
-        identity_id TEXT NOT NULL REFERENCES identities (id),
-        endpoint_id TEXT NOT NULL,
-        verifier_ciphertext TEXT NOT NULL,
-        created BIGINT NOT NULL
-    )
-    """,
-    """
     CREATE TABLE IF NOT EXISTS runners (
         id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES tenants (id),
@@ -522,9 +495,6 @@ CLEAR_ORDER = (
     "usage_skills_daily",
     "usage_runs_daily",
     "model_prices",
-    "link_pending",
-    "claude_profiles",
-    "claude_link_apps",
     "agent_grants",
     "model_project_settings",
     "model_grants",
@@ -581,7 +551,7 @@ TASK_COLUMNS = frozenset(
 )
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def read_schema_version(db: Database) -> int:
@@ -650,8 +620,6 @@ def apply_schema(db: Database) -> None:
     _add_column(db, "model_endpoints", "auth", "TEXT NOT NULL DEFAULT 'key'")
     _add_column(db, "model_endpoints", "audience", "TEXT NOT NULL DEFAULT ''")
     _add_column(db, "endpoint_credentials", "kind", "TEXT NOT NULL DEFAULT 'sso'")
-    _add_column(db, "endpoint_credentials", "connection_id", "TEXT NOT NULL DEFAULT ''")
-    _add_column(db, "endpoint_credentials", "profile_id", "TEXT NOT NULL DEFAULT ''")
     for table in ("usage_daily", "usage_files_daily", "usage_skills_daily", "usage_runs_daily"):
         db.execute(
             f"CREATE INDEX IF NOT EXISTS {table}_project ON {table} (tenant_id, project_id, day)"
@@ -698,6 +666,7 @@ def apply_schema(db: Database) -> None:
     if legacy is not None:
         _write_legacy(db, legacy)
     _mark_crossing_owner(db)
+    _drop_claude_link(db)
 
 
 def clear_store(db: Database) -> None:
@@ -776,6 +745,14 @@ def _seed_team_steps(db: Database) -> None:
 def _add_column(db: Database, table: str, column: str, ddl: str) -> None:
     if column not in table_columns(db, table):
         db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+def _drop_claude_link(db: Database) -> None:
+    """Claude runs on each person's runner now, so the Claude Platform OAuth link is gone."""
+    db.execute("DELETE FROM endpoint_credentials WHERE kind = 'claude_link'")
+    for name in ("link_pending", "claude_profiles", "claude_link_apps"):
+        if _has_table(db, name):
+            db.execute(f"DROP TABLE {name}")
 
 
 def _has_table(db: Database, name: str) -> bool:

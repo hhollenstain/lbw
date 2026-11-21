@@ -1,4 +1,4 @@
-"""Integrations a person links, the Claude organization link, prices, and usage reports.
+"""Integrations a person links, prices, and usage reports.
 
 An owner or admin turns an integration on by setting a model endpoint to
 personal keys or sign-in. Each person links it on their profile. A run they
@@ -11,21 +11,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, Response
 
-from agent_lbw.openapi_models import ClaudeLinkWrite, PriceWrite
+from agent_lbw.openapi_models import PriceWrite
 from agent_lbw.runtime.account import load_account
 from agent_lbw.runtime.db import database
 from agent_lbw.runtime.store.assignments import can_manage_org
 from agent_lbw.runtime.store.audit import record_audit
-from agent_lbw.runtime.store.claude_link import (
-    CALLBACK_PATH,
-    app_view,
-    begin_link,
-    finish_link,
-    remove_app,
-    save_app,
-)
 from agent_lbw.runtime.store.gateway import LinkRequired, person_integrations, unlink
 from agent_lbw.runtime.store.install import require_account
 from agent_lbw.runtime.store.projects import can_access
@@ -67,77 +59,6 @@ def register_integrations(app: FastAPI) -> None:
             )
             request.state.audit_explicit = True
             return _mine(db)
-
-        return _act(request, apply)
-
-    @app.post("/api/me/integrations/{endpoint_id}/claude-link", response_model=None)
-    def start_claude_link(request: Request, endpoint_id: str) -> object:
-        def apply(db, root: Path) -> dict:
-            url = begin_link(db, root, endpoint_id, redirect_uri=_callback(request))
-            request.state.audit_explicit = True
-            return {"url": url}
-
-        return _act(request, apply)
-
-    @app.get(CALLBACK_PATH, response_model=None)
-    def finish_claude_link(
-        request: Request, code: str = "", state: str = "", error: str = ""
-    ) -> object:
-        def apply(db, root: Path) -> RedirectResponse:
-            endpoint_id = finish_link(
-                db,
-                root,
-                code=code,
-                state=state,
-                error=error,
-                redirect_uri=_callback(request),
-            )
-            _audit(
-                db,
-                "integration.link",
-                "Linked a Claude organization",
-                target_id=endpoint_id,
-                path=CALLBACK_PATH,
-                method="GET",
-            )
-            return RedirectResponse("/?section=personal&tab=integrations", status_code=303)
-
-        result = _act(request, apply)
-        if isinstance(result, JSONResponse) and result.status_code >= 400:
-            return RedirectResponse(
-                "/?section=personal&tab=integrations&link_error=1", status_code=303
-            )
-        return result
-
-    @app.get("/api/org/claude-link", response_model=None)
-    def read_claude_link(request: Request) -> object:
-        return _act(request, lambda db, root: _claude_app(db, request))
-
-    @app.put("/api/org/claude-link", response_model=None)
-    def write_claude_link(request: Request, payload: ClaudeLinkWrite) -> object:
-        def apply(db, root: Path) -> dict:
-            save_app(
-                db,
-                root,
-                client_id=payload.client_id,
-                assertion_file=payload.assertion_file,
-                profile_api_key=payload.profile_api_key,
-            )
-            request.state.audit_action = "integration.claude_app"
-            request.state.audit_summary = "Saved the Claude organization link settings"
-            request.state.audit_target_type = "integration"
-            return _claude_app(db, request)
-
-        return _act(request, apply)
-
-    @app.delete("/api/org/claude-link", response_model=None)
-    def delete_claude_link(request: Request) -> object:
-        def apply(db, root: Path) -> dict:
-            remove_app(db)
-            request.state.audit_action = "integration.claude_app"
-            request.state.audit_summary = "Turned off Claude organization links"
-            request.state.audit_target_type = "integration"
-            return _claude_app(db, request)
 
         return _act(request, apply)
 
@@ -259,16 +180,7 @@ def link_required_response(exc: LinkRequired) -> JSONResponse:
 
 
 def _mine(db) -> dict:
-    account = require_account(db)
-    tenant_id = account["org"]["id"]
-    ready = db.fetchone("SELECT 1 AS found FROM claude_link_apps WHERE tenant_id = ?", (tenant_id,))
-    return {"integrations": person_integrations(db), "claude_link_ready": ready is not None}
-
-
-def _claude_app(db, request: Request) -> dict:
-    view = app_view(db)
-    view["callback_url"] = _callback(request)
-    return view
+    return {"integrations": person_integrations(db)}
 
 
 def _prices(db) -> dict:
@@ -299,10 +211,6 @@ def _audit(db, action: str, summary: str, *, target_id: str, path: str, method: 
         target_type="integration",
         target_id=target_id,
     )
-
-
-def _callback(request: Request) -> str:
-    return str(request.base_url).rstrip("/") + CALLBACK_PATH
 
 
 def _act(request: Request, fn):

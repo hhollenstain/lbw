@@ -1,7 +1,6 @@
 import { type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
-import { ClaudeLinkSettings } from "./sections/integrations/ClaudeLinkSettings";
 import { IntegrationsSection } from "./sections/integrations/IntegrationsSection";
 import { RunnersSection } from "./sections/integrations/RunnersSection";
 import { ModelsSection } from "./sections/models/ModelsSection";
@@ -30,4 +29,3 @@ mount("org-usage-root", <UsageDashboard scope="org" />);
 mount("org-prices-root", <PricesSection />);
 mount("personal-integrations-root", <IntegrationsSection />);
 mount("personal-runners-root", <RunnersSection />);
-mount("org-claude-link-root", <ClaudeLinkSettings />);

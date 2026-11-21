@@ -95,6 +95,7 @@ type Job struct {
 	RemoteURL   string `json:"remote_url"`
 	Repository  string `json:"repository"`
 	Project     string `json:"project"`
+	Model       string `json:"model"`
 	MaxSeconds  int    `json:"max_seconds"`
 }
 

@@ -189,20 +189,6 @@ class AnthropicClient:
         self.base_url = normalize_model_base_url(base_url).rstrip("/")
         self.api_key = api_key.strip()
         self.context_window = context_window if context_window and context_window >= 512 else None
-        self.bearer = False
-        self.extra_headers: dict[str, str] = {}
-        self.extra_body: dict[str, Any] = {}
-
-    def use_link(self, *, headers: dict[str, str], body: dict[str, Any]) -> None:
-        """Send the key as a bearer token, with the headers and body a linked account needs.
-
-        A Claude organization linked through Claude Platform OAuth bills its own
-        usage. Its connection token goes in Authorization, and the request names
-        the customer's user profile and billing policy.
-        """
-        self.bearer = True
-        self.extra_headers = {str(key): str(value) for key, value in headers.items()}
-        self.extra_body = dict(body)
 
     def complete(
         self,
@@ -261,16 +247,11 @@ class AnthropicClient:
         if converted:
             body["tools"] = converted
             body["tool_choice"] = {"type": "auto"}
-        body.update(self.extra_body)
         headers = {
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
-            **self.extra_headers,
+            "x-api-key": self.api_key,
         }
-        if self.bearer:
-            headers["authorization"] = f"Bearer {self.api_key}"
-        else:
-            headers["x-api-key"] = self.api_key
         response = httpx.post(
             f"{self.base_url}/messages",
             headers=headers,
@@ -642,17 +623,13 @@ def tag_client(
 
 
 def apply_credential(client: object, credential: dict) -> None:
-    """Tag the client, and switch a linked Claude account to its bearer token and headers."""
+    """Tag the client with the catalog model and service its credential belongs to."""
     tag_client(
         client,
         model_id=str(credential.get("model_id") or ""),
         service=str(credential.get("service") or ""),
         provider=str(credential.get("provider") or ""),
     )
-    link = credential.get("link")
-    use_link = getattr(client, "use_link", None)
-    if isinstance(link, dict) and callable(use_link):
-        use_link(headers=dict(link.get("headers") or {}), body=dict(link.get("body") or {}))
 
 
 def effective_context_window(

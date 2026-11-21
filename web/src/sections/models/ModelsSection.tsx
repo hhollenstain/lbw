@@ -103,7 +103,7 @@ export function ModelsSection() {
         name: endpointName,
         provider: endpointProvider,
         base_url: endpointUrl,
-        api_key: endpointAuth === "sso" ? "" : endpointKey,
+        api_key: endpointAuth === "sso" || endpointAuth === "runner" ? "" : endpointKey,
         auth: endpointAuth,
         audience:
           endpointAuth === "key" || !providers.find((item) => item.id === endpointProvider)?.gateway
@@ -206,8 +206,9 @@ export function ModelsSection() {
       </div>
       <p className="hint" id="org-models-hint">
         Bring your own endpoint. OpenAI, Claude, and Google take an API key. Claude runs through
-        the Messages API. A self-hosted server such as Ollama, vLLM, or LM Studio uses its own
-        address. LiteLLM and other gateways speak the OpenAI API. An organization key
+        the Messages API, or on each person's machine: a job on that model goes to the runner the
+        person linked under Profile, Integrations, and their own Claude Code does the work. A
+        self-hosted server such as Ollama, vLLM, or LM Studio uses its own address. LiteLLM and other gateways speak the OpenAI API. An organization key
         is shared. Each person can check their own key, or sign in when the gateway accepts this
         organization's sign-in token. A run uses that person's credential. Resync stores the names
         it returns. The key is sealed and is not shown again.
@@ -345,18 +346,20 @@ export function ModelsSection() {
               ))}
             </select>
           </label>
-          <label>
-            Base URL
-            <input
-              id="org-endpoint-url"
-              type="url"
-              maxLength={200}
-              placeholder="Base URL"
-              autoComplete="off"
-              value={endpointUrl}
-              onChange={(event) => setEndpointUrl(event.target.value)}
-            />
-          </label>
+          {endpointAuth !== "runner" ? (
+            <label>
+              Base URL
+              <input
+                id="org-endpoint-url"
+                type="url"
+                maxLength={200}
+                placeholder="Base URL"
+                autoComplete="off"
+                value={endpointUrl}
+                onChange={(event) => setEndpointUrl(event.target.value)}
+              />
+            </label>
+          ) : null}
           {authModes.length > 1 ? (
             <label>
               Sign-in
@@ -368,11 +371,17 @@ export function ModelsSection() {
               >
                 {authModes.map((mode) => (
                   <option key={mode} value={mode}>
-                    {mode === "personal" ? "Each person" : mode === "sso" ? "SSO" : "Organization key"}
+                    {AUTH_LABELS[mode] || mode}
                   </option>
                 ))}
               </select>
             </label>
+          ) : null}
+          {endpointAuth === "runner" ? (
+            <p className="hint" id="org-endpoint-runner-hint">
+              No key or address. A job on this model runs on the requester's own linked machine with
+              their Claude Code. Schedules and agent teams run in LBW, so they cannot use it.
+            </p>
           ) : null}
           {chosenProvider?.gateway && endpointAuth !== "key" ? (
             <label>
@@ -388,7 +397,7 @@ export function ModelsSection() {
               />
             </label>
           ) : null}
-          {endpointAuth !== "sso" ? (
+          {endpointAuth !== "sso" && endpointAuth !== "runner" ? (
             <label>
               {endpointAuth === "personal" ? "Your API key" : "API key"}
               <input
@@ -408,7 +417,7 @@ export function ModelsSection() {
             <button type="button" id="add-org-endpoint" onClick={() => addEndpoint().catch(fail)}>
               {endpointAuth === "sso"
                 ? "Continue"
-                : endpointAuth === "personal" && !endpointKey.trim()
+                : endpointAuth === "runner" || (endpointAuth === "personal" && !endpointKey.trim())
                   ? "Add"
                   : "Check"}
             </button>
@@ -532,9 +541,19 @@ export function ModelsSection() {
   );
 }
 
-function endpointAuthModes(provider: { key: boolean; gateway?: boolean } | undefined): string[] {
+const AUTH_LABELS: Record<string, string> = {
+  key: "Organization key",
+  personal: "Each person",
+  sso: "SSO",
+  runner: "Each person's machine",
+};
+
+function endpointAuthModes(
+  provider: { key: boolean; gateway?: boolean; runner?: boolean } | undefined,
+): string[] {
   if (!provider) return [];
   if (provider.gateway) return ["key", "personal", "sso"];
+  if (provider.runner) return ["key", "personal", "runner"];
   if (provider.key) return ["key", "personal"];
   return [];
 }
@@ -597,7 +616,9 @@ function endpointCells(
   ) : null;
   return [
     <td key="name">{endpoint.name}</td>,
-    <td key="url" className="url">{endpoint.base_url || "—"}</td>,
+    <td key="url" className="url">
+      {endpoint.auth === "runner" ? "Each person's machine" : endpoint.base_url || "—"}
+    </td>,
     <td key="count">{String((endpoint.model_names || []).length)}</td>,
     <td key="actions" className="org-table-actions">{actions}</td>,
   ];

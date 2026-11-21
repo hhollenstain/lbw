@@ -128,3 +128,12 @@ func TestThePromptCarriesTheGoalAndReviewNotes(t *testing.T) {
 		}
 	}
 }
+
+func TestModelPrefersTheJobOverTheRunnerSetting(t *testing.T) {
+	if got := model(&client.Job{Model: "opus"}, "sonnet"); got != "opus" {
+		t.Fatalf("job model: got %q", got)
+	}
+	if got := model(&client.Job{}, "sonnet"); got != "sonnet" {
+		t.Fatalf("runner fallback: got %q", got)
+	}
+}

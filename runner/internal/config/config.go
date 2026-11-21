@@ -38,7 +38,8 @@ type Config struct {
 	AllowedTools []string `json:"allowed_tools,omitempty"`
 	// MaxTurns limits one job's agent turns. Zero means Claude Code's default.
 	MaxTurns int `json:"max_turns,omitempty"`
-	// Model asks Claude Code for a model. Empty means the account's default.
+	// Model asks Claude Code for a model when the job does not name one. Empty
+	// means the account's default.
 	Model string `json:"model,omitempty"`
 	// TokenStore is "keychain", "secret-service", or "file". Set at login.
 	TokenStore string `json:"token_store,omitempty"`
