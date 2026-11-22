@@ -33,7 +33,7 @@ from agent_lbw.runtime.store.catalog import (
     delete_agent,
     delete_endpoint,
     delete_model,
-    models_for_workspace,
+    job_models,
     note_gateway_models,
     save_endpoint,
     save_model,
@@ -349,7 +349,7 @@ def register_org(app: FastAPI) -> None:
         path = Path(workspace or ui.default_workspace)
 
         def apply(db, _root: Path) -> dict:
-            return {"models": models_for_workspace(db, path)}
+            return {"models": job_models(db, path)}
 
         return _act(request, apply)
 

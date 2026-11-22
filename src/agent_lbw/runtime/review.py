@@ -7,6 +7,7 @@ from pathlib import Path
 
 from agent_lbw.llm.client import LLMClient
 from agent_lbw.progress import record_event, timed_complete
+from agent_lbw.runtime.review_index import ReviewReader, complete_review
 
 REVIEW_RAW_LIMIT = 8_000
 
@@ -45,6 +46,12 @@ Rules:
   still old, the lockfile keeps the old package name, or a requirement was
   lowered.
 - A summary that claims the work is done does not count unless the diff shows it.
+- LBW shortens long files and diffs before you see them. A line that starts
+  with "[LBW shortened this review copy" marks where your copy stops, not
+  where the file ends. Never fail a goal because a file looks cut off at that
+  line, and do not ask for checks that the file is complete. Judge the part
+  you can see; when what the goal needs is past that line, judge it from the
+  agent summary and the tests.
 - If the goal is a GitHub issue, the body and comments are the spec. Matching
   only the title is unmet. The requested behavior must be in the diff.
 - A new button, tab, or form control with no JavaScript handler in the same
@@ -91,6 +98,9 @@ The agent made no file changes this cycle. Decide whether the CURRENT workspace
 already fulfills the stated goal.
 
 Rules:
+- LBW shortens long files before you see them. A line that starts with
+  "[LBW shortened this review copy" marks where your copy stops, not where
+  the file ends. Never call a file incomplete because of that line.
 - Passing tests is not enough by itself.
 - Use the current evidence: dependency versions, manifests, and files.
 - When a Rendered UI section is present, JavaScript exceptions mean the goal is
@@ -708,6 +718,7 @@ def review_goal(
     upstream: str | None = None,
     ui_evidence: str | None = None,
     plan: str | None = None,
+    reader: ReviewReader | None = None,
 ) -> GoalReview:
     if is_test_suite_goal(goal) and tests_passed is True:
         verdict = GoalReview(True, "project tests passed after the change")
@@ -757,7 +768,7 @@ def review_goal(
         },
         {"role": "user", "content": user},
     ]
-    turn = timed_complete(llm, messages, [], purpose="review")
+    turn = complete_review(llm, messages, reader, purpose="review")
     verdict = parse_review(turn.text)
     _record_review(verdict, attempt=1)
     if verdict.parsed and not needs_specific_reason(verdict):

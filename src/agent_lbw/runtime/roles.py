@@ -18,7 +18,7 @@ from pathlib import Path
 import yaml
 
 from agent_lbw.llm.client import LLMClient
-from agent_lbw.progress import timed_complete
+from agent_lbw.runtime.review_index import ReviewReader, complete_review
 from agent_lbw.runtime.skills import skill_summary
 
 log = logging.getLogger("lbw")
@@ -204,6 +204,7 @@ def review_with_role(
     diff: str,
     summary: str,
     tests_passed: bool | None,
+    reader: ReviewReader | None = None,
 ) -> RoleVerdict:
     """Ask one review role for a pass, send-back, or block verdict."""
     opinions = (role.body or "").strip()[:4000]
@@ -215,6 +216,9 @@ def review_with_role(
         "send_back: the builder should fix a specific gap. summary must name "
         "what is missing or wrong, where it is, and what to change.\n"
         "block: the change must not ship. summary must name the exact problem.\n"
+        'LBW shortens long diffs. A line starting with "[LBW shortened this review '
+        'copy" is where your copy stops, not where the file ends: never send back '
+        "or block because a file looks cut off there.\n"
     )
     if opinions:
         system += f"\nOpinions:\n{opinions}\n"
@@ -237,7 +241,7 @@ def review_with_role(
         {"role": "user", "content": user},
     ]
     try:
-        turn = timed_complete(llm, messages, [], purpose="role", role=role.name)
+        turn = complete_review(llm, messages, reader, purpose="role", role=role.name)
     except Exception as exc:  # noqa: BLE001 - a missed reviewer must not abort the cycle
         log.info("role %s review failed: %s", role.name, exc)
         return RoleVerdict("pass", "reviewer could not be reached", parsed=False)

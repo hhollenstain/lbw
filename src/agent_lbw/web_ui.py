@@ -33,13 +33,18 @@ from agent_lbw.auth_http import register_auth
 from agent_lbw.config import Settings
 from agent_lbw.integrations_http import link_required_response, register_integrations
 from agent_lbw.llm.client import effective_context_window, normalize_model_base_url
+from agent_lbw.local_models_http import register_local_models
 from agent_lbw.openapi_models import (
     AgentTeamImport,
     AgentTeamProjectWrite,
     AuditList,
+    DecidePayload,
     ProjectModelList,
     ProjectModelWrite,
+    ProjectSpecPolicy,
+    RerunPayload,
     ScheduleWrite,
+    SpecPolicy,
 )
 from agent_lbw.progress import attach_token_usage, clip_text, llm_turn_snippets, public_run_item
 from agent_lbw.runner_http import register_runners, runner_required_response
@@ -222,6 +227,8 @@ class TaskCreate(BaseModel):
     base_branch: str | None = None
     pr_url: str | None = None
     continuous: bool = False
+    # Write a spec first. A project or organization that requires one turns it on.
+    spec: bool = False
     context_window: int | None = None
     gate: str | None = None
     triage_gate: str | None = None
@@ -230,16 +237,6 @@ class TaskCreate(BaseModel):
 
 class ContinuousStop(BaseModel):
     workspace: str | None = None
-
-
-class RerunPayload(BaseModel):
-    sha: str | None = None
-    goal: str | None = None
-
-
-class DecidePayload(BaseModel):
-    decision: str = ""
-    note: str = ""
 
 
 class ReworkPayload(BaseModel):
@@ -1268,8 +1265,9 @@ def create_app(
     @app.post("/api/tasks/{task_id}/rerun")
     def rerun_task(task_id: str, request: Request, payload: RerunPayload | None = None) -> Any:
         ui: UiState = request.app.state.ui
-        run_from_sha = payload.sha if payload else None
-        new_goal = payload.goal if payload else None
+        run_from_sha = (payload.sha if payload else "") or None
+        new_goal = (payload.goal if payload else "") or None
+        picked = (payload.model_id if payload else "").strip()
         old_task = ui.manager.get(task_id)
         if old_task is None:
             return JSONResponse({"error": "task not found"}, status_code=404)
@@ -1281,15 +1279,25 @@ def create_app(
         ):
             return JSONResponse({"error": "pull request is not open"}, status_code=409)
         goal_to_use = new_goal or old_task.goal
-        blocked, actor = _acting_credential(ui, old_task)
+        blocked, actor = _acting_credential(ui, old_task, model_id=picked or None)
         if blocked is not None:
             return blocked
-        new_task = ui.manager.rerun(
-            task_id,
-            from_sha=run_from_sha,
-            goal=goal_to_use,
-            actor_id=actor,
-        )
+        model = None
+        if picked and picked != old_task.model_id:
+            refused, creds = _usable_model(ui, Path(old_task.workspace), picked)
+            if refused is not None:
+                return refused
+            model = {**(creds or {}), "model_id": picked}
+        try:
+            new_task = ui.manager.rerun(
+                task_id,
+                from_sha=run_from_sha,
+                goal=goal_to_use,
+                actor_id=actor,
+                model=model,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         if new_task is None:
             return JSONResponse({"error": "task not found or not rerunnable"}, status_code=404)
         return JSONResponse(new_task.to_dict(), status_code=201)
@@ -1336,7 +1344,7 @@ def create_app(
         ui: UiState = request.app.state.ui
         body = payload or DecidePayload()
         choice = (body.decision or "").strip()
-        if choice not in {"build", "hand_off", "approve", "send_back", "continue"}:
+        if choice not in {"accept_spec", "build", "hand_off", "approve", "send_back", "continue"}:
             return JSONResponse({"error": "unknown decision"}, status_code=400)
         if choice in {"send_back", "continue"} and not (body.note or "").strip():
             return JSONResponse(
@@ -1357,7 +1365,9 @@ def create_app(
             if credential_block is not None:
                 return credential_block
         try:
-            updated = ui.manager.decide(task_id, choice, body.note, actor_id=actor)
+            updated = ui.manager.decide(
+                task_id, choice, body.note, actor_id=actor, spec_text=body.spec_text
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
         if updated is None:
@@ -1445,10 +1455,13 @@ def create_app(
             model_base_url = creds["base_url"]
             model_api_key = creds["api_key"]
             on_runner = bool(creds.get("runner"))
-            if on_runner:
-                refused = _check_runner(ui)
+            if on_runner or creds.get("relay"):
+                refused = _check_runner(ui, relay=bool(creds.get("relay")))
                 if refused is not None:
                     return refused
+        spec_blocked, write_spec = _spec_for_job(ui, Path(workspace_raw), bool(body.spec))
+        if spec_blocked is not None:
+            return spec_blocked
         try:
             task = ui.manager.submit(
                 Path(workspace_raw),
@@ -1468,6 +1481,7 @@ def create_app(
                 approval_gate=body.approval_gate or "",
                 model_id=chosen_id or None,
                 agent_kind="claude_code" if on_runner else None,
+                spec=write_spec,
             )
             if not chosen_id:
                 ui.remember_server(task.model_base_url, model=task.model_name)
@@ -1846,6 +1860,56 @@ def create_app(
         request.state.audit_target_id = payload.model_id
         return ProjectModelList.model_validate(body)
 
+    @app.get("/api/org/specs", response_model=None)
+    def get_org_spec_policy(request: Request) -> Any:
+        from agent_lbw.runtime.store.specs import org_spec_policy
+
+        return _spec_policy_call(request.app.state.ui, org_spec_policy)
+
+    @app.put("/api/org/specs", response_model=None)
+    def put_org_spec_policy(request: Request, payload: SpecPolicy) -> Any:
+        from agent_lbw.runtime.store.specs import set_org_spec_policy
+
+        reply = _spec_policy_call(
+            request.app.state.ui,
+            lambda db: set_org_spec_policy(db, required=payload.required),
+            write=True,
+        )
+        request.state.audit_action = "specs.org"
+        request.state.audit_summary = (
+            "Required a spec on every project" if payload.required else "Made specs optional"
+        )
+        request.state.audit_target_type = "tenant"
+        return reply
+
+    @app.get("/api/workspaces/specs", response_model=None)
+    def get_project_spec_policy(request: Request, path: str | None = None) -> Any:
+        from agent_lbw.runtime.store.specs import project_spec_policy
+
+        ui: UiState = request.app.state.ui
+        workspace = _model_workspace(ui, path)
+        return _spec_policy_call(ui, lambda db: project_spec_policy(db, workspace))
+
+    @app.put("/api/workspaces/specs", response_model=None)
+    def put_project_spec_policy(request: Request, payload: ProjectSpecPolicy) -> Any:
+        from agent_lbw.runtime.store.specs import set_project_spec_policy
+
+        ui: UiState = request.app.state.ui
+        workspace = _model_workspace(ui, payload.path)
+        reply = _spec_policy_call(
+            ui,
+            lambda db: set_project_spec_policy(db, workspace, required=payload.required),
+            write=True,
+        )
+        request.state.audit_action = "specs.project"
+        request.state.audit_summary = (
+            "Required a spec for this project's proposals"
+            if payload.required
+            else "Made specs optional for this project"
+        )
+        request.state.audit_target_type = "project"
+        return reply
+
     @app.put("/api/workspaces/agent-teams")
     def update_workspace_agent_team(request: Request, payload: AgentTeamProjectWrite) -> Any:
         ui: UiState = request.app.state.ui
@@ -2150,22 +2214,27 @@ def create_app(
     register_org(app)
     register_integrations(app)
     register_runners(app)
+    register_local_models(app)
     _register_audit(app)
     return app
 
 
-def _check_runner(ui: UiState) -> JSONResponse | None:
-    """A job for the person's own machine needs one of their runners online now."""
+def _check_runner(ui: UiState, *, relay: bool = False) -> JSONResponse | None:
+    """A job for the person's own machine needs one of their runners online now.
+
+    A local model needs one that relays model calls.
+    """
     from agent_lbw.runtime.db import database
     from agent_lbw.runtime.store.install import require_account
-    from agent_lbw.runtime.store.runners import RunnerRequired, pick_runner
+    from agent_lbw.runtime.store.runners import RunnerRequired, pick_relay_runner, pick_runner
 
     root = Path(ui.store_root)
+    pick = pick_relay_runner if relay else pick_runner
     try:
         load_account(root, database_url=ui.manager.settings.database_url)
         with database(root, ui.manager.settings.database_url) as db:
             account = require_account(db)
-            pick_runner(db, account["org"]["id"], account["current_user_id"])
+            pick(db, account["org"]["id"], account["current_user_id"])
     except RunnerRequired as exc:
         return runner_required_response(exc)
     except ValueError as exc:
@@ -2256,6 +2325,45 @@ def _write_request_audit(request: Request) -> None:
             )
     except (OSError, PermissionError, ValueError) as exc:
         log.warning("audit note was not stored: %s", exc)
+
+
+def _spec_policy_call(ui: UiState, fn, *, write: bool = False) -> Any:
+    """Run a spec policy read or change. Without a database a spec is always optional."""
+    from agent_lbw.runtime.db import database, database_configured
+
+    root = Path(ui.store_root)
+    url = ui.manager.settings.database_url
+    if not database_configured(root, url):
+        if write:
+            return JSONResponse({"error": "no organization database"}, status_code=400)
+        return {"required": False, "org_required": False, "can_manage": False}
+    try:
+        load_account(root, database_url=url)
+        with database(root, url) as db:
+            return fn(db)
+    except PermissionError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=403)
+    except KeyError:
+        return JSONResponse({"error": "this project is not in the organization"}, status_code=404)
+    except (OSError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+def _spec_for_job(ui: UiState, workspace: Path, asked: bool) -> tuple[JSONResponse | None, bool]:
+    """Whether a new job writes a spec first: the person asked, or the project requires it."""
+    from agent_lbw.runtime.db import database, database_configured
+    from agent_lbw.runtime.store.specs import spec_required
+
+    root = Path(ui.store_root)
+    url = ui.manager.settings.database_url
+    if not database_configured(root, url):
+        return None, asked
+    try:
+        load_account(root, database_url=url)
+        with database(root, url) as db:
+            return None, asked or spec_required(db, workspace)
+    except (OSError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400), asked
 
 
 def _project_model_list(ui: UiState, path: str | None) -> ProjectModelList | JSONResponse:
@@ -2588,7 +2696,7 @@ def _schedule_model(ui: UiState, workspace: Path, model_id: str) -> tuple[str, s
         return "That model is off for this project."
     except (OSError, ValueError) as exc:
         return str(exc)
-    if creds.get("runner"):
+    if creds.get("runner") or creds.get("relay"):
         return "That model runs on a person's machine. A schedule needs a model LBW calls."
     host = str(creds.get("base_url") or "").strip()
     if not host:
@@ -2596,17 +2704,19 @@ def _schedule_model(ui: UiState, workspace: Path, model_id: str) -> tuple[str, s
     return (str(creds.get("model_name") or ""), host, str(creds.get("api_key") or ""))
 
 
-def _acting_credential(ui: UiState, task) -> tuple[JSONResponse | None, str | None]:
+def _acting_credential(
+    ui: UiState, task, *, model_id: str | None = None
+) -> tuple[JSONResponse | None, str | None]:
     """Check the person acting now has linked the integration this job's model runs on.
 
     Work that continues runs on their credentials, never on the requester's, so a
     person who has not linked it is asked to link it first. A model on a person's
     machine runs on the acting person's own runner, so one of theirs must be online.
+    `model_id` checks another model the person picked for the next run instead.
     """
     from agent_lbw.runtime.account import load_account
-    from agent_lbw.runtime.db import database, database_configured
+    from agent_lbw.runtime.db import database_configured
     from agent_lbw.runtime.store.auth import current_actor
-    from agent_lbw.runtime.store.catalog import use_model
 
     root = Path(ui.store_root)
     url = ui.manager.settings.database_url
@@ -2617,23 +2727,35 @@ def _acting_credential(ui: UiState, task) -> tuple[JSONResponse | None, str | No
     except (OSError, ValueError):
         return None, None
     actor = current_actor() or account["current_user_id"]
-    model_id = str(getattr(task, "model_id", "") or "")
-    if not model_id:
+    chosen = model_id if model_id is not None else str(getattr(task, "model_id", "") or "")
+    if not chosen:
         return None, actor
+    blocked, _creds = _usable_model(ui, Path(task.workspace), chosen)
+    return blocked, (None if blocked is not None else actor)
+
+
+def _usable_model(
+    ui: UiState, workspace: Path, model_id: str
+) -> tuple[JSONResponse | None, dict | None]:
+    """The acting person's credential for this model on this project, or why it is refused."""
+    from agent_lbw.runtime.db import database
+    from agent_lbw.runtime.store.catalog import use_model
+
+    root = Path(ui.store_root)
     try:
-        with database(root, url) as db:
-            creds = use_model(db, root, Path(task.workspace), model_id)
+        with database(root, ui.manager.settings.database_url) as db:
+            creds = use_model(db, root, workspace, model_id)
     except LinkRequired as exc:
         return link_required_response(exc), None
     except PermissionError as exc:
         return JSONResponse({"error": str(exc)}, status_code=403), None
     except (KeyError, ValueError) as exc:
         return JSONResponse({"error": str(exc) or "that model is gone"}, status_code=409), None
-    if creds.get("runner"):
-        refused = _check_runner(ui)
+    if creds.get("runner") or creds.get("relay"):
+        refused = _check_runner(ui, relay=bool(creds.get("relay")))
         if refused is not None:
             return refused, None
-    return None, actor
+    return None, creds
 
 
 def _note_credentials(ui: UiState, task, actor: str | None) -> None:

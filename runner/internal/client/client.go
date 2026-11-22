@@ -20,6 +20,9 @@ import (
 // ErrUnauthorized means the runner's token was revoked or never issued.
 var ErrUnauthorized = errors.New("this runner is not linked: run `lbw-runner login`")
 
+// maxResponse caps what the runner reads from LBW. A model call can be 16 MB.
+const maxResponse = 17 << 20
+
 // ErrPending means the person has not entered the link code yet.
 var ErrPending = errors.New("waiting for approval")
 
@@ -75,6 +78,8 @@ type Facts struct {
 	ClaudeVersion string `json:"claude_version"`
 	ClaudeReady   bool   `json:"claude_ready"`
 	Platform      string `json:"platform"`
+	// LLMRelay says this runner relays model calls to its owner's model server.
+	LLMRelay bool `json:"llm_relay"`
 }
 
 // Beat is the server's answer to a heartbeat.
@@ -121,6 +126,22 @@ type Result struct {
 	Patch   string `json:"patch"`
 }
 
+// ModelCall is one model call LBW made for this runner's owner.
+type ModelCall struct {
+	CallID  string `json:"call_id"`
+	Method  string `json:"method"`
+	Path    string `json:"path"`
+	Body    string `json:"body"`
+	BaseURL string `json:"base_url"`
+}
+
+// ModelAnswer is the model server's answer, or why the runner could not get one.
+type ModelAnswer struct {
+	Status int    `json:"status"`
+	Body   string `json:"body"`
+	Error  string `json:"error"`
+}
+
 // StartLink begins linking. The person enters UserCode on their profile.
 func (c *Client) StartLink(ctx context.Context, name, platform string) (*Link, error) {
 	var link Link
@@ -157,6 +178,33 @@ func (c *Client) NextJob(ctx context.Context, wait time.Duration) (*Job, error) 
 		return nil, nil
 	}
 	return &job, nil
+}
+
+// NextModelCall waits up to wait for a model call. It returns nil when none is waiting.
+func (c *Client) NextModelCall(ctx context.Context, wait time.Duration) (*ModelCall, error) {
+	var call ModelCall
+	path := fmt.Sprintf("/api/runner/llm/next?wait=%d", int(wait.Seconds()))
+	status, err := c.do(ctx, http.MethodGet, path, nil, &call, true)
+	if err != nil {
+		return nil, err
+	}
+	if status == http.StatusNoContent {
+		return nil, nil
+	}
+	return &call, nil
+}
+
+// AckModelCall confirms this runner has the call. An error means LBW offered
+// it to another of the owner's runners, so this runner must not relay it.
+func (c *Client) AckModelCall(ctx context.Context, callID string) error {
+	_, err := c.do(ctx, http.MethodPost, "/api/runner/llm/"+callID+"/ack", nil, nil, true)
+	return err
+}
+
+// AnswerModelCall hands the model server's answer back to LBW.
+func (c *Client) AnswerModelCall(ctx context.Context, callID string, answer ModelAnswer) error {
+	_, err := c.do(ctx, http.MethodPost, "/api/runner/llm/"+callID, answer, nil, true)
+	return err
 }
 
 // SendEvents also keeps the job's lease alive. It reports whether LBW cancelled the job.
@@ -205,7 +253,8 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any, aut
 		return 0, err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// A relayed model call can carry a long conversation.
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
 	switch {
 	case resp.StatusCode == http.StatusNoContent:
 		return resp.StatusCode, nil

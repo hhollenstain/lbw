@@ -14,6 +14,7 @@ import (
 	"github.com/hhollenstain/lbw/runner/internal/claude"
 	"github.com/hhollenstain/lbw/runner/internal/client"
 	"github.com/hhollenstain/lbw/runner/internal/job"
+	"github.com/hhollenstain/lbw/runner/internal/relay"
 )
 
 // Timings are the loop's intervals. Tests shorten them.
@@ -34,8 +35,12 @@ var DefaultTimings = Timings{
 
 // Daemon runs until its context ends or the runner is disconnected.
 type Daemon struct {
-	API     *client.Client
-	Jobs    *job.Runner
+	API *client.Client
+	// Jobs runs Claude Code jobs. Nil when Claude Code is not installed: the
+	// runner then only relays model calls.
+	Jobs *job.Runner
+	// Relay passes model calls to the owner's own model server. Nil when off.
+	Relay   *relay.Relay
 	Version string
 	Timings Timings
 	Log     *log.Logger
@@ -46,10 +51,16 @@ type Daemon struct {
 
 // Facts reports this machine's runner and Claude Code versions.
 func (d *Daemon) Facts(ctx context.Context) client.Facts {
-	facts := client.Facts{Version: d.Version, Platform: runtime.GOOS + "/" + runtime.GOARCH}
-	if version, err := claude.Version(ctx, d.Jobs.Claude); err == nil {
-		facts.ClaudeVersion = version
-		facts.ClaudeReady = true
+	facts := client.Facts{
+		Version:  d.Version,
+		Platform: runtime.GOOS + "/" + runtime.GOARCH,
+		LLMRelay: d.Relay != nil,
+	}
+	if d.Jobs != nil {
+		if version, err := claude.Version(ctx, d.Jobs.Claude); err == nil {
+			facts.ClaudeVersion = version
+			facts.ClaudeReady = true
+		}
 	}
 	d.mu.Lock()
 	d.facts = facts
@@ -69,6 +80,24 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	beats := make(chan error, 1)
 	go d.heartbeats(ctx, beats)
+	if d.Relay != nil {
+		go func() {
+			if err := d.Relay.Run(ctx); err != nil {
+				select {
+				case beats <- err:
+				default:
+				}
+			}
+		}()
+	}
+	if d.Jobs == nil {
+		select {
+		case err := <-beats:
+			return err
+		case <-ctx.Done():
+			return nil
+		}
+	}
 	for ctx.Err() == nil {
 		select {
 		case err := <-beats:
@@ -131,6 +160,10 @@ func (d *Daemon) beat(ctx context.Context) error {
 func (d *Daemon) maintain(ctx context.Context, command string) {
 	switch command {
 	case "update_claude":
+		if d.Jobs == nil {
+			d.Log.Printf("Claude Code is not installed, so it cannot be updated")
+			return
+		}
 		d.Log.Printf("updating Claude Code")
 		out, err := claude.Update(ctx, d.Jobs.Claude)
 		if err != nil {

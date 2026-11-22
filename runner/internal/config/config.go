@@ -41,6 +41,15 @@ type Config struct {
 	// Model asks Claude Code for a model when the job does not name one. Empty
 	// means the account's default.
 	Model string `json:"model,omitempty"`
+	// NoLLMRelay stops this runner from relaying model calls to the owner's
+	// model server, such as Ollama.
+	NoLLMRelay bool `json:"no_llm_relay,omitempty"`
+	// LLMHosts are host names the runner may relay model calls to besides
+	// this machine and the private network, such as a server on the internet.
+	LLMHosts []string `json:"llm_hosts,omitempty"`
+	// LLMPrivateNetwork, when false, stops the relay from reaching private
+	// network addresses: only this machine and LLMHosts. Unset means true.
+	LLMPrivateNetwork *bool `json:"llm_private_network,omitempty"`
 	// TokenStore is "keychain", "secret-service", or "file". Set at login.
 	TokenStore string `json:"token_store,omitempty"`
 

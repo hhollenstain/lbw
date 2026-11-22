@@ -137,17 +137,63 @@ Linux Secret Service, or, when neither exists, a file only the user can read.
   the job asked for one, pushes and opens the pull request with the
   organization's GitHub App. The pull request is the review in the prototype.
 
+### Local models
+
+A person can also run jobs on a model server on their own machine, such as
+Ollama, LM Studio, or vLLM. Here LBW runs its own plan, build, and review loop
+as usual. Only the model calls go to the person's machine.
+
+- **Organization.** Under Organization, Models, Local models, an owner or admin
+  chooses Off, On for everyone, or On for chosen people, and then turns it on
+  person by person. The default is Off.
+- **Profile.** Under Profile, Integrations, Local models, a person it is on for
+  turns on their server, picks Ollama, LM Studio, vLLM, or OpenAI-compatible,
+  and sets its address (Ollama's `http://127.0.0.1:11434` by default).
+  **Sync models** asks their runner for `GET /v1/models` and stores the names.
+  A new address forgets the old names.
+- **Job form.** Each synced model shows as "name · Ollama (your machine)".
+  Choosing one needs one of the person's runners to be online and relaying,
+  or the request is refused with `409 runner_required`.
+- **Relay.** LBW's OpenAI client sends each call through an httpx transport
+  that queues it in memory for the acting person (`runtime/llm_relay.py`).
+  The runner long-polls `GET /api/runner/llm/next`, confirms the call with
+  `POST /api/runner/llm/{call_id}/ack`, sends it to the address, and posts the
+  answer to `POST /api/runner/llm/{call_id}`. A runner is only handed calls for
+  its own owner, and only the runner that took a call can confirm or answer
+  it. A call nobody confirms within 5 seconds is offered again to the owner's
+  other runners: a runner that died mid-poll leaves a request behind that LBW
+  cannot tell is gone. A call or an answer is at most 16 MB. A call that no runner
+  takes within 30 seconds fails the job.
+- **Runner side.** The runner relays only `GET /v1/models` and
+  `POST /v1/chat/completions`, and only to this machine or a private network
+  address: 10/8, 172.16/12, 192.168/16, fc00::/7, and 100.64/10 (Tailscale).
+  The address is set on the LBW profile, so the runner checks the address it
+  actually dials: a host name that resolves to a public address is refused,
+  link-local addresses such as a cloud metadata service are never reached, and
+  no proxy is used. A public host must be listed in `llm_hosts` in
+  `config.json`. `llm_private_network: false` limits the relay to this machine
+  and `llm_hosts`. `no_llm_relay: true` turns the relay off. It does not follow
+  redirects. A machine without Claude Code still relays.
+- **Someone else acts.** A coworker who continues, reworks, or reruns the job
+  uses their own server and their own runner. If local models are not on for
+  them, or their server lacks the model, they are refused.
+- **Usage.** Each call is recorded under the service "Ollama (your machine)"
+  (or the server's label) and the model name.
+
 ### What is stored
 
 Following AGENTS.md, prompts and logs stay out of the database.
 
 | Where | What |
 |---|---|
-| `runners` | owner, name, token hash, platform, versions, last seen, a waiting command |
+| `runners` | owner, name, token hash, platform, versions, whether it relays model calls, last seen, a waiting command |
+| `tenants.local_models` | `off`, `everyone`, or `chosen` |
+| `local_models` | per person: allowed (for `chosen`), on, server kind, address, synced model names |
+| memory (`LlmRelay`) | each relayed model call and its answer, while the call runs |
 | `runner_links` | a pending link: device-code hash, short code, expiry |
 | `runner_jobs` | ids, status, times, a short error. No goal, no output |
 | memory (`RunnerHub`) | the goal handed to the runner, its events, and the patch, while the job runs |
-| audit log | `runner.approve`, `runner.link`, `runner.revoke`, `runner.update_claude`, `task.runner`, `task.usage` |
+| audit log | `runner.approve`, `runner.link`, `runner.revoke`, `runner.update_claude`, `task.runner`, `task.usage`, `local_models.policy`, `local_models.person`, `local_models.server`, `local_models.sync` |
 | usage rollups | each run's tokens under service `claude-code (runner)` and the model Claude Code reported |
 
 ### Usage

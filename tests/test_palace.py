@@ -281,3 +281,28 @@ def _tool_pairs_intact(messages: list[dict]) -> bool:
         if pending and role != "tool":
             pending = False
     return True
+
+
+def test_fit_prompt_compacts_once_in_a_while_not_every_turn(monkeypatch) -> None:
+    notes: list[str] = []
+    monkeypatch.setattr(
+        "agent_lbw.runtime.palace.record_event", lambda **event: notes.append(event["message"])
+    )
+    palace = RecordingPalace()
+    messages: list[dict] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "Goal: add logout"},
+    ]
+    for turn in range(60):
+        messages = fit_prompt(messages, palace, query="add logout", context_window=32_768)
+        call = {
+            "id": f"call-{turn}",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+        }
+        messages.append({"role": "assistant", "content": None, "tool_calls": [call]})
+        messages.append(
+            {"role": "tool", "tool_call_id": call["id"], "name": "read_file", "content": "C" * 6000}
+        )
+    assert 1 <= len(notes) <= 10, len(notes)
+    assert _tool_pairs_intact(messages)

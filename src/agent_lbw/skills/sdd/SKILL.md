@@ -2,8 +2,8 @@
 name: sdd
 description: >-
   Spec-driven development. Use when there is a spec, requirements document, or
-  detailed goal description. Prefer the spec throughout the cycle and verify
-  work against it.
+  detailed goal description, and to write the spec a proposal starts from.
+  Prefer the spec throughout the cycle and verify work against it.
 ---
 
 # Spec-Driven Development
@@ -42,3 +42,44 @@ document, design spec, or detailed specification that you should follow.
 - Verify changes against both the stated goal and any additional spec that
   appears during the cycle.
 - Use the `review` skill to check your work against the spec before finishing.
+
+## Writing a spec
+
+A spec-driven proposal starts by writing a spec. A person with write access
+reads it, edits it or sends it back, and only then is the change planned and
+built. The spec is committed beside the code in `specs/`.
+
+- Write what the change must do and how anyone can tell it is done. Do not
+  write the plan or the code.
+- Read the files you are given. Name real modules, routes, commands, and
+  screens; do not invent them.
+- Every requirement is one sentence a reviewer can check, numbered `R1`,
+  `R2`, and so on.
+- Every acceptance criterion is observable: a test that passes, a command and
+  its output, or what a screen shows. Each one names the requirement it proves.
+- Keep it short: 3 to 8 requirements for one change.
+- List what is out of scope, so the builder does not wander.
+- When the request is unclear, say so under open questions instead of guessing.
+- When you are sent back with a note, keep what the note does not touch and
+  change what it asks for.
+
+Reply with only the spec, in this shape:
+
+```markdown
+# <Title>
+
+## Problem
+<Why this change is needed, in two or three sentences.>
+
+## Requirements
+- R1: <one checkable sentence>
+
+## Acceptance criteria
+- [ ] <observable check> (R1)
+
+## Out of scope
+- <what this change does not do>
+
+## Open questions
+- <anything the reviewer should decide, or "None">
+```

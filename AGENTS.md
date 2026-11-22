@@ -71,6 +71,12 @@ itself is also in `skills/agent-lbw/SKILL.md`.
   is not a substitute for missing data or UI.
 - After behavior changes, run `uv run pytest -q`. After Python edits, format
   with ruff, then lint.
+- Review evidence that LBW shortens says so with `[LBW shortened this review
+  copy`, never a bare "truncated" a reviewer could take for file text. A
+  shortened diff ends with a review index (`runtime/review_index.py`): each
+  changed file's git blob id and an outline of line ranges. Reviewers get a
+  read-only `read_file(path, start_line, end_line)` for indexed files only,
+  checked against the blob id, for a few reads.
 
 ## Directory database
 
@@ -223,6 +229,37 @@ scheduler call.
   applies them on `lbw/runner-<id>`, runs the tests, and publishes. The goal,
   events, and patch pass through `runtime/runner_hub.py` in memory, not the
   database. The runner is Go in `runner/`, standard library only.
+- A local model is a person's own model server, such as Ollama, reached
+  through their own runner (`runtime/store/local_models.py`,
+  `runtime/llm_relay.py`). An organization owner or admin sets
+  `tenants.local_models` to `off`, `everyone`, or `chosen`, and for `chosen`
+  turns it on per person in `local_models.allowed`. A person it is on for sets
+  their server's address on their profile and syncs its model names through
+  their runner. LBW never calls that address itself. The job form lists them
+  as `local:<name>`. LBW runs its own loop, and each model call is queued for
+  the acting person: only a runner that person owns takes it, and only that
+  runner confirms and answers it. An unconfirmed call is offered again after
+  5 seconds. `tests/test_local_models_e2e.py` (`pytest -m runner_e2e`, its own
+  CI job) runs the real runner against a fake Ollama. The runner relays `GET /v1/models` and
+  `POST /v1/chat/completions` only, to this machine or a private network
+  address (checked on the address it dials, never link-local), and to a public
+  host only when its `llm_hosts` lists it. A coworker who continues the job uses their own server and
+  runner, or is refused. Schedules and agent teams cannot use a local model.
+  Prompts and answers pass through memory, not the database.
+- A spec-driven proposal writes a spec before it plans (`runtime/spec.py`,
+  `runtime/store/specs.py`). The spec's shape and rules live in the bundled
+  `sdd` skill. A spec is optional: the job form's "write a spec first" turns
+  it on. An organization owner or admin sets `tenants.spec_required`, and a
+  person who manages a project sets `projects.spec_required`. Either one
+  turns it on for every job form proposal there, and a project cannot loosen
+  the organization. The proposal always pauses at the `spec` stage for a
+  person with write access, who edits and accepts it (`accept_spec`), sends it
+  back with a note to rewrite it, or hands it off. Keep improving writes the
+  spec without pausing, and schedules do not write one. The accepted spec
+  feeds the plan, the build, and QA, and its acceptance criteria join the
+  criteria. It is written to `specs/<date>-<slug>.md` only once the change
+  has work, so a spec alone never ships, and it is committed with the change.
+  The text is sealed with the result like the plan.
 - Usage lives in daily rollups, never per model call: see `docs/usage.md`.
   Reports read only those rollups, inside a bounded range, behind a 60-second
   cache. Add a breakdown through the registry in `runtime/store/usage.py`.

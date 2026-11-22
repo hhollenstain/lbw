@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tests.support import init_git_repo
 
+from agent_lbw.runtime.review import REVIEW_SYSTEM
 from agent_lbw.runtime.workdiff import (
     collect_current_evidence,
     collect_work_diff,
@@ -183,7 +184,7 @@ def test_format_work_diff_keeps_code_ahead_of_a_huge_catalog() -> None:
     text = format_work_diff(unified=catalog, extra=[code], limit=800)
     assert "def ping" in text
     assert text.index("def ping") < text.index("marketplace.json")
-    assert "truncated" in text
+    assert "[LBW shortened this review copy" in text
 
 
 def test_collect_work_diff_includes_another_projects_edits(tmp_path: Path) -> None:
@@ -199,3 +200,31 @@ def test_collect_work_diff_includes_another_projects_edits(tmp_path: Path) -> No
     assert nested_projects_changed(workspace)
     assert "Other project other-app" in text
     assert "x = 2" in text
+
+
+def test_a_new_agents_file_reaches_the_reviewer_whole(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    workspace = Workspace(tmp_path)
+    sha = current_sha(workspace)
+    section = "## Branch structure\nWork on a branch from main, then open a pull request.\n\n"
+    agents = "# AGENTS.md\n\n" + section * 110 + "## Last section\nThe end.\n"
+    assert 7_000 < len(agents) < 12_000
+    (tmp_path / "AGENTS.md").write_text(agents, encoding="utf-8")
+    diff = collect_work_diff(workspace, sha, goal="Write AGENTS.md")
+    assert "## Last section\nThe end." in diff
+    assert "truncated" not in diff
+    assert "LBW shortened" not in diff
+
+
+def test_a_shortened_review_copy_says_the_file_is_whole(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    workspace = Workspace(tmp_path)
+    sha = current_sha(workspace)
+    (tmp_path / "GUIDE.md").write_text("Branch structure (typically main) " * 1_000)
+    diff = collect_work_diff(workspace, sha, goal="Write GUIDE.md")
+    assert "... truncated" not in diff
+    assert "[LBW shortened this review copy here." in diff
+    assert "The file itself is not cut off.]" in diff
+    assert "[LBW shortened this review copy" in REVIEW_SYSTEM

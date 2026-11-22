@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -869,3 +870,82 @@ def test_each_person_checks_their_own_key_and_a_run_uses_it(
     )
     assert blocked.status_code == 400
     assert blocked.json()["error"] == "this endpoint uses one organization key"
+
+
+def test_a_rerun_runs_on_the_model_the_person_picks(settings: Settings, tmp_path: Path) -> None:
+    from agent_lbw.runtime.tasks import CycleResult
+
+    def runner(task):
+        return CycleResult(
+            status="failed",
+            goal=task.goal,
+            summary="tests failed",
+            tests_passed=False,
+            committed=False,
+            published=False,
+            commit_sha=None,
+            reason="tests failed",
+        )
+
+    manager = TaskManager(settings, runner=runner)
+    client = TestClient(create_app(manager, default_workspace=tmp_path))
+    try:
+        client.get("/api/directory")
+        client.post("/api/directory/promote")
+        account = client.get("/api/account").json()
+        with database(tmp_path) as db:
+            ensure_workspace_project(db, account["org"]["id"], tmp_path)
+        with patch(
+            "agent_lbw.runtime.store.catalog._fetch_names",
+            return_value=["gpt-4.1", "gpt-4.1-mini"],
+        ):
+            saved = client.post(
+                "/api/org/endpoints",
+                json={"name": "Work", "provider": "openai", "api_key": "sk-test-secret"},
+            )
+        endpoint = saved.json()["endpoints"][0]
+        ids = {}
+        for name, model_name in (("Big", "gpt-4.1"), ("Small", "gpt-4.1-mini")):
+            added = client.post(
+                "/api/org/models",
+                json={"endpoint_id": endpoint["id"], "model_name": model_name, "name": name},
+            )
+            ids[name] = next(m["id"] for m in added.json()["models"] if m["name"] == name)
+            client.put(f"/api/org/models/{ids[name]}/enabled", json={"enabled": True})
+
+        def finished(task_id: str) -> dict:
+            body: dict = {}
+            for _ in range(200):
+                body = client.get(f"/api/tasks/{task_id}").json()
+                if body["status"] not in {"queued", "running"}:
+                    break
+                time.sleep(0.02)
+            return body
+
+        created = client.post(
+            "/api/tasks",
+            json={"workspace": str(tmp_path), "goal": "Ship", "model_id": ids["Big"]},
+        )
+        assert created.status_code == 201, created.text
+        assert finished(created.json()["id"])["status"] == "failed"
+
+        picked = client.post(
+            f"/api/tasks/{created.json()['id']}/rerun", json={"model_id": ids["Small"]}
+        )
+        assert picked.status_code == 201, picked.text
+        assert picked.json()["model_id"] == ids["Small"]
+        assert picked.json()["model"] == "gpt-4.1-mini"
+        assert finished(picked.json()["id"])["status"] == "failed"
+
+        kept = client.post(f"/api/tasks/{picked.json()['id']}/rerun", json={})
+        assert kept.status_code == 201, kept.text
+        assert kept.json()["model_id"] == ids["Small"]
+        finished(kept.json()["id"])
+
+        gone = client.post(
+            f"/api/tasks/{kept.json()['id']}/rerun", json={"model_id": "model_missing"}
+        )
+        assert gone.status_code == 403, gone.text
+        assert "sk-test-secret" not in picked.text
+    finally:
+        manager.shutdown(wait=False)

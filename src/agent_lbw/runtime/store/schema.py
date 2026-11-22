@@ -417,6 +417,19 @@ _STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS local_models (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        identity_id TEXT NOT NULL REFERENCES identities (id),
+        allowed INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        provider TEXT NOT NULL DEFAULT 'ollama',
+        base_url TEXT NOT NULL DEFAULT '',
+        models_json TEXT NOT NULL DEFAULT '[]',
+        synced BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (tenant_id, identity_id)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS tenant_keys (
         tenant_id TEXT PRIMARY KEY REFERENCES tenants (id),
         wrapped_key TEXT NOT NULL
@@ -489,6 +502,7 @@ CLEAR_ORDER = (
     "audit_log",
     "runner_jobs",
     "runner_links",
+    "local_models",
     "runners",
     "usage_daily",
     "usage_files_daily",
@@ -551,7 +565,7 @@ TASK_COLUMNS = frozenset(
 )
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 
 def read_schema_version(db: Database) -> int:
@@ -620,6 +634,10 @@ def apply_schema(db: Database) -> None:
     _add_column(db, "model_endpoints", "auth", "TEXT NOT NULL DEFAULT 'key'")
     _add_column(db, "model_endpoints", "audience", "TEXT NOT NULL DEFAULT ''")
     _add_column(db, "endpoint_credentials", "kind", "TEXT NOT NULL DEFAULT 'sso'")
+    _add_column(db, "tenants", "local_models", "TEXT NOT NULL DEFAULT 'off'")
+    _add_column(db, "runners", "llm_relay", "INTEGER NOT NULL DEFAULT 0")
+    _add_column(db, "tenants", "spec_required", "INTEGER NOT NULL DEFAULT 0")
+    _add_column(db, "projects", "spec_required", "INTEGER NOT NULL DEFAULT 0")
     for table in ("usage_daily", "usage_files_daily", "usage_skills_daily", "usage_runs_daily"):
         db.execute(
             f"CREATE INDEX IF NOT EXISTS {table}_project ON {table} (tenant_id, project_id, day)"

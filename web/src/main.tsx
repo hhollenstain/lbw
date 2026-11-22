@@ -2,13 +2,16 @@ import { type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { IntegrationsSection } from "./sections/integrations/IntegrationsSection";
+import { LocalModelSection } from "./sections/integrations/LocalModelSection";
 import { RunnersSection } from "./sections/integrations/RunnersSection";
+import { LocalModelsPolicy } from "./sections/models/LocalModelsPolicy";
 import { ModelsSection } from "./sections/models/ModelsSection";
 import { ProjectModelsSection } from "./sections/models/ProjectModelsSection";
 import { OrgRolesSection } from "./sections/organization/OrgRolesSection";
 import { OrgSkillsSection } from "./sections/organization/OrgSkillsSection";
 import { RolesSection } from "./sections/roles/RolesSection";
 import { SkillsSection } from "./sections/skills/SkillsSection";
+import { SpecPolicy } from "./sections/specs/SpecPolicy";
 import { PricesSection } from "./sections/usage/PricesSection";
 import { UsageDashboard } from "./sections/usage/UsageDashboard";
 
@@ -18,9 +21,12 @@ function mount(id: string, node: ReactNode) {
 }
 
 mount("org-models-root", <ModelsSection />);
+mount("org-local-models-root", <LocalModelsPolicy />);
 mount("org-skills-root", <OrgSkillsSection />);
+mount("org-spec-policy-root", <SpecPolicy scope="org" />);
 mount("org-roles", <OrgRolesSection />);
 mount("project-skills-root", <SkillsSection />);
+mount("project-spec-policy-root", <SpecPolicy scope="project" />);
 mount("workspace-roles", <RolesSection />);
 mount("workspace-models", <ProjectModelsSection />);
 mount("project-usage-root", <UsageDashboard scope="project" />);
@@ -29,3 +35,4 @@ mount("org-usage-root", <UsageDashboard scope="org" />);
 mount("org-prices-root", <PricesSection />);
 mount("personal-integrations-root", <IntegrationsSection />);
 mount("personal-runners-root", <RunnersSection />);
+mount("personal-local-model-root", <LocalModelSection />);
