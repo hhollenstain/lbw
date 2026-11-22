@@ -43,6 +43,7 @@ from agent_lbw.runtime.review import (
     unused_new_symbols,
     unwired_ui_markers,
 )
+from agent_lbw.runtime.review_index import ReviewReader
 from agent_lbw.runtime.roles import (
     REQUIRED_ROLES,
     Role,
@@ -1217,6 +1218,7 @@ def _apply_optional_reviews(
                         diff=shown,
                         summary=agent_result.summary or "",
                         tests_passed=tests_passed,
+                        reader=ReviewReader.from_evidence(workspace.root, shown),
                     ),
                     lane=lambda spot: queue[spot][2],
                 )
@@ -1232,6 +1234,7 @@ def _apply_optional_reviews(
                 diff=diff,
                 summary=agent_result.summary or "",
                 tests_passed=tests_passed,
+                reader=ReviewReader.from_evidence(workspace.root, diff),
             )
         evidence.append(
             role_evidence(role.name, role.title, role.job, verdict.verdict, verdict.summary)
@@ -1288,6 +1291,7 @@ def _apply_optional_reviews(
             diff=diff,
             summary=agent_result.summary or "",
             tests_passed=tests_passed,
+            reader=ReviewReader.from_evidence(workspace.root, diff),
         )
         evidence.append(
             role_evidence(role.name, role.title, role.job, again.verdict, again.summary)
@@ -2324,6 +2328,7 @@ def _review_goal(
         upstream=upstream,
         ui_evidence=ui_text or None,
         plan=format_plan(plan) or None,
+        reader=ReviewReader.from_evidence(workspace.root, diff),
     )
     blocking = []
     smashed = []

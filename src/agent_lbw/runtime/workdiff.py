@@ -9,7 +9,26 @@ from agent_lbw.tools.git import is_runtime_artifact, run_git
 
 DIFF_LIMIT = 16_000
 MAX_LOCKFILE_ROWS = 80
-UNTRACKED_FILE_LIMIT = 4_000
+# A new file is shown whole up to this size, so a reviewer reads a full
+# AGENTS.md or README rather than its first page.
+UNTRACKED_FILE_LIMIT = 12_000
+# Where LBW cuts evidence short for a reviewer. It must not read as file text:
+# a bare "... truncated" made reviewers fail goals for a file that was whole.
+SHORTENED_MARK = "[LBW shortened this review copy"
+
+
+def shortened_note(omitted: int | None = None) -> str:
+    """The line that marks where LBW cut the review copy, not the file, short."""
+    more = f"{omitted:,} more characters are" if omitted else "The rest is"
+    return f"{SHORTENED_MARK} here. {more} in the workspace. The file itself is not cut off.]"
+
+
+def clip_for_review(text: str, limit: int) -> str:
+    """The text, or its first `limit` characters followed by the shortened note."""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n" + shortened_note(len(text) - limit)
+
 
 MANIFEST_BASENAMES = frozenset(
     {
@@ -160,7 +179,7 @@ def nested_project_diff_text(workspace: Workspace, *, limit: int = 6_000) -> str
         if used + len(block) > limit:
             remain = limit - used
             if remain > 80:
-                parts.append(block[:remain] + "\n... truncated")
+                parts.append(clip_for_review(block, remain))
             break
         parts.append(block)
         used += len(block) + 2
@@ -173,7 +192,52 @@ def collect_work_diff(
     *,
     goal: str | None = None,
 ) -> str:
-    """Diff of this cycle's work: commits after sha_before plus the working tree."""
+    """Diff of this cycle's work: commits after sha_before plus the working tree.
+
+    When LBW had to shorten it, a review index follows: each changed file's git
+    blob id and an outline of line ranges a reviewer can read.
+    """
+    text = _work_diff_text(workspace, sha_before, goal=goal)
+    if SHORTENED_MARK not in text:
+        return text
+    from agent_lbw.runtime.review_index import review_index
+
+    index = review_index(workspace.root, _changed_paths(workspace, sha_before))
+    return f"{text}\n\n{index}" if index else text
+
+
+def _changed_paths(workspace: Workspace, sha_before: str | None) -> list[str]:
+    """Changed and new text files at the root, largest first, without lockfiles."""
+    range_args = [sha_before] if sha_before else ["HEAD"]
+    names = run_git(workspace, ["diff", "--name-status", *range_args]).stdout
+    listed = run_git(workspace, ["ls-files", "--others", "--exclude-standard"]).stdout
+    paths: list[str] = []
+    for line in names.splitlines():
+        fields = line.split("\t")
+        if len(fields) >= 2 and not fields[0].startswith("D"):
+            paths.append(fields[-1].strip())
+    paths += [line.strip() for line in listed.splitlines() if line.strip()]
+    kept = [
+        path
+        for path in dict.fromkeys(paths)
+        if path and not is_lockfile(path) and not is_runtime_artifact(path)
+    ]
+
+    def size(path: str) -> int:
+        try:
+            return (workspace.root / path).stat().st_size
+        except OSError:
+            return 0
+
+    return sorted(kept, key=size, reverse=True)
+
+
+def _work_diff_text(
+    workspace: Workspace,
+    sha_before: str | None,
+    *,
+    goal: str | None = None,
+) -> str:
     status = run_git(workspace, ["status", "--short", "--branch"])
     range_args = [sha_before] if sha_before else ["HEAD"]
     names = run_git(workspace, ["diff", "--name-status", *range_args])
@@ -215,7 +279,7 @@ def collect_work_diff(
         return nested
     combined = f"{nested}\n\n{body}"
     if len(combined) > DIFF_LIMIT:
-        return combined[: DIFF_LIMIT - 15] + "\n... truncated"
+        return clip_for_review(combined, DIFF_LIMIT - 160)
     return combined
 
 
@@ -260,8 +324,7 @@ def _nested_repo_block(workspace_root: Path, repo: Path) -> str:
         except (OSError, UnicodeDecodeError):
             chunks.append(f"untracked binary: {path}")
             continue
-        if len(text) > UNTRACKED_FILE_LIMIT:
-            text = text[:UNTRACKED_FILE_LIMIT] + "\n... truncated"
+        text = clip_for_review(text, UNTRACKED_FILE_LIMIT)
         chunks.append(f"--- /dev/null\n+++ b/{path}\n{text}")
     if not chunks:
         return ""
@@ -298,8 +361,7 @@ def collect_current_evidence(
         except (OSError, UnicodeDecodeError):
             continue
         rel = manifest.relative_to(workspace.root).as_posix()
-        if len(body) > UNTRACKED_FILE_LIMIT:
-            body = body[:UNTRACKED_FILE_LIMIT] + "\n... truncated"
+        body = clip_for_review(body, UNTRACKED_FILE_LIMIT)
         parts.append(f"{rel}:\n{body.strip()}")
     return _join_budget(parts, limit) or "(empty workspace)"
 
@@ -524,8 +586,7 @@ def _working_tree_text(workspace: Workspace, path: str) -> str:
 def _format_untracked(path: str, body: str, *, goal: str | None) -> str:
     if is_lockfile(path):
         return summarize_lockfile_pair(path, "", body, goal=goal)
-    if len(body) > UNTRACKED_FILE_LIMIT:
-        body = body[:UNTRACKED_FILE_LIMIT] + "\n... truncated"
+    body = clip_for_review(body, UNTRACKED_FILE_LIMIT)
     return f"--- /dev/null\n+++ b/{path}\n{body}"
 
 
@@ -641,7 +702,7 @@ def _scan_dirs(root: Path) -> list[Path]:
 
 def _join_budget(parts: list[str], limit: int) -> str:
     if limit <= 0:
-        return "... truncated"
+        return shortened_note()
     kept: list[str] = []
     used = 0
     for part in parts:
@@ -651,12 +712,12 @@ def _join_budget(parts: list[str], limit: int) -> str:
             kept.append(part)
             used += size
             continue
-        remain = limit - used - extra
+        remain = limit - used - extra - 160
         if remain > 80:
-            kept.append(part[:remain] + "\n... truncated")
+            kept.append(clip_for_review(part, remain))
         elif kept:
-            kept.append("... truncated")
-        elif limit > 15:
-            kept.append(part[: limit - 15] + "\n... truncated")
+            kept.append(shortened_note())
+        elif limit > 160:
+            kept.append(clip_for_review(part, limit - 160))
         break
     return "\n\n".join(kept)

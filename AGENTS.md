@@ -71,6 +71,12 @@ itself is also in `skills/agent-lbw/SKILL.md`.
   is not a substitute for missing data or UI.
 - After behavior changes, run `uv run pytest -q`. After Python edits, format
   with ruff, then lint.
+- Review evidence that LBW shortens says so with `[LBW shortened this review
+  copy`, never a bare "truncated" a reviewer could take for file text. A
+  shortened diff ends with a review index (`runtime/review_index.py`): each
+  changed file's git blob id and an outline of line ranges. Reviewers get a
+  read-only `read_file(path, start_line, end_line)` for indexed files only,
+  checked against the blob id, for a few reads.
 
 ## Directory database
 
