@@ -170,6 +170,149 @@ def test_a_finished_job_keeps_its_plan_steps_and_diff(settings: Settings, tmp_pa
         manager.shutdown(wait=False)
 
 
+def _git(root: Path, *args: str) -> str:
+    return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+
+def _job(root: Path, task_id: str, **fields) -> Task:
+    values = {
+        "id": task_id,
+        "workspace": str(root),
+        "goal": "add a note",
+        "auto_commit": True,
+        "create_pr": True,
+        "model_name": "scripted",
+        "model_base_url": "http://127.0.0.1:9/v1",
+        "model_api_key": "ollama",
+        "status": "success",
+        "summary": "added the note",
+        "reason": "completed",
+    }
+    values.update(fields)
+    return Task(**values)
+
+
+def _files(item: dict) -> dict[str, str]:
+    return {
+        event["path"]: event.get("net_diff") or event.get("diff") or ""
+        for event in item.get("events") or []
+        if event.get("kind") == "file"
+    }
+
+
+def test_a_merged_job_shows_only_its_files_after_a_restart(
+    settings: Settings, tmp_path: Path
+) -> None:
+    (tmp_path / "base.txt").write_text("base\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    _git(tmp_path, "branch", "-M", "main")
+    start = _git(tmp_path, "rev-parse", "HEAD")
+    # The last job left the checkout on its own branch.
+    _git(tmp_path, "checkout", "-q", "-b", "lbw/earlier")
+    (tmp_path / "earlier.txt").write_text("earlier job\n", encoding="utf-8")
+    _git(tmp_path, "add", "earlier.txt")
+    _git(tmp_path, "commit", "-q", "-m", "earlier")
+    stale = _git(tmp_path, "rev-parse", "HEAD")
+    # This job starts from a clean main and commits on its own branch.
+    _git(tmp_path, "checkout", "-q", "main")
+    _git(tmp_path, "checkout", "-q", "-b", "lbw/note")
+    (tmp_path / "note.txt").write_text("hello from the job\n", encoding="utf-8")
+    _git(tmp_path, "add", "note.txt")
+    _git(tmp_path, "commit", "-q", "-m", "add note")
+    task = _job(
+        tmp_path,
+        "job-merged",
+        committed=True,
+        published=True,
+        branch="lbw/note",
+        pr_url="https://github.com/acme/repo/pull/7",
+        sha_before=stale,
+        commit_sha=_git(tmp_path, "rev-parse", "HEAD"),
+        events=[{"kind": "step", "message": "Starting from main", "start_sha": start}],
+    )
+    record_task(tmp_path, "", task)
+    sync_task(tmp_path, "", task)
+    # Someone else lands work, then the pull request merges and the checkout returns to main.
+    _git(tmp_path, "checkout", "-q", "main")
+    (tmp_path / "other.txt").write_text("another change\n", encoding="utf-8")
+    _git(tmp_path, "add", "other.txt")
+    _git(tmp_path, "commit", "-q", "-m", "other")
+    _git(tmp_path, "merge", "-q", "--no-ff", "-m", "merge note", "lbw/note")
+    task.merged = True
+    sync_task(tmp_path, "", task)
+
+    manager = TaskManager(settings, runner=_ok)
+    app = create_app(manager, default_workspace=tmp_path)
+    client = TestClient(app)
+    try:
+        items = client.get("/api/history", params={"page_size": 100}).json()["items"]
+        item = next(entry for entry in items if entry["id"] == "job-merged")
+        files = _files(item)
+        assert set(files) == {"note.txt"}
+        assert "hello from the job" in files["note.txt"]
+    finally:
+        manager.shutdown(wait=False)
+
+
+def test_a_waiting_job_shows_its_changes_after_a_restart(
+    settings: Settings, tmp_path: Path
+) -> None:
+    (tmp_path / "base.txt").write_text("base\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    start = _git(tmp_path, "rev-parse", "HEAD")
+    (tmp_path / "note.txt").write_text("waiting for approval\n", encoding="utf-8")
+    task = _job(
+        tmp_path,
+        "job-waiting",
+        status="waiting",
+        stage="approval",
+        approval_gate="ask",
+        sha_before=start,
+        events=[{"kind": "step", "message": "Starting from main", "start_sha": start}],
+    )
+    record_task(tmp_path, "", task)
+    sync_task(tmp_path, "", task)
+    # The checkout is scratch. The stored job still has the change.
+    (tmp_path / "note.txt").unlink()
+
+    manager = TaskManager(settings, runner=_ok)
+    app = create_app(manager, default_workspace=tmp_path)
+    client = TestClient(app)
+    try:
+        listed = client.get("/api/tasks").json()
+        restored = next(item for item in listed if item["id"] == "job-waiting")
+        assert restored["status"] == "waiting"
+        files = _files(restored)
+        assert "waiting for approval" in files["note.txt"]
+    finally:
+        manager.shutdown(wait=False)
+
+
+def test_a_rerun_on_an_open_pull_request_keeps_the_whole_change(
+    settings: Settings, tmp_path: Path
+) -> None:
+    from agent_lbw.runtime.store.recording import job_start
+
+    manager = TaskManager(settings, runner=_ok)
+    try:
+        first = _job(
+            tmp_path,
+            "job-first",
+            branch="lbw/note",
+            pr_url="https://github.com/acme/repo/pull/7",
+            commit_sha="b" * 40,
+            events=[{"kind": "step", "message": "Starting from main", "start_sha": "a" * 40}],
+        )
+        with manager._lock:
+            manager._tasks[first.id] = first
+        again = manager.rerun(first.id, goal="also update the docs")
+        assert again is not None
+        assert again.change_base == "a" * 40
+        assert job_start(again) == "a" * 40
+    finally:
+        manager.shutdown(wait=False)
+
+
 def _wait_for(client: TestClient, task_id: str, status: str) -> dict:
     for _ in range(50):
         response = client.get(f"/api/tasks/{task_id}")

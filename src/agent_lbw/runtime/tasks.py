@@ -208,6 +208,8 @@ class Task:
     pr_url: str | None = None
     error: str | None = None
     sha_before: str | None = None
+    # Where an open pull request's change starts, carried by a rerun on that branch.
+    change_base: str | None = None
     branch: str | None = None
     resume_branch: str | None = None
     resume_sha: str | None = None
@@ -367,6 +369,7 @@ class TaskManager:
         resume_branch: str | None = None,
         resume_sha: str | None = None,
         base_branch: str | None = None,
+        change_base: str | None = None,
         continuous: bool = False,
         context_window: int | None = None,
         gate: str = "auto",
@@ -424,6 +427,7 @@ class TaskManager:
             resume_branch=(resume_branch or "").strip() or None,
             resume_sha=(resume_sha or "").strip() or None,
             base_branch=(base_branch or "").strip() or None,
+            change_base=(change_base or "").strip() or None,
             branch=(resume_branch or "").strip() or None,
             context_window=pinned,
             pin_context_window=pinned is not None,
@@ -531,6 +535,11 @@ class TaskManager:
             resume_sha = None
         revised = (goal or "").strip()
         create_pr = True if old_task.pr_url else old_task.create_pr
+        change_base = None
+        if resume_branch and old_task.pr_url and not from_sha:
+            from agent_lbw.runtime.store.recording import job_start
+
+            change_base = job_start(old_task) or None
         if model:
             model_name = str(model.get("model_name") or "")
             model_base_url = str(model.get("base_url") or "")
@@ -556,6 +565,7 @@ class TaskManager:
             resume_branch=resume_branch,
             resume_sha=resume_sha,
             base_branch=base_branch,
+            change_base=change_base,
             continuous=old_task.continuous,
             context_window=context_window,
             gate=old_task.gate,
@@ -863,6 +873,8 @@ class TaskManager:
             spec_path=str(spec.get("path") or ""),
             spec_text=str(spec.get("text") or ""),
             spec_accepted=bool(spec.get("accepted")),
+            events=[item for item in (record.get("events") or []) if isinstance(item, dict)],
+            change_base=str(record.get("change_base") or "") or None,
         )
 
     def _run(self, task: Task) -> None:
