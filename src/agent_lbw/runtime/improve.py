@@ -537,6 +537,9 @@ def _run_cycle(
     log_progress(f"Selected goal: {goal_headline(selected_goal)}")
     log_progress("Fetching current SHA...")
     sha_before = current_sha(workspace)
+    if sha_before:
+        # The change is read from here, so it stays the same after a merge or a restart.
+        record_event(kind="step", message=f"Starting from {sha_before[:8]}", start_sha=sha_before)
     log_progress("Initializing coding agent...")
     extra_skills = ("steward",) if continuous else ()
     if spec is not None:

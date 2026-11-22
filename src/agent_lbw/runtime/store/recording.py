@@ -309,6 +309,7 @@ def _job_payload(task) -> dict:
         "review_notes": str(getattr(task, "review_notes", "") or "")[:4000],
         "steps": _steps(getattr(task, "events", None) or []),
         "diff": _final_diff(task),
+        "start": job_start(task),
         "spec": _spec_record(task),
         "human_gates": {
             "triage": str(getattr(task, "triage_gate", "") or ""),
@@ -345,16 +346,45 @@ def _steps(events: list) -> list[dict]:
     return kept
 
 
+def job_start(task) -> str:
+    """Where this job's change starts.
+
+    A rerun on an open pull request carries that pull request's start. Otherwise it is
+    the first base the cycle recorded, after it prepared a clean branch. `sha_before`
+    is the fallback for a job that ran before that record existed.
+    """
+    carried = str(getattr(task, "change_base", "") or "").strip()
+    if carried:
+        return carried
+    for event in getattr(task, "events", None) or []:
+        if isinstance(event, dict) and event.get("start_sha"):
+            return str(event["start_sha"]).strip()
+    return str(getattr(task, "sha_before", "") or "").strip()
+
+
 def _final_diff(task) -> str:
+    """The job's whole change.
+
+    Once the checkout has left the job's commit (a merge, the next job, or a branch
+    switch), the diff is read between the job's own commits, so it does not change.
+    """
     root = Path(str(getattr(task, "workspace", "") or ""))
     if not root.is_dir() or not (root / ".git").exists():
         return _cap_diff(_event_diff(task))
-    from agent_lbw.sandbox import Workspace
     from agent_lbw.tools.git import is_runtime_artifact, run_git
 
     workspace = Workspace(root)
-    sha = str(getattr(task, "sha_before", "") or "").strip()
-    args = ["diff", "--find-renames", sha] if sha else ["diff", "HEAD"]
+    head = _commit(workspace, "HEAD")
+    end = _commit(workspace, str(getattr(task, "commit_sha", "") or ""))
+    start = _commit(workspace, job_start(task))
+    base = _merge_base(workspace, start, end or head) if start else ""
+    if end and head and end != head:
+        if not base or base == end:
+            return _cap_diff(_event_diff(task))
+        result = run_git(workspace, ["diff", "--find-renames", base, end])
+        text = (result.stdout or "").strip() if result.returncode == 0 else ""
+        return _cap_diff(text or _event_diff(task))
+    args = ["diff", "--find-renames", base] if base else ["diff", "HEAD"]
     result = run_git(workspace, args)
     chunks: list[str] = []
     if result.returncode == 0 and (result.stdout or "").strip():
@@ -379,6 +409,28 @@ def _final_diff(task) -> str:
     if not text.strip():
         text = _event_diff(task)
     return _cap_diff(text)
+
+
+def _commit(workspace: Workspace, ref: str) -> str:
+    """The full id of a commit this checkout has, or empty."""
+    from agent_lbw.tools.git import run_git
+
+    name = (ref or "").strip()
+    if not name:
+        return ""
+    found = run_git(workspace, ["rev-parse", "--verify", "--quiet", f"{name}^{{commit}}"])
+    return (found.stdout or "").strip() if found.returncode == 0 else ""
+
+
+def _merge_base(workspace: Workspace, start: str, end: str) -> str:
+    """Where the job's branch left `start`, so a stale start does not pull in other work."""
+    from agent_lbw.tools.git import run_git
+
+    if not end:
+        return start
+    found = run_git(workspace, ["merge-base", start, end])
+    base = (found.stdout or "").strip() if found.returncode == 0 else ""
+    return base or start
 
 
 def _event_diff(task) -> str:
@@ -618,6 +670,8 @@ def _open_record(root: Path, database_url: str, row: dict) -> dict | None:
     branch = row["branch"] or saved.get("branch") or None
     pr_url = row["pr_url"] or saved.get("pr_url") or None
     tests_passed = result.get("tests_passed", saved.get("tests_passed"))
+    steps = result.get("steps") if isinstance(result.get("steps"), list) else []
+    diff = str(result.get("diff") or "")
     return {
         "id": str(row["id"]),
         "workspace": locator,
@@ -639,6 +693,8 @@ def _open_record(root: Path, database_url: str, row: dict) -> dict | None:
         "model_name": str(result.get("model_name") or ""),
         "model_base_url": str(result.get("model_base_url") or ""),
         "review_notes": str(result.get("review_notes") or ""),
+        "events": [*steps, *file_events_from_diff(diff)],
+        "change_base": str(result.get("start") or ""),
         "spec": result.get("spec") if isinstance(result.get("spec"), dict) else {},
         "human_gates": (
             result.get("human_gates") if isinstance(result.get("human_gates"), dict) else {}

@@ -180,12 +180,24 @@ Modal dialogs should follow this structure:
 - Maintain consistent z-index stacking with other UI elements
 
 ### Task Cards
-A change in the list is a compact card: the goal on one line, and the
-project with its step under that. Selecting a change opens it. Its steps
-are one track. Selecting a step loads that step under the track. Log,
-Changes, Screenshots, and Audit stay as tabs under that step. The log tab
-is labeled Log. Audit lists who did what, newest first, and stays off the
-step track.
+A change in the list is a compact card: the goal on one line, and a status
+dot, the step, and the project under that. A waiting change names what the
+person does next, such as Review the plan. Selecting a change opens it: the
+goal as its title, the steps as one flow track, then one action card. The
+track marks each step done, working, your turn, failed, skipped, or not
+reached, and marks the checkpoints where a person stops.
+
+The action card says what happens now. It holds every decision for a
+waiting checkpoint (Accept spec, Build it, Approve, Send back, Hand off,
+Continue) and Merge, Request changes, or Rerun when the change needs them.
+Do not put a decision only inside one step's detail, where a reader has to
+find the right step first. Selecting a step loads its detail under the
+card. Log, Changes, Screenshots, and Audit stay as tabs under that. The log
+tab is labeled Log. Audit lists who did what, newest first, and stays off
+the step track.
+
+The proposal form shows the path a change will take, drawn from its
+Checkpoints and Result checkboxes, and redraws it when one changes.
 
 Task cards follow specific positioning rules:
 - Bottom-right corner owned by `.pr-link` and `.rerun-btn`
