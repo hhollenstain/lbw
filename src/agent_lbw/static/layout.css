@@ -1465,8 +1465,25 @@ button.inbox-fold {
   white-space: nowrap;
 }
 
-.inbox-waiting .inbox-step { color: var(--warn); }
-.inbox-progress .inbox-step { color: var(--accent); }
+.inbox-dot {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: var(--muted);
+}
+
+.inbox-waiting .inbox-dot { background: var(--warn); }
+.inbox-progress .inbox-dot { background: var(--navy); }
+.inbox-progress .inbox-dot.is-running { animation: flow-blink 1.4s ease-in-out infinite; }
+.inbox-pull .inbox-dot { background: var(--pr-open); }
+.inbox-done .inbox-dot { background: var(--ok); }
+.inbox-stuck .inbox-dot,
+.inbox-failed .inbox-dot { background: var(--bad); }
+
+.inbox-waiting .inbox-step { color: var(--warn); font-weight: 650; }
+.inbox-progress .inbox-step { color: var(--navy); }
 .inbox-pull .inbox-step { color: var(--pr-open); }
 .inbox-done .inbox-step { color: var(--ok); }
 .inbox-stuck .inbox-step,
@@ -1589,69 +1606,427 @@ button.inbox-fold {
 
 .activity-when { font-size: 0.75rem; }
 
-.step-rail {
-  display: flex;
-  gap: 0;
-  overflow-x: auto;
+/* Change flow: one track, a dot per step, a line between the dots. */
+.step-rail.flow {
+  list-style: none;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(5rem, 1fr);
+  margin: 0 0 1rem;
   padding: 0;
-  margin: 0 0 0.55rem;
-  border-bottom: 1px solid var(--line);
-}
-
-.step-node {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: row;
-  align-items: baseline;
-  gap: 0.28rem;
-  min-width: 0;
-  padding: 0.28rem 0.45rem 0.32rem;
+  overflow-x: auto;
   border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted);
-  font: 600 0.75rem/1.2 inherit;
-  text-align: left;
-  cursor: pointer;
 }
 
-.step-node.selected {
-  border-bottom-color: var(--accent);
+.flow-step {
+  position: relative;
+  min-width: 0;
+  margin: 0;
+}
+
+.flow-step + .flow-step::before {
+  content: "";
+  position: absolute;
+  top: calc(1.15rem - 1px);
+  left: calc(-50% + 1.05rem);
+  right: calc(50% + 1.05rem);
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.flow-step.is-done::before { background: var(--ok); }
+.flow-step.is-now::before { background: linear-gradient(90deg, var(--ok), var(--navy)); }
+.flow-step.is-you::before { background: linear-gradient(90deg, var(--ok), var(--warn)); }
+.flow-step.is-bad::before { background: linear-gradient(90deg, var(--ok), var(--bad)); }
+.flow-step.is-skip::before {
+  background: repeating-linear-gradient(90deg, var(--line) 0 4px, transparent 4px 8px);
+}
+
+.flow .step-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.22rem;
+  width: 100%;
+  min-width: 0;
+  padding: 0.35rem 0.2rem 0.45rem;
+  border: 0;
+  border-radius: 8px;
   background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: center;
+}
+
+.flow button.step-node { cursor: pointer; }
+
+.flow button.step-node:hover,
+.flow button.step-node:focus-visible {
+  background: var(--panel-2);
+}
+
+.flow-step.selected .step-node {
+  background: color-mix(in srgb, var(--navy) 8%, var(--panel));
+}
+
+.flow-dot {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border: 2px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.flow-dot svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.is-done .flow-dot {
+  border-color: var(--ok);
+  background: var(--ok);
+  color: var(--on-accent);
+}
+
+.is-now .flow-dot {
+  border-color: var(--navy);
+  color: var(--navy);
+  animation: flow-pulse 1.6s ease-in-out infinite;
+}
+
+.is-you .flow-dot {
+  border-color: var(--warn);
+  background: var(--warn);
+  color: var(--panel);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 22%, transparent);
+}
+
+.is-bad .flow-dot {
+  border-color: var(--bad);
+  background: var(--bad);
+  color: var(--panel);
+}
+
+.is-skip .flow-dot { border-style: dashed; }
+
+.is-todo.is-gate .flow-dot {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--line));
+  color: var(--warn);
+}
+
+.flow .step-node-title,
+.flow .step-node-state {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow .step-node-title {
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.flow .step-node-state {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 550;
+  line-height: 1.2;
+}
+
+.is-todo .step-node-title,
+.is-skip .step-node-title { color: var(--muted); }
+.is-done .step-node-state { color: var(--ok); }
+.is-now .step-node-state { color: var(--navy); }
+.is-you .step-node-state { color: var(--warn); font-weight: 700; }
+.is-bad .step-node-state { color: var(--bad); }
+
+@keyframes flow-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--navy) 22%, transparent); }
+  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--navy) 6%, transparent); }
+}
+
+@keyframes flow-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* The one card that says what happens now, and holds the decision. */
+.change-callout {
+  margin: 0 0 1rem;
+  padding: 0.85rem 1rem 0.95rem;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--card-lift);
+}
+
+.callout-you {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+  border-left-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 6%, var(--panel));
+}
+
+.callout-now { border-left-color: var(--navy); }
+.callout-done { border-left-color: var(--ok); }
+
+.callout-bad {
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
+  border-left-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 5%, var(--panel));
+}
+
+.callout-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.55rem;
+  margin: 0 0 0.4rem;
+}
+
+.callout-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.14rem 0.55rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 14%, var(--panel));
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.callout-you .callout-badge,
+.callout-bad .callout-badge { color: var(--panel); }
+.callout-you .callout-badge { background: var(--warn); }
+.callout-bad .callout-badge { background: var(--bad); }
+
+.callout-now .callout-badge {
+  background: color-mix(in srgb, var(--navy) 14%, var(--panel));
   color: var(--navy);
 }
 
-.step-node-title {
-  color: inherit;
-  font-weight: 650;
+.callout-now .callout-badge::before {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: currentColor;
+  animation: flow-blink 1.4s ease-in-out infinite;
 }
 
-.step-node-state {
-  display: none;
+.callout-done .callout-badge {
+  background: color-mix(in srgb, var(--ok) 16%, var(--panel));
+  color: var(--ok);
+}
+
+.callout-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 680;
+  line-height: 1.3;
+}
+
+.callout-copy {
+  margin: 0 0 0.6rem;
+  white-space: pre-wrap;
+}
+
+.callout-activity {
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.85rem;
+}
+
+.change-callout .change-plan {
+  margin: 0 0 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--code-bg);
+}
+
+.change-callout h3 { margin-top: 0.5rem; }
+.change-callout .reply-note { margin-top: 0.6rem; }
+.change-callout .reply-box { margin-top: 0.4rem; }
+.change-callout .change-actions { align-items: center; margin-top: 0.7rem; }
+.callout-row { margin: 0.5rem 0 0; }
+
+.verdict-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.1rem 0 0.5rem;
+}
+
+.step-pane {
+  margin: 0 0 0.75rem;
+  padding: 0.75rem 0.9rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.step-pane-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0 0 0.25rem;
+  color: var(--navy);
+  font-size: 0.92rem;
+  font-weight: 680;
+}
+
+.step-pane-state {
+  color: var(--muted);
+  font-size: 0.72rem;
   font-weight: 600;
 }
 
-.step-node.selected .step-node-state { display: inline; }
-.step-node.ok .step-node-state { color: var(--ok); }
-.step-node.wait .step-node-state { color: var(--warn); }
-.step-node.bad .step-node-state { color: var(--bad); }
-
-.step-pane {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 0;
-  margin: 0 0 0.75rem;
-}
+.step-pane-state.is-done { color: var(--ok); }
+.step-pane-state.is-now { color: var(--navy); }
+.step-pane-state.is-you { color: var(--warn); }
+.step-pane-state.is-bad { color: var(--bad); }
 
 .step-pane .step-usage {
   display: block;
   margin: 0 0 0.45rem;
   color: var(--muted);
   font-size: 0.75rem;
+}
+
+/* The open change: its goal as the title, then where it runs. */
+.change-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem 1rem;
+  margin: 0 0 1.1rem;
+}
+
+.change-head-text {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.change-title {
+  margin: 0;
+  color: var(--navy);
+  font-size: 1.2rem;
+  font-weight: 680;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.change-head .meta { margin: 0.25rem 0 0; }
+
+.change-head-side {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.change-head-side .progress-pr { margin: 0; }
+.change-head-side .progress-pr:empty { display: none; }
+
+/* Proposal form: the path a change takes, drawn from the checkpoints. */
+.flow-setup {
+  margin: 1.1rem 0 0.4rem;
+  padding: 0.85rem 1rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.flow-setup legend {
+  padding: 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.flow-setup > .hint { margin: 0 0 0.7rem; }
+.flow-preview .flow { margin: 0 0 0.85rem; }
+
+.check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.6rem 1.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.check-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+}
+
+.check-group-title {
+  margin: 0 0 0.2rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.check-group label {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0.28rem 0;
+  color: var(--ink);
+  font-size: 0.9rem;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.check-group label:has(input:disabled) {
+  color: var(--muted);
+  cursor: default;
+}
+
+.check-group input {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--navy);
+}
+
+.run-detail { container-type: inline-size; }
+
+@container (max-width: 40rem) {
+  .step-rail.flow { grid-auto-columns: minmax(3.6rem, 1fr); }
+  .flow .step-node-title { font-size: 0.7rem; }
+  .flow .step-node-state { display: none; }
+  .flow-step.is-now .step-node-state,
+  .flow-step.is-you .step-node-state,
+  .flow-step.is-bad .step-node-state { display: block; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-now .flow-dot,
+  .callout-now .callout-badge::before,
+  .inbox-dot.is-running { animation: none; }
 }
 
 .step-pane-head {
@@ -1778,7 +2153,7 @@ button.inbox-fold {
 .step-pill-muted { color: var(--muted); }
 
 .step-body {
-  padding: 0 0.7rem 0.5rem 2.15rem;
+  padding: 0;
 }
 
 .step-copy {
@@ -2067,7 +2442,6 @@ button.inbox-fold {
   .step-stats { grid-template-columns: 1fr; }
   .step-card > summary { flex-wrap: wrap; }
   .step-card > summary .step-usage { flex-basis: 100%; }
-  .step-body { padding-left: 0.7rem; }
   .step-meta { display: none; }
 }
 

@@ -2396,8 +2396,15 @@ def test_home_lists_roles_and_the_change_gates(settings: Settings, tmp_path: Pat
         assert b'id="open-roles"' not in home.content
         assert b'id="roles-panel"' not in home.content
         assert b"function changeBoardHtml(" in home.content
-        assert b'class="step-rail"' in home.content
+        assert b'class="step-rail flow"' in home.content
         assert b'data-step-pick="' in home.content
+        assert b"function calloutHtml(" in home.content
+        assert b"data-decision-scope" in home.content
+        assert b'closest("[data-decision-scope]")' in home.content
+        assert b"Your turn" in home.content
+        assert b"function handleJobAction(" in home.content
+        assert b'id="flow-preview"' in home.content
+        assert b"function renderFlowPreview(" in home.content
         assert b'role="tabpanel"' in home.content
         assert b"function renderInbox(" in home.content
         assert b'id="inbox"' in home.content
@@ -2448,7 +2455,6 @@ def test_home_lists_roles_and_the_change_gates(settings: Settings, tmp_path: Pat
         assert b"function sentBackText(" in home.content
         assert b"function stepMetrics(" in home.content
         assert b" tok" in home.content
-        assert b'class="step-rail"' in home.content
         assert b'${usage}<div class="step-body">' in home.content
         assert b'id="open-profile"' in home.content
         assert b'id="org-name"' in home.content
@@ -2462,6 +2468,9 @@ def test_home_lists_roles_and_the_change_gates(settings: Settings, tmp_path: Pat
         assert b".inbox-stuck" in layout.content
         assert b".step-card" in layout.content
         assert b".reply-box" in layout.content
+        assert b".change-callout" in layout.content
+        assert b".flow-step" in layout.content
+        assert b".check-group" in layout.content
         assert b".step-card > summary .step-usage" in layout.content
         assert b".account-menu" in layout.content
         assert b".release-open" in layout.content

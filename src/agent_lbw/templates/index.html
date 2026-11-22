@@ -1534,12 +1534,6 @@
       flex-direction: column;
       gap: 0.35rem;
     }
-    .progress-heading {
-      display: flex;
-      align-items: center;
-      gap: 0.7rem;
-    }
-    .progress-heading > label { margin: 0; flex: 0 0 auto; }
     .progress-bar {
       display: flex;
       flex-wrap: wrap;
@@ -2333,251 +2327,6 @@
       flex: 1;
       min-width: 0;
     }
-.change-board {
-  margin: 0 0 1rem;
-}
-
-.step-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.25rem 0.6rem;
-  margin: 0 0 0.4rem;
-}
-
-.step-head h2 {
-  margin: 0;
-  font-size: 0.95rem;
-  font-weight: 680;
-  color: var(--navy);
-}
-
-.step-head p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
-.step-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.28rem;
-}
-
-.step-card {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-  box-shadow: none;
-}
-
-.step-card > summary {
-  display: flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 0.4rem;
-  min-width: 0;
-  padding: 0.32rem 0.6rem;
-  cursor: pointer;
-  list-style: none;
-}
-
-.step-card > summary::-webkit-details-marker { display: none; }
-
-.step-chevron {
-  width: 0.42rem;
-  height: 0.42rem;
-  border-right: 1.6px solid var(--muted);
-  border-bottom: 1.6px solid var(--muted);
-  transform: rotate(-45deg);
-  flex: 0 0 auto;
-}
-
-.step-card[open] > summary .step-chevron { transform: rotate(45deg); }
-
-.step-mark {
-  width: 1.3rem;
-  height: 1.3rem;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
-  color: var(--accent);
-}
-
-.step-mark svg { width: 0.75rem; height: 0.75rem; }
-
-.step-mark[data-kind="ask"],
-.step-mark[data-kind="approval"] {
-  background: color-mix(in srgb, var(--navy) 12%, var(--panel-2));
-  color: var(--navy);
-}
-
-.step-mark[data-kind="triage"],
-.step-mark[data-kind="pr"] {
-  background: color-mix(in srgb, var(--ok) 16%, var(--panel-2));
-  color: var(--ok);
-}
-
-.step-name {
-  display: flex;
-  flex-direction: row;
-  align-items: baseline;
-  gap: 0.35rem;
-  min-width: 0;
-  flex: 0 1 auto;
-}
-
-.step-name strong {
-  font-size: 0.84rem;
-  font-weight: 650;
-}
-
-.step-id {
-  color: var(--muted);
-  font-size: 0.7rem;
-  white-space: nowrap;
-}
-
-.step-meta {
-  color: var(--muted);
-  font-size: 0.75rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-
-.step-pill {
-  flex: 0 0 auto;
-  border-radius: 999px;
-  padding: 0.12rem 0.55rem;
-  font-size: 0.72rem;
-  border: 1px solid var(--line);
-  white-space: nowrap;
-}
-
-.step-pill-ok {
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
-  background: color-mix(in srgb, var(--ok) 12%, var(--panel));
-}
-
-.step-pill-wait {
-  color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 40%, var(--line));
-  background: color-mix(in srgb, var(--warn) 12%, var(--panel));
-}
-
-.step-pill-bad {
-  color: var(--bad);
-  border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
-  background: color-mix(in srgb, var(--bad) 12%, var(--panel));
-}
-
-.step-pill-muted { color: var(--muted); }
-
-.step-body {
-  padding: 0 0.7rem 0.5rem 2.15rem;
-}
-
-.step-copy {
-  margin: 0.15rem 0 0.55rem;
-  white-space: pre-wrap;
-}
-
-.step-stats {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.3rem 0.6rem;
-  margin: 0.2rem 0 0.45rem;
-}
-
-.step-stats div {
-  min-width: 0;
-}
-
-.step-stats dt {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.68rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.step-stats dd {
-  margin: 0.1rem 0 0;
-  font-size: 0.88rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.step-card > summary .step-usage {
-  flex: 1 1 auto;
-  min-width: 0;
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.7rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.change-board h3 {
-  margin: 0.75rem 0 0.3rem;
-  font-size: 0.78rem;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.change-plan,
-.step-log {
-  margin: 0;
-  white-space: pre-wrap;
-  font-size: 0.82rem;
-  max-height: 16rem;
-  overflow: auto;
-}
-
-.step-criteria {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.step-criterion {
-  position: relative;
-  margin: 0.28rem 0;
-  padding-left: 1.25rem;
-}
-
-.step-criterion::before {
-  position: absolute;
-  left: 0;
-  color: var(--muted);
-  content: "•";
-}
-
-.step-criterion.met::before { content: "✓"; color: var(--ok); }
-.step-criterion.missed::before { content: "!"; color: var(--warn); }
-
-.step-link { margin: 0.35rem 0; }
-
-@media (max-width: 720px) {
-  .step-stats { grid-template-columns: 1fr; }
-  .step-card > summary { flex-wrap: wrap; }
-  .step-card > summary .step-usage { flex-basis: 100%; }
-  .step-body { padding-left: 0.7rem; }
-  .step-meta { display: none; }
-}
   </style>
 </head>
 <body>
@@ -2759,7 +2508,6 @@
 
       <label for="goal">Goal</label>
       <textarea id="goal" name="goal" placeholder="Leave blank to use .lbw/goals.md, failing tests, or keep improving">{{ default_goal }}</textarea>
-      <p class="hint">By default the proposal pauses at the plan-review group before any code, then again before the pull request. A person with write access to this repository continues it. Uncheck a gate to skip that step, or bypass all gates. Waiting reviews from every project are under Changes. Keep improving passes the gates itself.</p>
       <p class="hint" id="enabled-skills-hint"></p>
 
       <label for="base-branch">Base branch</label>
@@ -2780,29 +2528,26 @@
         <p class="hint">Tokens this model can hold on this machine. Leave blank to use the server window, or LBW_CONTEXT_WINDOW when that is set.</p>
       </div>
 
-      <div class="checks">
-        <label>
-          <input id="auto-commit" type="checkbox" {% if default_auto_commit %}checked{% endif %}> commit if tests pass
-        </label>
-        <label>
-          <input id="create-pr" type="checkbox" {% if default_create_pr %}checked{% endif %}> create pull request
-        </label>
-        <label>
-          <input id="spec-first" type="checkbox"> write a spec first
-        </label>
-        <label>
-          <input id="gate-triage" type="checkbox" checked> review the plan before code
-        </label>
-        <label>
-          <input id="gate-approval" type="checkbox" checked> review before the pull request
-        </label>
-        <label>
-          <input id="bypass-gates" type="checkbox"> bypass all gates
-        </label>
-        <label>
-          <input id="keep-improving" type="checkbox"> keep improving
-        </label>
-      </div>
+      <fieldset class="flow-setup">
+        <legend>Path</legend>
+        <p class="hint">Where this change stops for a person with write access to this repository. Waiting changes from every project are listed under Changes.</p>
+        <div id="flow-preview" class="flow-preview"></div>
+        <div class="check-grid">
+          <div class="check-group" role="group" aria-labelledby="check-group-stops">
+            <p class="check-group-title" id="check-group-stops">Checkpoints</p>
+            <label><input id="spec-first" type="checkbox"> Write a spec first</label>
+            <label><input id="gate-triage" type="checkbox" checked> Review the plan before code</label>
+            <label><input id="gate-approval" type="checkbox" checked> Review before the pull request</label>
+            <label><input id="bypass-gates" type="checkbox"> Bypass all checkpoints</label>
+          </div>
+          <div class="check-group" role="group" aria-labelledby="check-group-result">
+            <p class="check-group-title" id="check-group-result">Result</p>
+            <label><input id="auto-commit" type="checkbox" {% if default_auto_commit %}checked{% endif %}> Commit if tests pass</label>
+            <label><input id="create-pr" type="checkbox" {% if default_create_pr %}checked{% endif %}> Create pull request</label>
+            <label><input id="keep-improving" type="checkbox"> Keep improving</label>
+          </div>
+        </div>
+      </fieldset>
       <p class="hint" id="spec-first-status" hidden></p>
       <p class="hint" id="keep-improving-status" hidden>
         LBW reviews the repo, picks one best-practice or UX change, opens a PR,
@@ -5929,7 +5674,7 @@
         asked: "Ask",
         planned: "Plan",
         triage: "Plan review",
-        building: "Code",
+        building: "Build",
         ask: "Needs an answer",
         reply: "Sent back",
         review: "Review",
@@ -7478,9 +7223,71 @@
       return Boolean(workspaceKindEl && workspaceKindEl.dataset.kind === "github" && path === (workspaceEl && workspaceEl.value));
     }
 
-    function replyBox(prompt, taskId) {
+    function replyBox(prompt, taskId, extraActions = "") {
       const taskAttr = taskId ? ` data-task-id="${escapeHtml(taskId)}"` : "";
-      return `<div class="reply-box"><p class="reply-label">${escapeHtml(prompt)}</p><textarea class="reply-note" rows="3" spellcheck="false" placeholder="What should change, or the answer."></textarea><div class="change-actions"><button type="button" data-reply-continue="1"${taskAttr}>Continue</button></div></div>`;
+      return `<div class="reply-box"><p class="reply-label">${escapeHtml(prompt)}</p><textarea class="reply-note" rows="3" spellcheck="false" placeholder="What should change, or the answer."></textarea><div class="change-actions"><button type="button" data-reply-continue="1"${taskAttr}>Continue</button>${extraActions}</div></div>`;
+    }
+
+    const FLOW_GLYPHS = {
+      done: '<path d="M6.5 12.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
+      bad: '<path d="M8 8l8 8M16 8l-8 8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
+      skip: '<path d="M8 12h8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
+      person: '<circle cx="12" cy="9" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6.5 18.5c.8-2.8 2.9-4.2 5.5-4.2s4.7 1.4 5.5 4.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+      now: '<circle cx="12" cy="12" r="4" fill="currentColor"/>',
+    };
+
+    function flowGlyph(tone, gate) {
+      let key = tone;
+      if (tone === "you" || (tone === "todo" && gate)) key = "person";
+      return `<span class="flow-dot" aria-hidden="true"><svg viewBox="0 0 24 24">${FLOW_GLYPHS[key] || ""}</svg></span>`;
+    }
+
+    function flowTone(pill) {
+      const [label, tone] = pill;
+      if (label === "Handed off" || label === "Skipped") return "skip";
+      if (tone === "ok") return "done";
+      if (tone === "bad") return "bad";
+      if (tone === "wait") return "now";
+      return "todo";
+    }
+
+    function flowStepHtml(step, selected) {
+      const classes = ["flow-step", `is-${step.tone}`];
+      if (step.gate) classes.push("is-gate");
+      if (selected) classes.push("selected");
+      const current = step.tone === "now" || step.tone === "you" ? ' aria-current="step"' : "";
+      const title = escapeHtml(`${step.title} · ${step.state}`);
+      const inner = `${flowGlyph(step.tone, step.gate)}<span class="step-node-title">${escapeHtml(step.title)}</span><span class="step-node-state">${escapeHtml(step.state)}</span>`;
+      if (!step.id) {
+        return `<li class="${classes.join(" ")}"${current}><span class="step-node" title="${title}">${inner}</span></li>`;
+      }
+      const pressed = selected ? "true" : "false";
+      return `<li class="${classes.join(" ")}" role="presentation"><button type="button" class="step-node" data-step-pick="${escapeHtml(step.id)}" role="tab" aria-selected="${pressed}"${current} title="${title}">${inner}</button></li>`;
+    }
+
+    function flowHtml(steps, selectedId, label) {
+      const picks = steps.some((step) => step.id);
+      const role = picks ? ' role="tablist"' : "";
+      const rows = steps.map((step) => flowStepHtml(step, Boolean(step.id) && step.id === selectedId)).join("");
+      return `<ol class="step-rail flow"${role} aria-label="${escapeHtml(label)}">${rows}</ol>`;
+    }
+
+    function calloutHtml(tone, badge, title, body) {
+      return `<section class="change-callout callout-${tone}" data-decision-scope aria-live="polite"><div class="callout-head"><span class="callout-badge">${escapeHtml(badge)}</span><p class="callout-title">${escapeHtml(title)}</p></div>${body}</section>`;
+    }
+
+    function workingLabel(stepId) {
+      const labels = {
+        ask: "Starting",
+        spec: "Writing the spec",
+        architect: "Planning the change",
+        triage: "Moving to the build",
+        builder: "Building the change",
+        review: "Reviewing the change",
+        approval: "Finishing the reviews",
+        pr: "Publishing",
+      };
+      return labels[stepId] || "Working";
     }
 
     function changeBoardHtml(item) {
@@ -7489,17 +7296,20 @@
       const plan = String(item.plan || "").trim();
       const criteria = Array.isArray(item.criteria) ? item.criteria.filter(Boolean).map(String) : [];
       const evidence = Array.isArray(item.evidence) ? item.evidence : [];
-      const started = stage || plan || evidence.length || (status && status !== "queued");
+      const started = stage || plan || evidence.length || status;
       if (!started) return "";
       const rank = stageRank(item);
       const done = stage === "done" || status === "success";
       const failed = status === "failed" || status === "error";
       const waiting = status === "waiting";
       const running = status === "running";
+      const queued = status === "queued";
+      const handedOff = stage === "handed_off" || status === "handed_off";
       const taskAttr = item.id ? ` data-task-id="${escapeHtml(item.id)}"` : "";
       const triageAuto = item.triage_gate === "auto";
       const approvalAuto = item.approval_gate === "auto";
-      const focus = focusStep(item, rank, evidence);
+      const rawFocus = focusStep(item, rank, evidence);
+      const focus = ["qa", "quality", "security"].includes(rawFocus) ? "review" : rawFocus;
       syncOpenSteps(item, focus);
 
       function past(stepRank) {
@@ -7514,8 +7324,7 @@
         if (past(stepRank)) return ["Done", "ok"];
         if (here(stepRank) && waiting) return ["Waiting", "wait"];
         if (here(stepRank) && failed) return ["Failed", "bad"];
-        if (here(stepRank) && running) return ["Working", "wait"];
-        if (here(stepRank)) return ["Working", "wait"];
+        if (here(stepRank) && (running || !queued)) return ["Working", "wait"];
         return ["Queued", "muted"];
       }
 
@@ -7531,13 +7340,19 @@
       const securityEntry = evidenceForRole(evidence, "security");
       const architectPill = (past(1) || plan || architectEntry) ? ["Planned", "ok"] : queuedOr(1);
       let triagePill = ["Queued", "muted"];
-      if (stage === "handed_off" || status === "handed_off") triagePill = ["Handed off", "wait"];
+      if (handedOff) triagePill = ["Handed off", "wait"];
       else if (here(2) && waiting) triagePill = ["Waiting", "wait"];
       else if (past(2)) triagePill = triageAuto ? ["Auto", "ok"] : ["Approved", "ok"];
+      else if (failed && rank < 2) triagePill = ["Skipped", "muted"];
       const builderPill = (past(3) || item.committed) ? ["Changed", "ok"] : queuedOr(3);
       const qaPill = reviewPill(qaEntry, true);
       const qualityPill = reviewPill(qualityEntry, false);
       const securityPill = reviewPill(securityEntry, false);
+      const reviewEntries = [qaEntry, qualityEntry, securityEntry].filter(Boolean);
+      const sentBackEntry = reviewEntries.find((entry) => entry.verdict === "send_back" || entry.verdict === "block");
+      let reviewAllPill = qaPill;
+      if (sentBackEntry) reviewAllPill = verdictLabel(sentBackEntry.verdict);
+      else if (reviewEntries.length > 1 && qaPill[1] === "ok") reviewAllPill = [`${reviewEntries.length} passed`, "ok"];
       let approvalPill = ["Queued", "muted"];
       if (here(5) && waiting) approvalPill = ["Waiting", "wait"];
       else if (past(5)) approvalPill = approvalAuto ? ["Auto", "ok"] : ["Approved", "ok"];
@@ -7546,6 +7361,7 @@
       if (item.pr_url || item.published) prPill = ["Opened", "ok"];
       else if (item.committed) prPill = ["Committed", "ok"];
       else if (failed || (done && !item.committed)) prPill = ["Skipped", "muted"];
+      else if (running && rank >= 6) prPill = ["Working", "wait"];
 
       function sentBackText(item, entry) {
         let summary = entry && entry.summary ? String(entry.summary).trim() : "";
@@ -7575,25 +7391,25 @@
         else if (entry) summary = String(entry.verdict || pill[0]);
         else if (pill[0] === "Skipped") summary = skipped;
         const sent = entry && (entry.verdict === "send_back" || entry.verdict === "block");
-        const canReply = sent && (failed || status === "error" || (waiting && stage === "reply"));
-        const reply = canReply ? replyBox("Say what should change, then continue.", item.id) : "";
         const heading = sent ? "<h3>Why it was sent back</h3>" : "";
-        return `${heading}<p class="step-copy">${escapeHtml(summary)}</p>${reply}${stepStats([
-          ["State", status || stage],
-          ["Verdict", entry ? entry.verdict : pill[0]],
-        ])}`;
+        return `${heading}<p class="step-copy">${escapeHtml(summary)}</p>`;
+      }
+
+      function verdictChips() {
+        return `<div class="verdict-chips">${[
+          ["QA", qaPill],
+          ["Quality", qualityPill],
+          ["Security", securityPill],
+        ].map(([name, pill]) => stepPill(`${name} · ${pill[0]}`, pill[1] || "muted")).join("")}</div>`;
       }
 
       let architectBody = "";
       if (architectEntry && architectEntry.summary) {
         architectBody += `<p class="step-copy">${escapeHtml(architectEntry.summary)}</p>`;
       }
-      architectBody += stepStats([
-        ["State", architectPill[0]],
-        ["Verdict", architectEntry ? architectEntry.verdict : ""],
-      ]);
       if (plan) architectBody += `<h3>Plan</h3><pre class="change-plan">${escapeHtml(plan)}</pre>`;
       architectBody += criteriaList(criteria, "");
+      if (!architectBody) architectBody = `<p class="step-copy">${here(1) ? "The architect is writing the plan." : "The plan has not been written yet."}</p>`;
 
       const specText = String(item.spec_text || "").trim();
       const specPath = String(item.spec_path || "");
@@ -7601,23 +7417,18 @@
       if (waiting && stage === "spec") specPill = ["Waiting", "wait"];
       else if (running && stage === "spec") specPill = ["Writing", "wait"];
       else if (item.spec_accepted) specPill = ["Accepted", "ok"];
-      else if ((stage === "handed_off" || status === "handed_off") && specText) specPill = ["Handed off", "wait"];
+      else if (handedOff && specText) specPill = ["Handed off", "wait"];
       else if (specText) specPill = ["Written", "ok"];
       else if (failed) specPill = ["Failed", "bad"];
       const specWhere = specPath ? `<p class="hint">Committed with the change as <code>${escapeHtml(specPath)}</code>.</p>` : "";
       let specBody = `<p class="step-copy">The spec has not been written yet.</p>`;
-      if (waiting && stage === "spec" && item.id) {
-        specBody = `<p class="step-copy">The spec is ready. A person with write access can edit it and accept it, or write what to change and have it rewritten. Planning starts once it is accepted.</p>${specWhere}<label class="spec-label">Spec<textarea class="spec-text" rows="18" spellcheck="false">${escapeHtml(specText)}</textarea></label><textarea class="reply-note" rows="3" spellcheck="false" placeholder="What should the spec change? (for Rewrite)"></textarea><div class="change-actions"><button type="button" data-change-decision="accept_spec"${taskAttr}>Accept spec</button><button type="button" class="secondary" data-change-decision="send_back"${taskAttr}>Rewrite</button><button type="button" class="secondary" data-change-decision="hand_off"${taskAttr}>Hand off</button></div>`;
-      } else if (specText) {
-        specBody = `${specWhere}<pre class="change-plan">${escapeHtml(specText)}</pre>`;
-      } else if (running && stage === "spec") {
-        specBody = `<p class="step-copy">Writing the spec.</p>`;
-      }
+      if (specText) specBody = `${specWhere}<pre class="change-plan">${escapeHtml(specText)}</pre>`;
+      else if (running && stage === "spec") specBody = `<p class="step-copy">Writing the spec.</p>`;
 
-      let triageBody = `<p class="step-copy">Waiting for a plan to review.</p>`;
-      if (waiting && stage === "triage" && item.id) {
-        triageBody = `<p class="step-copy">The plan is ready. A person with write access can build it, or hand it to a person.</p><div class="change-actions"><button type="button" data-change-decision="build"${taskAttr}>Build it</button><button type="button" class="secondary" data-change-decision="hand_off"${taskAttr}>Hand off</button></div>`;
-      } else if (stage === "handed_off" || status === "handed_off") {
+      let triageBody = `<p class="step-copy">${triageAuto ? "The plan goes straight to the build." : "A person reviews the plan before any code is written."}</p>`;
+      if (waiting && stage === "triage") {
+        triageBody = `<p class="step-copy">The plan is waiting for a person with write access.</p>`;
+      } else if (handedOff) {
         triageBody = `<p class="hint">Handed to a person. Nothing was built.</p>`;
       } else if (past(2)) {
         triageBody = `<p class="step-copy">${triageAuto ? "Triage ran on its own." : "The plan was accepted."}</p>`;
@@ -7625,27 +7436,33 @@
 
       let builderBody = `<p class="step-copy">The builder has not started.</p>`;
       if (waiting && stage === "ask") {
-        builderBody = `<p class="step-copy">${escapeHtml(item.reason || item.summary || "The builder needs an answer.")}</p>${replyBox("Answer so the builder can continue.", item.id)}`;
+        builderBody = `<p class="step-copy">${escapeHtml(item.reason || item.summary || "The builder needs an answer.")}</p>`;
       } else if (past(3)) {
         const told = item.summary ? String(item.summary).trim() : "";
         builderBody = told
           ? `<pre class="change-plan">${escapeHtml(told)}</pre>`
           : `<p class="step-copy">The builder changed the tree.</p>`;
+      } else if (here(3)) {
+        builderBody = `<p class="step-copy">The builder is changing the tree.</p>`;
       }
-      else if (here(3)) builderBody = `<p class="step-copy">The builder is changing the tree.</p>`;
-      if (!(waiting && stage === "ask")) builderBody += stepLog(item, ["file"]);
+      builderBody += stepLog(item, ["file"]);
 
       let qaTone = "";
       if (qaEntry && qaEntry.verdict === "pass") qaTone = "ok";
       if (qaEntry && qaEntry.verdict !== "pass") qaTone = "bad";
       const qaCriteria = (qaEntry || past(4) || here(4)) ? criteriaList(criteria, qaTone) : "";
-      const qaBody = `${reviewBody(qaEntry, qaPill, "QA did not run.", item)}${qaCriteria}${stepLog(item, ["review", "test", "lint", "ui"])}`;
+      const reviewStepBody = [
+        verdictChips(),
+        `<h3>QA</h3>${reviewBody(qaEntry, qaPill, "QA did not run.", item)}`,
+        qaCriteria,
+        `<h3>Quality</h3>${reviewBody(qualityEntry, qualityPill, "Quality review did not run.", item)}`,
+        `<h3>Security</h3>${reviewBody(securityEntry, securityPill, "Security review did not run.", item)}`,
+        stepLog(item, ["review", "test", "lint", "ui"]),
+      ].join("");
 
-      let approvalBody = `<p class="step-copy">Waiting until the reviews finish.</p>`;
-      if (waiting && stage === "approval" && item.id && githubCommitBlocked(item)) {
-        approvalBody = `<p class="step-copy">Connect GitHub before approving this commit.</p><div class="change-actions"><button type="button" class="secondary" data-change-decision="send_back"${taskAttr}>Send back</button></div>`;
-      } else if (waiting && stage === "approval" && item.id) {
-        approvalBody = `<p class="step-copy">The reviews are in. A person with write access can approve the change, or write what to change and send it back.</p><textarea class="reply-note" rows="3" spellcheck="false" placeholder="What should the builder change?"></textarea><div class="change-actions"><button type="button" data-change-decision="approve"${taskAttr}>Approve</button><button type="button" class="secondary" data-change-decision="send_back"${taskAttr}>Send back</button></div>`;
+      let approvalBody = `<p class="step-copy">${approvalAuto ? "The change goes out once the reviews pass." : "A person approves the change before the pull request opens."}</p>`;
+      if (waiting && stage === "approval") {
+        approvalBody = `<p class="step-copy">The change is waiting for a person with write access.</p>`;
       } else if (past(5)) {
         approvalBody = `<p class="step-copy">${approvalAuto ? "Approval ran on its own." : "A person approved the change."}</p>`;
       } else if (approvalPill[0] === "Skipped") {
@@ -7664,30 +7481,114 @@
       }
       prBody += stepLog(item, ["pr"]);
 
+      const canReply = Boolean(sentBackEntry) && (failed || (waiting && stage === "reply"));
+      const yourTurn = {
+        spec: waiting && stage === "spec",
+        triage: waiting && stage === "triage",
+        approval: waiting && stage === "approval",
+        builder: waiting && stage === "ask",
+        review: waiting && stage === "reply",
+      };
       const metrics = stepMetrics(item);
-      const steps = [
-        { id: "ask", kind: "ask", title: "Ask", sub: "the request", pill: ["Asked", "ok"], body: `<p class="step-copy">${escapeHtml(item.goal || "No request recorded.")}</p>` },
-        ...(item.spec ? [{ id: "spec", kind: "spec", title: "Spec", sub: "spec review", pill: specPill, body: specBody }] : []),
-        { id: "architect", kind: "architect", title: "Architect", sub: "architect · plan", pill: architectPill, body: architectBody },
-        { id: "triage", kind: "triage", title: "Triage", sub: "plan review", pill: triagePill, body: triageBody },
-        { id: "builder", kind: "builder", title: "Builder", sub: "builder · change", pill: builderPill, body: builderBody },
-        { id: "qa", kind: "qa", title: "QA", sub: "qa · review", pill: qaPill, body: qaBody },
-        { id: "quality", kind: "quality", title: "Quality", sub: "quality · review", pill: qualityPill, body: reviewBody(qualityEntry, qualityPill, "Quality review did not run.", item) },
-        { id: "security", kind: "security", title: "Security", sub: "security · review", pill: securityPill, body: reviewBody(securityEntry, securityPill, "Security review did not run.", item) },
-        { id: "approval", kind: "approval", title: "Approval", sub: "pull request review", pill: approvalPill, body: approvalBody },
-        { id: "pr", kind: "pr", title: "Pull request", sub: "ship", pill: prPill, body: prBody },
+      const rawSteps = [
+        { id: "ask", title: "Ask", pill: ["Asked", "ok"], body: `<p class="step-copy">${escapeHtml(item.goal || "No request recorded.")}</p>` },
+        ...(item.spec ? [{ id: "spec", title: "Spec", gate: true, pill: specPill, body: specBody }] : []),
+        { id: "architect", title: "Plan", pill: architectPill, body: architectBody },
+        { id: "triage", title: "Plan review", gate: !triageAuto, pill: triagePill, body: triageBody },
+        { id: "builder", title: "Build", pill: builderPill, body: builderBody },
+        { id: "review", title: "Review", pill: reviewAllPill, body: reviewStepBody, metric: "qa" },
+        { id: "approval", title: "Approval", gate: !approvalAuto, pill: approvalPill, body: approvalBody },
+        { id: "pr", title: "Pull request", pill: prPill, body: prBody },
       ];
+      const steps = rawSteps.map((step) => {
+        const you = Boolean(yourTurn[step.id]);
+        return Object.assign({}, step, {
+          tone: you ? "you" : flowTone(step.pill),
+          state: you ? "Your turn" : step.pill[0],
+        });
+      });
 
-      function card(step) {
-        const selected = step.id === (state.stepFocus || focus);
-        const tone = step.pill[1] || "muted";
-        const pressed = selected ? "true" : "false";
-        return `<button type="button" class="step-node ${tone}${selected ? " selected" : ""}" data-step-pick="${escapeHtml(step.id)}" role="tab" aria-selected="${pressed}"><span class="step-node-title">${escapeHtml(step.title)}</span><span class="step-node-state">${escapeHtml(step.pill[0])}</span></button>`;
+      const groups = groupedFileChanges(item.events || []);
+      const lineStats = groups.reduce((totals, group) => {
+        const stats = diffStats(fileReviewDiff(group).diff);
+        totals.added += stats.added;
+        totals.removed += stats.removed;
+        return totals;
+      }, { added: 0, removed: 0 });
+      const changesLink = groups.length
+        ? `<button type="button" class="secondary callout-link" data-task-pane="changes">View ${groups.length} changed file${groups.length === 1 ? "" : "s"} <span class="diff-add">+${lineStats.added}</span> <span class="diff-del">−${lineStats.removed}</span></button>`
+        : "";
+      const reason = String(item.reason || item.error || "").trim();
+
+      let calloutStep = "";
+      let callout = "";
+      if (yourTurn.spec && item.id) {
+        calloutStep = "spec";
+        callout = calloutHtml("you", "Your turn", "Accept the spec", `<p class="callout-copy">Edit it if needed, then accept it to start planning. Or say what to change and have it rewritten.</p>${specWhere}<label class="spec-label">Spec<textarea class="spec-text" rows="14" spellcheck="false">${escapeHtml(specText)}</textarea></label><textarea class="reply-note" rows="2" spellcheck="false" placeholder="What should the spec change? (for Rewrite)"></textarea><div class="change-actions"><button type="button" data-change-decision="accept_spec"${taskAttr}>Accept spec</button><button type="button" class="secondary" data-change-decision="send_back"${taskAttr}>Rewrite</button><button type="button" class="secondary" data-change-decision="hand_off"${taskAttr}>Hand off</button></div>`);
+      } else if (yourTurn.triage && item.id) {
+        calloutStep = "triage";
+        const planHtml = plan ? `<pre class="change-plan">${escapeHtml(plan)}</pre>` : `<p class="callout-copy">The architect did not write a plan.</p>`;
+        callout = calloutHtml("you", "Your turn", "Review the plan", `<p class="callout-copy">Nothing has been built yet. Build it as planned, or hand it to a person.</p>${planHtml}${criteriaList(criteria, "")}<div class="change-actions"><button type="button" data-change-decision="build"${taskAttr}>Build it</button><button type="button" class="secondary" data-change-decision="hand_off"${taskAttr}>Hand off</button></div>`);
+      } else if (yourTurn.approval && item.id) {
+        calloutStep = "approval";
+        const summary = item.summary ? `<p class="callout-copy">${escapeHtml(String(item.summary).trim())}</p>` : "";
+        const blocked = githubCommitBlocked(item);
+        const copy = blocked
+          ? `<p class="callout-copy">Connect GitHub from your personal page before approving this commit. You can still send it back.</p>`
+          : `<p class="callout-copy">The reviews are in. Approve to ${item.create_pr === false ? "commit the change" : "open the pull request"}, or say what to change and send it back.</p>`;
+        const approve = blocked ? "" : `<button type="button" data-change-decision="approve"${taskAttr}>Approve</button>`;
+        callout = calloutHtml("you", "Your turn", "Approve the change", `${copy}${summary}${verdictChips()}${changesLink ? `<p class="callout-row">${changesLink}</p>` : ""}<textarea class="reply-note" rows="2" spellcheck="false" placeholder="What should the builder change? (for Send back)"></textarea><div class="change-actions">${approve}<button type="button" class="secondary" data-change-decision="send_back"${taskAttr}>Send back</button></div>`);
+      } else if (yourTurn.builder) {
+        calloutStep = "builder";
+        callout = calloutHtml("you", "Your turn", "The builder has a question", `<p class="callout-copy">${escapeHtml(item.reason || item.summary || "The builder needs an answer.")}</p>${replyBox("Answer so the builder can continue.", item.id)}`);
+      } else if (yourTurn.review) {
+        calloutStep = "review";
+        callout = calloutHtml("you", "Your turn", "A review sent this back", `<p class="callout-copy">${escapeHtml(sentBackText(item, sentBackEntry))}</p>${replyBox("Say what should change, then continue.", item.id)}`);
+      } else if (waiting) {
+        callout = calloutHtml("you", "Your turn", stageStepLabel(stage), `<p class="callout-copy">${escapeHtml(reason || "This change is waiting for a person with write access.")}</p>`);
+      } else if (handedOff) {
+        callout = calloutHtml("muted", "Handed off", "A person took this over", `<p class="callout-copy">Nothing was built. ${escapeHtml(reason)}</p>`);
+      } else if (queued) {
+        calloutStep = focus;
+        callout = calloutHtml("muted", "Queued", "Waiting for a worker", `<p class="callout-copy">This change starts as soon as a worker is free.</p>`);
+      } else if (running) {
+        const last = (item.events || []).filter((event) => event && event.kind !== "llm").pop();
+        const lastLine = last ? `<p class="callout-copy callout-activity">${escapeHtml(eventTitle(last))}</p>` : "";
+        const elapsed = metrics[focus] && metrics[focus].ms > 0 ? ` · ${formatElapsedMs(metrics[focus].ms)}` : "";
+        callout = calloutHtml("now", "Working", `${workingLabel(focus)}${elapsed}`, `${lastLine}<p class="callout-copy">Nothing is needed from you right now.${!triageAuto && rank < 2 ? " You review the plan next." : ""}${!approvalAuto && rank >= 2 && rank < 5 ? " You approve the change next." : ""}</p>`);
+      } else if (failed) {
+        const stuck = String(item.fault || "").trim();
+        const rerun = !stuck && item.id ? `<button type="button" class="secondary" data-rerun-id="${escapeHtml(item.id)}">Rerun</button>` : "";
+        if (canReply) calloutStep = "review";
+        const why = canReply ? sentBackText(item, sentBackEntry) : (stuck || reason || "The change stopped.");
+        const next = canReply
+          ? replyBox("Say what should change, then continue. Or rerun it from the start.", item.id, rerun)
+          : (rerun ? `<div class="change-actions">${rerun}</div>` : "");
+        callout = calloutHtml("bad", "Failed", stuck ? "This job cannot be retried" : "The change did not finish", `<p class="callout-copy">${escapeHtml(why)}</p>${next}`);
+      } else if (done) {
+        calloutStep = "pr";
+        const pull = url ? prStateOf(url) : "";
+        let title = "Done";
+        if (item.merged || pull === "merged") title = "Merged";
+        else if (pull === "closed") title = "Pull request closed";
+        else if (url) title = "Pull request is open";
+        else if (item.committed) title = "Committed";
+        const sha = item.commit_sha ? `<p class="callout-copy">Commit ${escapeHtml(String(item.commit_sha).slice(0, 8))}</p>` : "";
+        const actions = url && prIsOpen(item)
+          ? `<button type="button" data-merge-url="${escapeHtml(url)}" data-merge-workspace="${escapeHtml(item.workspace || "")}">Merge</button><button type="button" class="secondary" data-request-changes="${escapeHtml(state.selectedRunKey)}">Request changes</button>`
+          : "";
+        const link = url ? prLinkHtml(url) : "";
+        callout = calloutHtml("done", "Done", title, `${item.summary && !url ? `<p class="callout-copy">${escapeHtml(String(item.summary).trim())}</p>` : ""}${url ? "" : sha}${link || actions || changesLink ? `<div class="change-actions">${link}${actions}${changesLink}</div>` : ""}`);
+      } else if (status === "skipped") {
+        callout = calloutHtml("muted", "Skipped", "Nothing to change", `<p class="callout-copy">${escapeHtml(reason || item.summary || "The tree already met the goal.")}</p>`);
       }
 
-      const chosen = steps.find((step) => step.id === (state.stepFocus || focus)) || steps[0];
-      const usage = stepUsageHtml(metrics, chosen.id, chosen.pill);
-      return `<section class="change-board" aria-label="Change"><div class="step-rail" role="tablist" aria-label="Change steps">${steps.map(card).join("")}</div><div class="step-pane" role="tabpanel">${usage}<div class="step-body">${chosen.body}</div></div></section>`;
+      const chosen = steps.find((step) => step.id === (state.stepFocus || focus)) || steps.find((step) => step.id === focus) || steps[0];
+      const usage = stepUsageHtml(metrics, chosen.metric || chosen.id, chosen.pill);
+      const pane = chosen.id === calloutStep
+        ? ""
+        : `<div class="step-pane" role="tabpanel"><p class="step-pane-title">${escapeHtml(chosen.title)} <span class="step-pane-state is-${escapeHtml(chosen.tone)}">${escapeHtml(chosen.state)}</span></p>${usage}<div class="step-body">${chosen.body}</div></div>`;
+      return `<section class="change-board" aria-label="Change">${flowHtml(steps, chosen.id, "Change steps")}${callout}${pane}</section>`;
     }
 
     function renderProgress(item, { running = false } = {}) {
@@ -7885,8 +7786,19 @@
         if (entry.status === "skipped") return "Skipped";
         return "Done";
       }
-      if (entry.status === "waiting") return stageStepLabel(task.stage);
+      if (entry.status === "waiting") return waitingActionLabel(task.stage);
       return stageStepLabel(task.stage || entry.status);
+    }
+
+    function waitingActionLabel(stage) {
+      const labels = {
+        spec: "Accept the spec",
+        triage: "Review the plan",
+        approval: "Approve the change",
+        ask: "Answer a question",
+        reply: "Say what to change",
+      };
+      return labels[stage] || stageStepLabel(stage);
     }
 
     function inboxActionsHtml(entry, section) {
@@ -8007,7 +7919,7 @@
           .filter(Boolean)
           .join(" — ")
       );
-      const body = `<span class="inbox-goal">${escapeHtml(goalHeadline(task))}</span><span class="inbox-meta"><span class="inbox-project">${escapeHtml(project)}</span><span class="inbox-step">${escapeHtml(step)}</span></span>`;
+      const body = `<span class="inbox-goal">${escapeHtml(goalHeadline(task))}</span><span class="inbox-meta"><span class="inbox-dot${entry.status === "running" ? " is-running" : ""}" aria-hidden="true"></span><span class="inbox-step">${escapeHtml(step)}</span><span class="inbox-project">${escapeHtml(project)}</span></span>`;
       const button = entry.kind === "history"
         ? `<button type="button" class="inbox-item${selected}" data-run-key="${escapeHtml(entry.key)}" title="${title}">${body}</button>`
         : `<button type="button" class="inbox-item${selected}" data-inbox-id="${escapeHtml(task.id)}" data-inbox-workspace="${escapeHtml(task.workspace || "")}" title="${title}">${body}</button>`;
@@ -8253,15 +8165,18 @@
           : "";
       const metaText = selected
         ? [
-            selected.workspace || "",
+            projectBase(selected.workspace),
+            selected.branch || selected.base_branch || "",
             selected.model || "",
-            selected.base_url || "",
             selected.commit_sha ? selected.commit_sha.slice(0, 8) : "",
             taskDurationLabel(selected),
           ].filter(Boolean).join(" · ")
         : selectedHistory
-          ? [goalHeadline(selectedHistory), taskDurationLabel(selectedHistory), timestampLabel(selectedHistory)].filter(Boolean).join(" · ")
+          ? [taskDurationLabel(selectedHistory), timestampLabel(selectedHistory)].filter(Boolean).join(" · ")
           : "";
+      const titleItem = selected || selectedHistory;
+      const titleText = titleItem ? goalHeadline(titleItem) : "";
+      const metaHover = selected ? [selected.workspace || "", selected.base_url || ""].filter(Boolean).join(" · ") : "";
       const prHtml = prLinkHtml(prUrl(selected || selectedHistory));
       const target = runDetailEl;
       const root = target.querySelector("[data-progress-root]");
@@ -8271,6 +8186,8 @@
       } else if (sameItem) {
         const metaEl = root.querySelector("[data-progress-meta]");
         if (metaEl) metaEl.textContent = metaText;
+        const titleEl = root.querySelector("[data-progress-title]");
+        if (titleEl) titleEl.textContent = titleText;
         const prEl = root.querySelector("[data-progress-pr]");
         if (prEl) prEl.innerHTML = prHtml;
         const body = root.querySelector("[data-progress-body]");
@@ -8284,12 +8201,16 @@
         const tokenHover = taskTokensHover(tokenItem);
         target.innerHTML = `
           <div data-progress-root data-item-key="${escapeHtml(itemKey)}">
-            <div class="progress-heading">
-              <label>Steps</label>
-              <p class="task-tokens" id="task-tokens" data-task-tokens title="${escapeHtml(tokenHover)}" aria-label="${escapeHtml(tokenHover)}">${renderTokenBar(tokenUsage.used, tokenUsage.window)}</p>
-            </div>
-            <p class="meta" data-progress-meta>${escapeHtml(metaText)}</p>
-            <div class="progress-pr" data-progress-pr>${prHtml}</div>
+            <header class="change-head">
+              <div class="change-head-text">
+                <h2 class="change-title" data-progress-title>${escapeHtml(titleText)}</h2>
+                <p class="meta" data-progress-meta title="${escapeHtml(metaHover)}">${escapeHtml(metaText)}</p>
+              </div>
+              <div class="change-head-side">
+                <div class="progress-pr" data-progress-pr>${prHtml}</div>
+                <p class="task-tokens" id="task-tokens" data-task-tokens title="${escapeHtml(tokenHover)}" aria-label="${escapeHtml(tokenHover)}">${renderTokenBar(tokenUsage.used, tokenUsage.window)}</p>
+              </div>
+            </header>
             <div data-progress-body>${progressHtml}</div>
           </div>
         `;
@@ -8415,23 +8336,13 @@
       }
     }
 
-    listEl.addEventListener("click", (event) => {
-      const fold = event.target.closest("[data-inbox-fold]");
-      if (fold) {
-        event.preventDefault();
-        event.stopPropagation();
-        const section = fold.closest(".inbox-group");
-        const countEl = section ? section.querySelector(".inbox-count") : null;
-        const count = Number(countEl && countEl.textContent) || 0;
-        toggleInboxFold(fold.dataset.inboxFold, count);
-        return;
-      }
+    function handleJobAction(event) {
       const merge = event.target.closest("[data-merge-url]");
       if (merge) {
         event.preventDefault();
         event.stopPropagation();
         mergePull(merge.dataset.mergeUrl, merge.dataset.mergeWorkspace, merge);
-        return;
+        return true;
       }
       const requestChanges = event.target.closest("[data-request-changes]");
       if (requestChanges) {
@@ -8445,8 +8356,31 @@
             purpose: "changes",
           });
         }
+        return true;
+      }
+      const rerun = event.target.closest("[data-rerun-id]");
+      if (rerun) {
+        event.preventDefault();
+        event.stopPropagation();
+        const task = [...state.tasks, ...(state.allTasks || [])].find((item) => item.id === rerun.dataset.rerunId);
+        if (task) showRerunGoalPicker({ kind: "task", entry: task, purpose: "rerun" });
+        return true;
+      }
+      return false;
+    }
+
+    listEl.addEventListener("click", (event) => {
+      const fold = event.target.closest("[data-inbox-fold]");
+      if (fold) {
+        event.preventDefault();
+        event.stopPropagation();
+        const section = fold.closest(".inbox-group");
+        const countEl = section ? section.querySelector(".inbox-count") : null;
+        const count = Number(countEl && countEl.textContent) || 0;
+        toggleInboxFold(fold.dataset.inboxFold, count);
         return;
       }
+      if (handleJobAction(event)) return;
       const inboxItem = event.target.closest("[data-inbox-id]");
       if (inboxItem) {
         event.preventDefault();
@@ -8471,14 +8405,6 @@
         event.stopPropagation();
         const task = state.tasks.find((item) => item.id === update.dataset.taskUpdate);
         if (task) showRerunGoalPicker({ kind: "task", entry: task });
-        return;
-      }
-      const rerun = event.target.closest("[data-rerun-id]");
-      if (rerun) {
-        event.preventDefault();
-        event.stopPropagation();
-        const task = [...state.tasks, ...(state.allTasks || [])].find((item) => item.id === rerun.dataset.rerunId);
-        if (task) showRerunGoalPicker({ kind: "task", entry: task, purpose: "rerun" });
         return;
       }
       const historyUpdate = event.target.closest("[data-history-update]");
@@ -9015,6 +8941,37 @@
       if (approvalEl) approvalEl.disabled = locked;
       if (bypassEl) bypassEl.disabled = mine || keepOn;
       keepEl.disabled = mine;
+      renderFlowPreview();
+    }
+
+    function renderFlowPreview() {
+      const target = document.getElementById("flow-preview");
+      if (!target) return;
+      const gates = humanGates();
+      const checked = (id) => Boolean((document.getElementById(id) || {}).checked);
+      const keepOn = checked("keep-improving");
+      const stop = (title, on, state) => ({
+        title,
+        gate: on,
+        tone: on ? "todo" : "skip",
+        state: on ? state : "Automatic",
+      });
+      const steps = [];
+      if (checked("spec-first")) steps.push(stop("Spec", !keepOn, "You accept"));
+      steps.push({ title: "Plan", tone: "todo", state: "Architect" });
+      steps.push(stop("Plan review", gates.triage_gate === "ask", "You review"));
+      steps.push({ title: "Build", tone: "todo", state: "Builder" });
+      steps.push({ title: "Review", tone: "todo", state: "Tests and QA" });
+      steps.push(stop("Approval", gates.approval_gate === "ask", "You approve"));
+      if (checked("create-pr") || keepOn) {
+        steps.push({ title: "Pull request", tone: "todo", state: keepOn ? "Merged when it passes" : "Opened" });
+      } else if (checked("auto-commit")) {
+        steps.push({ title: "Commit", tone: "todo", state: "On the branch" });
+      } else {
+        steps.push({ title: "Result", tone: "todo", state: "Left uncommitted" });
+      }
+      if (keepOn) steps.push({ title: "Repeat", tone: "todo", state: "Until you stop it" });
+      target.innerHTML = flowHtml(steps, "", "Path this change takes");
     }
 
     function syncKeepImproving() {
@@ -9044,6 +9001,7 @@
         render();
         return;
       }
+      if (handleJobAction(event)) return;
       const reply = event.target.closest("[data-reply-continue]");
       if (reply) {
         const box = reply.closest(".reply-box");
@@ -9105,7 +9063,7 @@
     }
 
     async function decideChange(taskId, decision, button) {
-      const step = button.closest(".step-body");
+      const step = button.closest("[data-decision-scope]");
       const noteEl = step ? step.querySelector(".reply-note") : null;
       const note = noteEl ? noteEl.value.trim() : "";
       const specEl = step ? step.querySelector(".spec-text") : null;
@@ -9176,6 +9134,9 @@
       syncKeepImproving();
     });
     document.getElementById("bypass-gates").addEventListener("change", syncHumanGates);
+    document.getElementById("spec-first").addEventListener("change", renderFlowPreview);
+    document.getElementById("auto-commit").addEventListener("change", renderFlowPreview);
+    document.getElementById("create-pr").addEventListener("change", renderFlowPreview);
     document.getElementById("gate-triage").addEventListener("change", syncHumanGates);
     document.getElementById("gate-approval").addEventListener("change", syncHumanGates);
     document.getElementById("stop-improving").addEventListener("click", async function () {
@@ -9241,6 +9202,7 @@
       const required = Boolean(policy.required);
       if (required) box.checked = true;
       box.disabled = required;
+      renderFlowPreview();
       if (status) {
         status.hidden = !required;
         status.textContent = policy.org_required

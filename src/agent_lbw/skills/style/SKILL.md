@@ -57,18 +57,41 @@ heading words stay `--muted`.
 
 The changes column is `--bg-subtle`. A change in that list is one compact
 card on `--panel`, with a `1px` `--line` border, an `8px` radius, and
-`--card-lift`. The goal is a single line. The project and the step share
-the muted line under it. Hover adds a short `--navy` shadow. The selected
+`--card-lift`. The goal is a single line. A status dot, the step, and the
+project share the muted line under it. The dot takes the group color and
+blinks while the change runs. A waiting change names the next action, such
+as Review the plan, in `--warn`. Hover adds a short `--navy` shadow. The selected
 card keeps an `--accent` border and a `3px` `--accent` bar on the left. Who
 started the job and who accepted a gate stay on the open change. Merge,
 Request changes, and Rerun sit inside the card only when that job needs them.
 
-A change lists its steps in one track under that line. Each step is the
-name only. The selected step shows its state and an `--accent` underline.
-Its detail follows the track, without a second title card. Log, Changes,
-and Screenshots stay as tabs under that detail. The log tab is labeled Log.
-A second strip of Init, tests, lint, review, and publish squares is not
-shown.
+An open change shows its goal as the title, `--navy` at `1.2rem` weight
+680, with the project, branch, model, and time in the muted line under it.
+Its steps are one flow track: a round `1.6rem` dot per step joined by a
+`2px` line, with the step name and its state under the dot. A done step is
+a filled `--ok` dot with a check. The working step is a `--navy` ring that
+pulses. A step waiting on a person is a filled `--warn` dot with a person
+glyph and reads Your turn. A failed step is a filled `--bad` dot. A skipped
+step has a dashed dot and a dashed line. A checkpoint not reached yet keeps
+the person glyph on a `--warn` outline. The selected step has a light
+`--navy` fill. In a narrow pane only the working, waiting, or failed step
+keeps its state text.
+
+One action card sits under the track: `--panel`, `8px` radius, a `4px` left
+border in the state color, a pill badge (Your turn, Working, Queued,
+Failed, Done), and a title. Your turn tints the card with `--warn` and
+Failed with `--bad`. A plan or spec in the card is on `--code-bg`. The
+selected step's detail is a bordered panel under the card, and is left out
+when the card already covers that step. Log, Changes, Screenshots, and
+Audit stay as tabs under that. The log tab is labeled Log. A second strip
+of Init, tests, lint, review, and publish squares is not shown. Pulsing
+and blinking stop under `prefers-reduced-motion`.
+
+The proposal form draws the path a change will take with the same flow
+track, in a `Path` panel above its checkboxes. A checkpoint a person stops
+at shows the person glyph. A skipped checkpoint is dashed and reads
+Automatic. The checkboxes sit in Checkpoints and Result groups with
+sentence-case `--ink` labels, not uppercase field labels.
 
 ## Type
 
