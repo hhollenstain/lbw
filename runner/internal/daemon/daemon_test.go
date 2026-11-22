@@ -19,6 +19,7 @@ import (
 	"github.com/hhollenstain/lbw/runner/internal/client"
 	"github.com/hhollenstain/lbw/runner/internal/config"
 	"github.com/hhollenstain/lbw/runner/internal/job"
+	"github.com/hhollenstain/lbw/runner/internal/relay"
 )
 
 // fakeLBW plays the server side: one job, then nothing.
@@ -157,5 +158,46 @@ func TestADisconnectedRunnerStops(t *testing.T) {
 	d := &Daemon{API: api, Jobs: &job.Runner{Config: &config.Config{}, Claude: "/nonexistent"}, Log: log.New(io.Discard, "", 0)}
 	if err := d.Run(context.Background()); err != client.ErrUnauthorized {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAMachineWithoutClaudeCodeOnlyRelays(t *testing.T) {
+	var mu sync.Mutex
+	var facts client.Facts
+	polledJobs := false
+	lbw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/runner/heartbeat":
+			_ = json.NewDecoder(r.Body).Decode(&facts)
+			_ = json.NewEncoder(w).Encode(client.Beat{RunnerID: "r1"})
+		case "/api/runner/jobs/next":
+			polledJobs = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer lbw.Close()
+	api, _ := client.New(lbw.URL, "lbwr_test", "")
+	logger := log.New(io.Discard, "", 0)
+	r := relay.New(api, nil, logger)
+	r.Poll = 0
+	d := &Daemon{API: api, Relay: r, Version: "test", Log: logger, Timings: Timings{
+		Heartbeat: time.Hour, Poll: time.Millisecond, Flush: time.Second, Retry: time.Millisecond,
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := d.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !facts.LLMRelay || facts.ClaudeReady {
+		t.Fatalf("facts = %+v", facts)
+	}
+	if polledJobs {
+		t.Fatal("a runner without Claude Code took a job")
 	}
 }

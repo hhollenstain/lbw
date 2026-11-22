@@ -26,6 +26,7 @@ import (
 	"github.com/hhollenstain/lbw/runner/internal/config"
 	"github.com/hhollenstain/lbw/runner/internal/daemon"
 	"github.com/hhollenstain/lbw/runner/internal/job"
+	"github.com/hhollenstain/lbw/runner/internal/relay"
 	"github.com/hhollenstain/lbw/runner/internal/service"
 )
 
@@ -172,12 +173,20 @@ func setup() (*config.Config, *client.Client, *job.Runner, error) {
 }
 
 func run(ctx context.Context, errOut io.Writer) error {
-	_, api, jobs, err := setup()
-	if err != nil {
-		return err
-	}
+	cfg, api, jobs, err := setup()
 	logger := log.New(errOut, "", log.LstdFlags)
+	if err != nil {
+		// Without Claude Code the runner can still relay model calls to a local server.
+		if jobs != nil || api == nil || cfg.NoLLMRelay {
+			return err
+		}
+		logger.Printf("%v: relaying model calls only", err)
+	}
 	d := &daemon.Daemon{API: api, Jobs: jobs, Version: version, Log: logger}
+	if !cfg.NoLLMRelay {
+		d.Relay = relay.New(api, cfg.LLMHosts, logger)
+		d.Relay.PrivateNetwork = cfg.LLMPrivateNetwork == nil || *cfg.LLMPrivateNetwork
+	}
 	logger.Printf("lbw-runner %s connected to %s", version, api.Server)
 	err = d.Run(ctx)
 	if errors.Is(err, client.ErrUnauthorized) {

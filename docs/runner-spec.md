@@ -267,10 +267,15 @@ offers it when the organization allows that driver or provider:
 | Cursor | `cursor_agent` | names the admin enters | Cursor, through the person's Cursor login |
 | Ollama, LM Studio, vLLM, OpenAI-compatible | `lbw` (default), or `codex` / `cursor_agent` where the tool can point at a local server | names the admin enters | On the person's machine |
 
-For a local provider the endpoint stores no base URL. Each runner has its own
-address for each provider in its config, for example
-`"providers": {"ollama": "http://127.0.0.1:11434/v1"}`. That address is never
-sent to LBW.
+For a local provider the endpoint stores no base URL. Each person sets their
+server's address on their profile. LBW stores it but never calls it: only
+that person's runner does, and the runner relays only to this machine and
+private network addresses unless its `llm_hosts` allows another host.
+
+The first step is built: local models through LBW's own loop, with each model
+call relayed by the acting person's runner. See "Local models" in
+`docs/runner.md`. The `lbw` driver below still runs the whole loop on the
+machine.
 
 Each heartbeat reports, per allowed provider, the model names the runner can
 reach (Ollama `/api/tags`, or `/v1/models` for the others), and, per driver,

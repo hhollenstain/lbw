@@ -21,9 +21,11 @@ from agent_lbw.openapi_models import (
     RunnerHeartbeat,
     RunnerLinkStart,
     RunnerLinkToken,
+    RunnerModelAnswer,
 )
 from agent_lbw.runtime.account import load_account
 from agent_lbw.runtime.db import database
+from agent_lbw.runtime.llm_relay import MAX_BODY_BYTES
 from agent_lbw.runtime.runner_hub import MAX_PATCH_BYTES
 from agent_lbw.runtime.store.audit import record_audit
 from agent_lbw.runtime.store.install import require_account
@@ -157,6 +159,61 @@ def register_runners(app: FastAPI) -> None:
             if not delivered:
                 finish_job(db, job_id, "failed", "LBW restarted while the runner worked")
                 return JSONResponse({"error": "LBW is no longer waiting for this job"}, 409)
+            return {"ok": True}
+
+        return _as_runner(request, apply)
+
+    @app.get("/api/runner/llm/next", response_model=None)
+    def next_runner_model_call(request: Request, wait: int = 0) -> object:
+        """A model call for this runner's owner. Only its own calls are ever handed out.
+
+        The runner confirms the call at once. LBW offers an unconfirmed call
+        again, in case this poll belonged to a runner that has since died.
+        """
+        relay = request.app.state.ui.manager.llm_relay
+
+        def apply(db, runner: dict) -> dict:
+            touch_runner(db, runner)
+            return runner
+
+        runner = _as_runner(request, apply)
+        if isinstance(runner, JSONResponse):
+            return runner
+        seconds = max(0, min(int(wait), MAX_WAIT_SECONDS))
+        found = relay.next(runner["id"], runner["identity_id"], seconds)
+        if found is None:
+            return Response(status_code=204)
+        return found
+
+    @app.post("/api/runner/llm/{call_id}/ack", response_model=None)
+    def ack_runner_model_call(request: Request, call_id: str) -> object:
+        request.state.audit_explicit = True
+        relay = request.app.state.ui.manager.llm_relay
+
+        def apply(db, runner: dict) -> object:
+            if not relay.ack(call_id, runner["id"]):
+                return JSONResponse({"error": "LBW is no longer waiting for this call"}, 409)
+            return {"ok": True}
+
+        return _as_runner(request, apply)
+
+    @app.post("/api/runner/llm/{call_id}", response_model=None)
+    def answer_runner_model_call(
+        request: Request, call_id: str, payload: RunnerModelAnswer
+    ) -> object:
+        request.state.audit_explicit = True
+        relay = request.app.state.ui.manager.llm_relay
+        if len(payload.body.encode("utf-8")) > MAX_BODY_BYTES:
+            return JSONResponse({"error": "the answer is larger than LBW accepts"}, status_code=413)
+
+        def apply(db, runner: dict) -> object:
+            delivered = relay.answer(
+                call_id,
+                runner["id"],
+                {"status": payload.status, "body": payload.body, "error": payload.error},
+            )
+            if not delivered:
+                return JSONResponse({"error": "LBW is no longer waiting for this call"}, 409)
             return {"ok": True}
 
         return _as_runner(request, apply)

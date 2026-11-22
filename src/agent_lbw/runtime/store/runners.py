@@ -185,7 +185,7 @@ def heartbeat(db: Database, runner: dict, facts: dict) -> dict:
         """
         UPDATE runners
         SET last_seen = ?, version = ?, claude_version = ?, claude_ready = ?, platform = ?,
-            command = ''
+            llm_relay = ?, command = ''
         WHERE id = ?
         """,
         (
@@ -194,6 +194,7 @@ def heartbeat(db: Database, runner: dict, facts: dict) -> dict:
             _clip(facts.get("claude_version")),
             1 if facts.get("claude_ready") else 0,
             _clip(facts.get("platform")) or runner.get("platform") or "",
+            1 if facts.get("llm_relay") else 0,
             runner["id"],
         ),
     )
@@ -216,6 +217,7 @@ def _view(row: dict, now: int) -> dict:
         "version": row["version"],
         "claude_version": row["claude_version"],
         "claude_ready": bool(row["claude_ready"]),
+        "llm_relay": bool(row.get("llm_relay")),
         "last_seen": seen,
         "online": bool(seen) and now - seen <= ONLINE_SECONDS,
         "pending_command": row["command"],
@@ -298,6 +300,25 @@ def pick_runner(db: Database, tenant_id: str, identity_id: str) -> dict:
     )
     if row is None:
         raise RunnerRequired()
+    return row
+
+
+def pick_relay_runner(db: Database, tenant_id: str, identity_id: str) -> dict:
+    """This person's most recently seen online runner that relays model calls."""
+    row = db.fetchone(
+        """
+        SELECT * FROM runners
+        WHERE tenant_id = ? AND identity_id = ? AND revoked IS NULL AND last_seen >= ?
+          AND llm_relay = 1
+        ORDER BY last_seen DESC
+        LIMIT 1
+        """,
+        (tenant_id, identity_id, _now() - ONLINE_SECONDS),
+    )
+    if row is None:
+        raise RunnerRequired(
+            "start lbw-runner on your machine: your local model is reached through it"
+        )
     return row
 
 

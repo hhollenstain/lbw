@@ -34,8 +34,8 @@ from agent_lbw.tools.git import github_owner_repo
 
 _DIFF_CAP = 500_000
 _FILE_CAP = 80_000
-_HUMAN_STAGES = frozenset({"triage", "approval", "ask", "reply"})
-_DECISIONS = frozenset({"build", "hand_off", "approve", "send_back", "continue"})
+_HUMAN_STAGES = frozenset({"spec", "triage", "approval", "ask", "reply"})
+_DECISIONS = frozenset({"accept_spec", "build", "hand_off", "approve", "send_back", "continue"})
 _OPEN_STATUSES = frozenset({"queued", "running", "waiting"})
 _STEP_KINDS = frozenset({"step", "test", "lint", "review", "pr", "ui"})
 _STEP_DROP = frozenset(
@@ -309,6 +309,23 @@ def _job_payload(task) -> dict:
         "review_notes": str(getattr(task, "review_notes", "") or "")[:4000],
         "steps": _steps(getattr(task, "events", None) or []),
         "diff": _final_diff(task),
+        "spec": _spec_record(task),
+        "human_gates": {
+            "triage": str(getattr(task, "triage_gate", "") or ""),
+            "approval": str(getattr(task, "approval_gate", "") or ""),
+        },
+    }
+
+
+def _spec_record(task: object) -> dict:
+    """The spec a spec-driven proposal wrote, sealed with the result like the plan."""
+    if not getattr(task, "spec", False):
+        return {}
+    return {
+        "on": True,
+        "path": str(getattr(task, "spec_path", "") or ""),
+        "text": str(getattr(task, "spec_text", "") or "")[:40_000],
+        "accepted": bool(getattr(task, "spec_accepted", False)),
     }
 
 
@@ -496,6 +513,7 @@ def _history_item(root: Path, database_url: str, row: dict) -> dict:
         "plan": str(result.get("plan") or ""),
         "criteria": result.get("criteria") if isinstance(result.get("criteria"), list) else [],
         "evidence": result.get("evidence") if isinstance(result.get("evidence"), list) else [],
+        **_spec_fields(result.get("spec")),
         "tests_passed": result.get("tests_passed"),
         "committed": bool(result.get("committed")),
         "published": bool(result.get("published")),
@@ -621,6 +639,10 @@ def _open_record(root: Path, database_url: str, row: dict) -> dict | None:
         "model_name": str(result.get("model_name") or ""),
         "model_base_url": str(result.get("model_base_url") or ""),
         "review_notes": str(result.get("review_notes") or ""),
+        "spec": result.get("spec") if isinstance(result.get("spec"), dict) else {},
+        "human_gates": (
+            result.get("human_gates") if isinstance(result.get("human_gates"), dict) else {}
+        ),
         "agent_id": str(row.get("agent_id") or ""),
         "model_id": str(row.get("model_id") or ""),
         "agent_kind": str(row.get("agent_kind") or ""),
@@ -809,3 +831,15 @@ def project_for_workspace(db: Database, account: dict, workspace: Path, name: st
 
 def _project(db: Database, account: dict, workspace: Path, name: str) -> dict:
     return project_for_workspace(db, account, workspace, name)
+
+
+def _spec_fields(spec: object) -> dict:
+    """A stored spec as the run list shows it."""
+    if not isinstance(spec, dict) or not spec.get("on"):
+        return {"spec": False, "spec_path": "", "spec_text": "", "spec_accepted": False}
+    return {
+        "spec": True,
+        "spec_path": str(spec.get("path") or ""),
+        "spec_text": str(spec.get("text") or ""),
+        "spec_accepted": bool(spec.get("accepted")),
+    }

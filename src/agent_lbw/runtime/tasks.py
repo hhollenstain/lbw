@@ -31,8 +31,10 @@ from agent_lbw.progress import (
     reset_progress,
     token_usage_from_events,
 )
-from agent_lbw.runtime.improve import CycleResult, resolve_human_gates, run_cycle
+from agent_lbw.runtime.improve import CycleResult, SpecRequest, resolve_human_gates, run_cycle
+from agent_lbw.runtime.llm_relay import LlmRelay, relay_client, relay_route
 from agent_lbw.runtime.runner_hub import RunnerHub
+from agent_lbw.runtime.store.local_models import is_local_model
 
 log = logging.getLogger("lbw")
 
@@ -83,6 +85,11 @@ def _utcnow() -> str:
 def _join_notes(*parts: str) -> str:
     lines = [part.strip() for part in parts if part and part.strip()]
     return "\n\n".join(lines)[:4000]
+
+
+def _rewriting_spec(task: Task) -> bool:
+    """A spec sent back before anyone accepted it is rewritten from a clean base."""
+    return task.spec and not task.spec_accepted and task.decision == "send_back"
 
 
 def _sent_back(evidence: list[dict]) -> bool:
@@ -230,6 +237,11 @@ class Task:
     actor_id: str = ""
     tenant_id: str = ""
     recorded_files: dict = field(default_factory=dict)
+    # A spec-driven proposal writes a spec first, and a person accepts it.
+    spec: bool = False
+    spec_path: str = ""
+    spec_text: str = ""
+    spec_accepted: bool = False
 
     def to_dict(self, *, include_logs: bool = True) -> dict:
         payload = {
@@ -278,6 +290,10 @@ class Task:
             "model_id": self.model_id,
             "agent_kind": self.agent_kind,
             "actor_id": self.actor_id or self.requester_id,
+            "spec": self.spec,
+            "spec_path": self.spec_path,
+            "spec_text": self.spec_text,
+            "spec_accepted": self.spec_accepted,
         }
         if include_logs:
             payload["logs"] = list(self.logs)
@@ -332,6 +348,7 @@ class TaskManager:
         self._continuous_stopped: set[str] = set()
         self.store_root: Path | None = None
         self.runner_hub = RunnerHub()
+        self.llm_relay = LlmRelay()
         self._executor = ThreadPoolExecutor(
             max_workers=max_concurrent,
             thread_name_prefix="lbw-task",
@@ -360,6 +377,10 @@ class TaskManager:
         agent_kind: str | None = None,
         cursor_key: str | None = None,
         model_id: str | None = None,
+        spec: bool = False,
+        spec_path: str = "",
+        spec_text: str = "",
+        spec_accepted: bool = False,
     ) -> Task:
         workspace = workspace.expanduser().resolve()
         if not workspace.is_dir():
@@ -415,6 +436,10 @@ class TaskManager:
             agent_kind=picked_kind,
             cursor_key=(cursor_key or "").strip(),
             model_id=(model_id or "").strip(),
+            spec=bool(spec),
+            spec_path=spec_path if spec else "",
+            spec_text=spec_text if spec else "",
+            spec_accepted=bool(spec and spec_accepted and spec_text.strip()),
             actor_id=(requester_id or "").strip(),
         )
         with self._lock:
@@ -484,8 +509,13 @@ class TaskManager:
         from_sha: str | None = None,
         goal: str | None = None,
         actor_id: str | None = None,
+        model: dict | None = None,
     ) -> Task | None:
-        """Queue a new cycle on the task's branch, with an optional revised goal."""
+        """Queue a new cycle on the task's branch, with an optional revised goal.
+
+        `model` is another model the person picked, as `use_model` returns it with
+        its `model_id`. Without it the run keeps the job's model.
+        """
         with self._lock:
             old_task = self._tasks.get(task_id)
         if not old_task:
@@ -501,27 +531,45 @@ class TaskManager:
             resume_sha = None
         revised = (goal or "").strip()
         create_pr = True if old_task.pr_url else old_task.create_pr
+        if model:
+            model_name = str(model.get("model_name") or "")
+            model_base_url = str(model.get("base_url") or "")
+            model_api_key = str(model.get("api_key") or "")
+            model_id = str(model["model_id"])
+            agent_kind = "claude_code" if model.get("runner") else ""
+            context_window = None
+        else:
+            model_name = old_task.model_name
+            model_base_url = old_task.model_base_url
+            model_api_key = old_task.model_api_key
+            model_id = old_task.model_id
+            agent_kind = old_task.agent_kind
+            context_window = old_task.context_window if old_task.pin_context_window else None
         return self.submit(
             Path(old_task.workspace),
             revised or old_task.goal,
             auto_commit=old_task.auto_commit,
             create_pr=create_pr,
-            model_name=old_task.model_name,
-            model_base_url=old_task.model_base_url,
-            model_api_key=old_task.model_api_key,
+            model_name=model_name,
+            model_base_url=model_base_url,
+            model_api_key=model_api_key,
             resume_branch=resume_branch,
             resume_sha=resume_sha,
             base_branch=base_branch,
             continuous=old_task.continuous,
-            context_window=old_task.context_window if old_task.pin_context_window else None,
+            context_window=context_window,
             gate=old_task.gate,
             triage_gate=old_task.triage_gate,
             approval_gate=old_task.approval_gate,
             agent_id=old_task.agent_id,
-            agent_kind=old_task.agent_kind,
+            agent_kind=agent_kind,
             cursor_key=old_task.cursor_key,
-            model_id=old_task.model_id,
+            model_id=model_id,
             requester_id=actor_id or old_task.actor_id or old_task.requester_id,
+            spec=old_task.spec,
+            spec_path=old_task.spec_path,
+            spec_text=old_task.spec_text,
+            spec_accepted=old_task.spec_accepted,
         )
 
     def rework(self, task_id: str, note: str, *, actor_id: str | None = None) -> Task | None:
@@ -591,7 +639,13 @@ class TaskManager:
         return self._adopt(record, start=False)
 
     def decide(
-        self, task_id: str, decision: str, note: str = "", *, actor_id: str | None = None
+        self,
+        task_id: str,
+        decision: str,
+        note: str = "",
+        *,
+        actor_id: str | None = None,
+        spec_text: str = "",
     ) -> Task | None:
         """Resume a change that is waiting, or continue one that was sent back.
 
@@ -612,7 +666,9 @@ class TaskManager:
                     return None
                 if task.stage in {"ask", "reply"} and choice != "continue":
                     return None
-                if task.stage not in {"triage", "approval", "ask", "reply"}:
+                if task.stage == "spec" and choice not in {"accept_spec", "send_back", "hand_off"}:
+                    return None
+                if task.stage not in {"spec", "triage", "approval", "ask", "reply"}:
                     return None
             elif task.status in {"failed", "error"} and choice == "continue":
                 sent_back = _sent_back(task.evidence) or task.stage in {"review", "ask", "reply"}
@@ -631,7 +687,15 @@ class TaskManager:
             if actor_id:
                 task.actor_id = actor_id
             task.decision = choice
-            if choice == "send_back":
+            if choice == "accept_spec":
+                # The person's edits are the spec from here on.
+                if spec_text.strip():
+                    task.spec_text = spec_text.strip()
+                task.spec_accepted = True
+                task.review_notes = ""
+            elif choice == "send_back" and task.stage == "spec":
+                task.review_notes = reply
+            elif choice == "send_back":
                 task.review_notes = _join_notes(_review_notes(task.evidence), f"From you: {reply}")
             elif choice == "continue":
                 task.review_notes = _join_notes(
@@ -740,9 +804,13 @@ class TaskManager:
 
     def _task_from_record(self, record: dict) -> Task:
         stage = str(record.get("stage") or "")
-        triage = "ask" if stage == "triage" else "auto"
-        approval = "ask" if stage == "approval" else "auto"
-        asking = triage == "ask" or approval == "ask" or stage in {"ask", "reply"}
+        saved_gates = (
+            record.get("human_gates") if isinstance(record.get("human_gates"), dict) else {}
+        )
+        triage = "ask" if stage == "triage" or saved_gates.get("triage") == "ask" else "auto"
+        approval = "ask" if stage == "approval" or saved_gates.get("approval") == "ask" else "auto"
+        spec = record.get("spec") if isinstance(record.get("spec"), dict) else {}
+        asking = triage == "ask" or approval == "ask" or stage in {"ask", "reply", "spec"}
         gate = "ask" if asking else "auto"
         goal = record.get("goal")
         if isinstance(goal, str):
@@ -791,12 +859,20 @@ class TaskManager:
             agent_kind=str(record.get("agent_kind") or ""),
             tenant_id=str(record.get("tenant_id") or ""),
             actor_id=str((record.get("started_by") or {}).get("id") or ""),
+            spec=bool(spec.get("on")),
+            spec_path=str(spec.get("path") or ""),
+            spec_text=str(spec.get("text") or ""),
+            spec_accepted=bool(spec.get("accepted")),
         )
 
     def _run(self, task: Task) -> None:
         task.status = "running"
         task.started_at = _utcnow()
-        if task.decision in {"build", "send_back", "continue"}:
+        if task.decision == "accept_spec" or (
+            task.decision == "send_back" and task.spec and not task.spec_accepted
+        ):
+            task.stage = "spec" if task.decision == "send_back" else "planning"
+        elif task.decision in {"build", "send_back", "continue"}:
             task.stage = "building"
         elif task.decision == "approve":
             task.stage = "approval"
@@ -804,7 +880,12 @@ class TaskManager:
                 from agent_lbw.runtime.store.recording import accept_recorded_review
 
                 accept_recorded_review(self.store_root, self.settings.database_url, task.id)
-        if self._runner is None and task.context_window is None and not _on_runner(task):
+        if (
+            self._runner is None
+            and task.context_window is None
+            and not _on_runner(task)
+            and not is_local_model(task.model_id)
+        ):
             task.context_window = lookup_context_window(
                 task.model_base_url,
                 task.model_api_key,
@@ -843,6 +924,10 @@ class TaskManager:
                 task.evidence = list(result.evidence)
             if getattr(result, "branch", None):
                 task.branch = result.branch
+            if getattr(result, "spec_path", ""):
+                task.spec_path = result.spec_path
+            if getattr(result, "spec_text", ""):
+                task.spec_text = result.spec_text
             self._refresh_git_state(task)
             task.finished_at = _utcnow()
             task.status = result.status
@@ -895,7 +980,10 @@ class TaskManager:
         if task.pin_context_window and task.context_window:
             updates["context_window"] = task.context_window
         settings = self.settings.model_copy(update=updates)
-        llm = self._llm_factory(settings)
+        if credential is not None and credential.get("relay"):
+            llm = relay_client(self.llm_relay, credential, settings.context_window)
+        else:
+            llm = self._llm_factory(settings)
         if credential is not None:
             apply_credential(llm, credential)
         else:
@@ -918,7 +1006,10 @@ class TaskManager:
                 keep_branch=bool(
                     task.resume_branch
                     or task.resume_sha
-                    or task.decision in {"approve", "send_back", "continue"}
+                    or (
+                        task.decision in {"approve", "send_back", "continue"}
+                        and not _rewriting_spec(task)
+                    )
                 ),
                 gate=task.gate,
                 triage_gate=task.triage_gate,
@@ -927,6 +1018,15 @@ class TaskManager:
                 review_notes=task.review_notes,
                 held_summary=task.summary or "",
                 store_root=self.store_root,
+                spec=(
+                    SpecRequest(
+                        path=task.spec_path,
+                        text=task.spec_text,
+                        accepted=task.spec_accepted,
+                    )
+                    if task.spec
+                    else None
+                ),
             )
         finally:
             reset_committer(committer)
@@ -943,7 +1043,10 @@ class TaskManager:
         from agent_lbw.runtime.store.catalog import use_model
 
         with database(self.store_root, self.settings.database_url) as db:
-            return use_model(db, self.store_root, Path(task.workspace), task.model_id)
+            credential = use_model(db, self.store_root, Path(task.workspace), task.model_id)
+            if credential.get("relay"):
+                credential.update(relay_route(db))
+            return credential
 
     def _record_usage(self, task: Task, first_event: int, started: float) -> None:
         """Add this run's tokens, skills, and file changes to the usage rollups."""

@@ -55,6 +55,14 @@ from agent_lbw.runtime.roles import (
 )
 from agent_lbw.runtime.rules import rules_for_prompt
 from agent_lbw.runtime.skills import compose_system_prompt, selected_skills
+from agent_lbw.runtime.spec import (
+    SpecError,
+    acceptance_criteria,
+    save_spec,
+    spec_context,
+    spec_path_for,
+    write_spec,
+)
 from agent_lbw.runtime.steward import propose_improvement_goal
 from agent_lbw.runtime.team_graph import (
     GraphError,
@@ -245,10 +253,21 @@ class CycleResult:
     plan: str = ""
     criteria: list[str] = field(default_factory=list)
     evidence: list[dict] = field(default_factory=list)
+    spec_path: str = ""
+    spec_text: str = ""
     created_at: str = field(
         default_factory=lambda: datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
     events: list[dict] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SpecRequest:
+    """A spec-driven proposal: the spec so far, and whether a person accepted it."""
+
+    path: str = ""
+    text: str = ""
+    accepted: bool = False
 
 
 @dataclass
@@ -325,6 +344,7 @@ def run_cycle(
     review_notes: str = "",
     held_summary: str = "",
     store_root: Path | None = None,
+    spec: SpecRequest | None = None,
 ) -> CycleResult:
     progress = bind_progress()
     token = _TASK_ID.set(task_id)
@@ -350,6 +370,7 @@ def run_cycle(
             review_notes=review_notes,
             held_summary=held_summary,
             store_root=store_root,
+            spec=spec,
         )
     finally:
         _PALACE.reset(palace_token)
@@ -378,6 +399,7 @@ def _run_cycle(
     review_notes: str = "",
     held_summary: str = "",
     store_root: Path | None = None,
+    spec: SpecRequest | None = None,
 ) -> CycleResult:
     log_progress("Initializing workspace...")
     triage_choice, approval_choice = resolve_human_gates(gate, triage_gate, approval_gate)
@@ -516,6 +538,8 @@ def _run_cycle(
     sha_before = current_sha(workspace)
     log_progress("Initializing coding agent...")
     extra_skills = ("steward",) if continuous else ()
+    if spec is not None:
+        extra_skills = (*extra_skills, "sdd")
     extra_skills = tuple(extra_skills) + tuple(
         _assigned_skills(store_root, settings.database_url, workspace.root)
     )
@@ -566,6 +590,62 @@ def _run_cycle(
     if repo_text:
         base_context = f"{base_context}\n\n{repo_text}"
     named_files = format_goal_files(workspace.root, selected_goal)
+    spec_path = ""
+    spec_text = ""
+    spec_criteria: list[str] = []
+    if spec is not None:
+        spec_path = spec.path or spec_path_for(selected_goal)
+        spec_text = spec.text
+        rewriting = not spec.accepted and normalized_decision == "send_back"
+        if not spec_text.strip() or rewriting:
+            log_progress(
+                "Rewriting the spec from your note..." if rewriting else "Writing the spec..."
+            )
+            try:
+                spec_text = write_spec(
+                    llm,
+                    selected_goal,
+                    context=base_context,
+                    files=named_files,
+                    previous=spec_text,
+                    note=review_notes if rewriting else "",
+                )
+            except SpecError as exc:
+                log_progress(str(exc))
+                result = CycleResult(
+                    status="failed",
+                    goal=selected_goal,
+                    summary=None,
+                    tests_passed=None,
+                    committed=False,
+                    published=False,
+                    commit_sha=sha_before,
+                    reason=str(exc),
+                    spec_path=spec_path,
+                )
+                _write_run_log(workspace.root, result)
+                _append_to_history(workspace.root, result)
+                return result
+        spec_criteria = acceptance_criteria(spec_text)
+        if not spec.accepted and not continuous:
+            log_progress(f"The spec is ready in {spec_path}. Waiting for a person to accept it.")
+            return CycleResult(
+                status="waiting",
+                goal=selected_goal,
+                summary=f"Spec ready for review: {spec_path}",
+                tests_passed=None,
+                committed=False,
+                published=False,
+                commit_sha=sha_before,
+                reason="waiting for spec review",
+                stage="spec",
+                criteria=spec_criteria,
+                evidence=list(evidence),
+                spec_path=spec_path,
+                spec_text=spec_text,
+            )
+        log_progress(f"Following the spec in {spec_path}.")
+        base_context = f"{spec_context(spec_path, spec_text)}\n\n{base_context}"
     plan = None
     steps = _pipeline_steps(store_root, settings, workspace.root)
     client_for = _step_clients(llm, store_root, settings, workspace.root)
@@ -581,6 +661,8 @@ def _run_cycle(
         )
         _log_plan(plan)
     plan_text, criteria = _plan_record(plan, selected_goal)
+    if spec_criteria:
+        criteria = [*spec_criteria, *(item for item in criteria if item not in spec_criteria)]
     if plan is not None and plan.steps and lead is not None:
         evidence.append(
             role_evidence(
@@ -755,6 +837,9 @@ def _run_cycle(
         agent_result.summary = empty.summary
         tests_passed = empty.tests_passed
         sha = current_sha(workspace)
+    if spec is not None:
+        # Written once the change has work in it, so a spec alone never ships.
+        save_spec(workspace.root, spec_path, spec_text)
 
     review = _ensure_goal_met(
         workspace,

@@ -23,6 +23,7 @@ from agent_lbw.runtime.store.assignments import can_manage_org
 from agent_lbw.runtime.store.crypto import open_secret, seal
 from agent_lbw.runtime.store.gateway import gateway_bearer, person_credential, signed_in
 from agent_lbw.runtime.store.install import require_account
+from agent_lbw.runtime.store.local_models import is_local_model, local_choices, use_local_model
 from agent_lbw.runtime.store.names import clean_name, new_id
 from agent_lbw.runtime.store.projects import can_access
 from agent_lbw.runtime.store.tasks import tenant_dek
@@ -537,14 +538,34 @@ def models_for_workspace(db: Database, workspace: Path) -> list[dict]:
     ]
 
 
+def job_models(db: Database, workspace: Path) -> list[dict]:
+    """The models on the job form: the project's, then the person's own local models.
+
+    Agent teams and schedules run in LBW without a person's machine, so they
+    choose from ``models_for_workspace`` only.
+    """
+    models = models_for_workspace(db, workspace)
+    account = require_account(db)
+    project = _checkout_project(db, account["org"]["id"], workspace)
+    if project is None or not can_access(db, account["current_user_id"], project["id"]):
+        return models
+    return [*models, *local_choices(db)]
+
+
 def use_model(db: Database, root: Path, workspace: Path, model_id: str) -> dict:
     """The granted model's name, host, and key. The key is not returned to the page.
 
     ``runner`` is true when the job runs on the acting person's own machine.
+    ``relay`` is true for a local model: LBW runs the job, and each model call
+    goes through the acting person's runner to their own server.
     """
     account = require_account(db)
     tenant_id = account["org"]["id"]
     project = _checkout_project(db, tenant_id, workspace)
+    if is_local_model(model_id):
+        if project is None or not can_access(db, account["current_user_id"], project["id"]):
+            raise PermissionError("that model is off for this project")
+        return use_local_model(db, model_id)
     if project is None or not model_allowed(
         db, account["current_user_id"], project["id"], model_id
     ):

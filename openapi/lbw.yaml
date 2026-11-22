@@ -411,6 +411,218 @@ paths:
       responses:
         "200":
           description: The runner runs `claude update` at its next heartbeat.
+  /api/runner/llm/next:
+    get:
+      operationId: nextRunnerModelCall
+      description: >-
+        Runner-token auth. Waits up to `wait` seconds for a model call LBW makes for
+        this runner's owner, to relay to the model server the owner set.
+      parameters:
+        - name: wait
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The call's id, method, path, body, and the owner's server address.
+        "204":
+          description: No call is waiting.
+  /api/tasks/{task_id}/rerun:
+    post:
+      operationId: rerunTask
+      description: >-
+        Queue a new run of a finished or failed job on its branch. The person
+        picks the model: an empty model_id keeps the job's model.
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RerunPayload"
+      responses:
+        "201":
+          description: The new run.
+        "400":
+          description: The job cannot be rerun, or the model is not usable here.
+        "409":
+          description: The model is gone, the pull request is closed, or a runner or link is required.
+  /api/runner/llm/{call_id}/ack:
+    post:
+      operationId: ackRunnerModelCall
+      description: >-
+        Runner-token auth. The runner that took a model call confirms it has it.
+        A call nobody confirms within a few seconds is offered again.
+      parameters:
+        - name: call_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The call is this runner's to answer.
+        "409":
+          description: The call was offered again or is gone. Do not relay it.
+  /api/runner/llm/{call_id}:
+    post:
+      operationId: answerRunnerModelCall
+      parameters:
+        - name: call_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunnerModelAnswer"
+      responses:
+        "200":
+          description: The answer was handed to the waiting model call.
+        "409":
+          description: LBW is no longer waiting for this call.
+  /api/org/specs:
+    get:
+      operationId: getOrgSpecPolicy
+      responses:
+        "200":
+          description: Whether every project's proposals must start from a spec.
+    put:
+      operationId: setOrgSpecPolicy
+      description: An organization owner or admin requires a spec on every project.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpecPolicy"
+      responses:
+        "200":
+          description: The policy after the change.
+        "403":
+          description: Only an organization owner or admin can change it.
+  /api/workspaces/specs:
+    get:
+      operationId: getProjectSpecPolicy
+      parameters:
+        - name: path
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: >-
+            Whether this project's proposals must start from a spec, and whether
+            the organization or the project requires it.
+    put:
+      operationId: setProjectSpecPolicy
+      description: >-
+        A person who manages the project requires a spec for its proposals. It
+        cannot loosen what the organization requires.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectSpecPolicy"
+      responses:
+        "200":
+          description: The policy after the change.
+        "403":
+          description: Only a person who manages the project can change it.
+  /api/tasks/{task_id}/decide:
+    post:
+      operationId: decideTask
+      description: >-
+        A person with write access decides a job waiting at a gate. At the spec
+        gate, accept_spec continues with the spec (spec_text replaces it when
+        given), send_back rewrites it from the note, and hand_off stops.
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecidePayload"
+      responses:
+        "200":
+          description: The job after the decision.
+        "409":
+          description: The job is not waiting for that decision.
+  /api/org/local-models:
+    get:
+      operationId: getLocalModelPolicy
+      responses:
+        "200":
+          description: Who may use a model server on their own machine. People are listed for an owner or admin.
+    put:
+      operationId: setLocalModelPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LocalModelPolicy"
+      responses:
+        "200":
+          description: The policy after the change.
+  /api/org/local-models/people/{identity_id}:
+    put:
+      operationId: setLocalModelPerson
+      parameters:
+        - name: identity_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LocalModelPerson"
+      responses:
+        "200":
+          description: The policy after turning local models on or off for this person.
+  /api/me/local-model:
+    get:
+      operationId: getMyLocalModel
+      responses:
+        "200":
+          description: This person's model server, its synced model names, and whether the organization allows it.
+    put:
+      operationId: saveMyLocalModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LocalModelServer"
+      responses:
+        "200":
+          description: The saved server.
+  /api/me/local-model/sync:
+    post:
+      operationId: syncMyLocalModel
+      responses:
+        "200":
+          description: The model names the server returned through this person's runner.
+        "409":
+          description: No runner of this person's that relays model calls is online.
 components:
   schemas:
     ScheduleCadence:
@@ -761,6 +973,9 @@ components:
         platform:
           type: string
           default: ""
+        llm_relay:
+          type: boolean
+          default: false
     RunnerEvents:
       type: object
       properties:
@@ -768,6 +983,81 @@ components:
           type: array
           items:
             type: object
+    SpecPolicy:
+      type: object
+      required: [required]
+      properties:
+        required:
+          type: boolean
+    ProjectSpecPolicy:
+      type: object
+      required: [path, required]
+      properties:
+        path:
+          type: string
+        required:
+          type: boolean
+    DecidePayload:
+      type: object
+      properties:
+        decision:
+          type: string
+          enum: [accept_spec, build, hand_off, approve, send_back, continue]
+        note:
+          type: string
+          default: ""
+        spec_text:
+          type: string
+          default: ""
+          description: The spec as the person edited it, with accept_spec.
+    RerunPayload:
+      type: object
+      properties:
+        sha:
+          type: string
+          nullable: true
+        goal:
+          type: string
+          nullable: true
+        model_id:
+          type: string
+          nullable: true
+          description: A model from the job form's list. Empty keeps the job's model.
+    RunnerModelAnswer:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: integer
+        body:
+          type: string
+          default: ""
+        error:
+          type: string
+          default: ""
+    LocalModelPolicy:
+      type: object
+      required: [policy]
+      properties:
+        policy:
+          type: string
+    LocalModelPerson:
+      type: object
+      required: [allowed]
+      properties:
+        allowed:
+          type: boolean
+    LocalModelServer:
+      type: object
+      required: [enabled, provider]
+      properties:
+        enabled:
+          type: boolean
+        provider:
+          type: string
+        base_url:
+          type: string
+          default: ""
     RunnerFinish:
       type: object
       required: [status]

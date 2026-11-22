@@ -5,7 +5,10 @@ the protocol, and the plan are in [docs/runner.md](../docs/runner.md).
 
 ## Build
 
-Go 1.24 or later, no other dependencies.
+Go 1.24 or later, no other dependencies. From the repository root,
+`make runner` builds `runner/bin/lbw-runner` for local testing (and
+`runner-test`, `runner-dist`, `runner-image` run the targets below). Build
+output in `runner/bin/` and `runner/dist/` is gitignored.
 
 ```sh
 make build      # bin/lbw-runner for this machine
@@ -26,6 +29,15 @@ Settings live in `config.json` in the runner folder (`LBW_RUNNER_HOME`, or
 `lbw-runner` in your user config folder): `repos` maps `owner/repo` to a
 checkout you already have, `allowed_tools` widens what Claude Code may run,
 and `ca_file` trusts a local certificate authority.
+
+The runner also relays model calls to a model server on this machine, such as
+Ollama, when you choose one of your local models on the job form. You set the
+server's address on your LBW profile. The runner relays to this machine and to
+private network addresses, such as a GPU box at `192.168.1.20` or on
+Tailscale. A server on the public internet must be listed in `llm_hosts`. Set
+`llm_private_network: false` to relay only to this machine and `llm_hosts`, or
+`no_llm_relay: true` to turn the relay off.
+Without Claude Code installed, the runner only relays.
 
 ## Docker
 

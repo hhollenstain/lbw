@@ -26,6 +26,10 @@ MEMORY_MARK = "Workspace memory:"
 TASKS_ROOM = "tasks"
 TRANSCRIPT_ROOM = "transcript"
 _KEEP_TAIL_GROUPS = 2
+# Once the prompt outgrows its budget, older turns are dropped until it is back
+# under this share of it. Trimming to just under the budget would compact again
+# on the very next turn.
+_REFILL_SHARE = 0.6
 _CHUNK_CHARS = 6_000
 
 
@@ -373,8 +377,9 @@ def _fit_prompt(
     head, rest = _split_head(groups)
     rest = [group for group in rest if not _is_memory_message(group[0])]
     dropped: list[list[dict]] = []
+    target = int(budget * _REFILL_SHARE)
     while (
-        rest and len(rest) > _KEEP_TAIL_GROUPS and message_chars(_flat(head) + _flat(rest)) > budget
+        rest and len(rest) > _KEEP_TAIL_GROUPS and message_chars(_flat(head) + _flat(rest)) > target
     ):
         dropped.append(rest.pop(0))
     for group in dropped:

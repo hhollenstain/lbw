@@ -61,6 +61,9 @@ agent_lbw = ["templates/*.html", "static/*.css", "static/*.svg", "static/app/*",
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "libs/lbw_shared/src", "services/crossing/src", "."]
+markers = [
+  "runner_e2e: builds the Go runner and runs it against LBW (needs Go; CI runs it in its own job)",
+]
 
 [tool.ruff]
 line-length = 100

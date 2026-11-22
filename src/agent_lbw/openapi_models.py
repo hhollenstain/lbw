@@ -174,10 +174,52 @@ class RunnerHeartbeat(BaseModel):
     claude_version: str = ""
     claude_ready: bool = False
     platform: str = ""
+    llm_relay: bool = False
 
 
 class RunnerEvents(BaseModel):
     events: list[object] = Field(default_factory=list)
+
+
+class SpecPolicy(BaseModel):
+    required: bool
+
+
+class ProjectSpecPolicy(BaseModel):
+    path: str
+    required: bool
+
+
+class DecidePayload(BaseModel):
+    decision: str = ""
+    note: str = ""
+    spec_text: str = ""
+
+
+class RerunPayload(BaseModel):
+    sha: str = ""
+    goal: str = ""
+    model_id: str = ""
+
+
+class RunnerModelAnswer(BaseModel):
+    status: int
+    body: str = ""
+    error: str = ""
+
+
+class LocalModelPolicy(BaseModel):
+    policy: str
+
+
+class LocalModelPerson(BaseModel):
+    allowed: bool
+
+
+class LocalModelServer(BaseModel):
+    enabled: bool
+    provider: str
+    base_url: str = ""
 
 
 class RunnerFinish(BaseModel):

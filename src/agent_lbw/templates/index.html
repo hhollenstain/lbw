@@ -2774,7 +2774,7 @@
         <select id="model" name="model_id" aria-label="Model">
           <option value="">No models turned on</option>
         </select>
-        <p class="hint" id="model-hint">Add an OpenAI, Claude, or other endpoint in organization settings. This list shows the models turned on for this project. A model marked "your machine" runs on the runner you linked under Profile, Integrations, with your own Claude Code. LBW then applies its commits, runs the tests, and opens the pull request. The pull request is the review.</p>
+        <p class="hint" id="model-hint">Add an OpenAI, Claude, or other endpoint in organization settings. This list shows the models turned on for this project. A model marked "your machine" runs on the runner you linked under Profile, Integrations: with your own Claude Code, or, for a local model, with LBW's loop calling your own model server through that runner. LBW then applies its commits, runs the tests, and opens the pull request. The pull request is the review.</p>
         <label for="context-window">Context window</label>
         <input id="context-window" name="context_window" type="number" min="512" max="1048576" step="1" inputmode="numeric" placeholder="server default" value="{{ default_context_window }}">
         <p class="hint">Tokens this model can hold on this machine. Leave blank to use the server window, or LBW_CONTEXT_WINDOW when that is set.</p>
@@ -2786,6 +2786,9 @@
         </label>
         <label>
           <input id="create-pr" type="checkbox" {% if default_create_pr %}checked{% endif %}> create pull request
+        </label>
+        <label>
+          <input id="spec-first" type="checkbox"> write a spec first
         </label>
         <label>
           <input id="gate-triage" type="checkbox" checked> review the plan before code
@@ -2800,6 +2803,7 @@
           <input id="keep-improving" type="checkbox"> keep improving
         </label>
       </div>
+      <p class="hint" id="spec-first-status" hidden></p>
       <p class="hint" id="keep-improving-status" hidden>
         LBW reviews the repo, picks one best-practice or UX change, opens a PR,
         merges it when tests and review pass, then continues until you stop.
@@ -2894,6 +2898,7 @@
           <p class="ask-kicker">Project</p>
           <h1 class="ask-heading">Agent teams</h1>
           <p class="hint">Create a team for one part of a proposal and choose the model that runs it. A switch turns that team on for this project. Builder and QA stay on. The proposal pauses at each proposal group for a person with write access to this repository.</p>
+          <div id="project-spec-policy-root"></div>
           <div class="settings-skills-list" id="workspace-roles"></div>
           <p class="hint" id="roles-status">Loading agent teams…</p>
         </div>
@@ -2962,6 +2967,7 @@
             <p class="hint">Link your own account for each integration your organization turned on. A job you start, or continue at a gate, runs on your credentials, and the audit trail and usage name you.</p>
             <div id="personal-integrations-root"></div>
             <div id="personal-runners-root"></div>
+            <div id="personal-local-model-root"></div>
           </div>
           <div class="personal-panel" id="personal-panel-usage" data-personal-panel="usage" hidden>
             <div id="personal-usage-root"></div>
@@ -3048,10 +3054,12 @@
           <div class="org-panel" id="org-panel-roles" data-org-panel="roles" hidden>
             <h2 class="rule-heading">Agent teams</h2>
             <p class="hint">Add a team for a part of a proposal and choose its model. The switches below keep a bundled task on for every project. A proposal pauses at each proposal group for a person with write access.</p>
+            <div id="org-spec-policy-root"></div>
             <div id="org-roles" class="settings-skills-list"></div>
           </div>
           <div class="org-panel" id="org-panel-models" data-org-panel="models" hidden>
             <div id="org-models-root"></div>
+            <div id="org-local-models-root"></div>
           </div>
           <div class="org-panel" id="org-panel-usage" data-org-panel="usage" hidden>
             <p class="hint">Usage across every project and person. Owners, admins, and people with the billing duty see it.</p>
@@ -3267,6 +3275,10 @@
       <h2 id="rerun-goal-picker-title">Update this run</h2>
       <p class="hint" id="rerun-goal-hint">Edit the goal to add context. The new run continues on the same branch and updates its pull request when one exists.</p>
       <div class="modal-section">
+        <div class="rerun-model" id="rerun-model-row" hidden>
+          <label for="rerun-model">Model</label>
+          <select id="rerun-model"></select>
+        </div>
         <label for="rerun-new-goal">Goal</label>
         <textarea id="rerun-new-goal" spellcheck="false"></textarea>
         <div class="modal-actions">
@@ -4575,6 +4587,7 @@
       await refresh();
       await loadBranches();
       await loadGrantedModels();
+      loadSpecPolicy();
       if (opts.close !== false && !opts.quiet) {
         notify("success", body.current, { title: "Workspace selected" });
       }
@@ -7216,6 +7229,8 @@
       const stage = String((item && item.stage) || "");
       const order = {
         asked: 0,
+        spec: 0,
+        planning: 1,
         planned: 1,
         triage: 2,
         handed_off: 2,
@@ -7282,6 +7297,7 @@
       }
       if (event.kind !== "llm") return here;
       const purpose = String(event.purpose || "");
+      if (purpose === "spec") return "spec";
       if (purpose === "plan") return "architect";
       if (purpose === "review") return "qa";
       if (purpose === "agent") return "builder";
@@ -7296,7 +7312,7 @@
     }
 
     function stepMetrics(item) {
-      const ids = ["ask", "architect", "triage", "builder", "qa", "quality", "security", "approval", "pr"];
+      const ids = ["ask", "spec", "architect", "triage", "builder", "qa", "quality", "security", "approval", "pr"];
       const stats = {};
       for (const id of ids) {
         stats[id] = { ms: 0, tokens: 0, generated: 0, llmMs: 0, model: "" };
@@ -7355,7 +7371,8 @@
       }
       let tail = step;
       if (item && item.status === "waiting") {
-        if (item.stage === "triage") tail = "triage";
+        if (item.stage === "spec") tail = "spec";
+        else if (item.stage === "triage") tail = "triage";
         else if (item.stage === "approval") tail = "approval";
         else if (item.stage === "ask") tail = "builder";
         else if (item.stage === "reply") tail = "qa";
@@ -7422,7 +7439,8 @@
         if (entry && (entry.verdict === "send_back" || entry.verdict === "block")) return role;
       }
       if (item.stage === "ask") return "builder";
-      if (item.stage === "handed_off" || item.status === "handed_off") return "triage";
+      if (item.stage === "spec") return "spec";
+      if (item.stage === "handed_off" || item.status === "handed_off") return item.spec && !item.spec_accepted ? "spec" : "triage";
       if (rank >= 6 || item.status === "success") return "pr";
       if (rank === 5) return "approval";
       if (rank === 4) return "qa";
@@ -7577,6 +7595,25 @@
       if (plan) architectBody += `<h3>Plan</h3><pre class="change-plan">${escapeHtml(plan)}</pre>`;
       architectBody += criteriaList(criteria, "");
 
+      const specText = String(item.spec_text || "").trim();
+      const specPath = String(item.spec_path || "");
+      let specPill = ["Queued", "muted"];
+      if (waiting && stage === "spec") specPill = ["Waiting", "wait"];
+      else if (running && stage === "spec") specPill = ["Writing", "wait"];
+      else if (item.spec_accepted) specPill = ["Accepted", "ok"];
+      else if ((stage === "handed_off" || status === "handed_off") && specText) specPill = ["Handed off", "wait"];
+      else if (specText) specPill = ["Written", "ok"];
+      else if (failed) specPill = ["Failed", "bad"];
+      const specWhere = specPath ? `<p class="hint">Committed with the change as <code>${escapeHtml(specPath)}</code>.</p>` : "";
+      let specBody = `<p class="step-copy">The spec has not been written yet.</p>`;
+      if (waiting && stage === "spec" && item.id) {
+        specBody = `<p class="step-copy">The spec is ready. A person with write access can edit it and accept it, or write what to change and have it rewritten. Planning starts once it is accepted.</p>${specWhere}<label class="spec-label">Spec<textarea class="spec-text" rows="18" spellcheck="false">${escapeHtml(specText)}</textarea></label><textarea class="reply-note" rows="3" spellcheck="false" placeholder="What should the spec change? (for Rewrite)"></textarea><div class="change-actions"><button type="button" data-change-decision="accept_spec"${taskAttr}>Accept spec</button><button type="button" class="secondary" data-change-decision="send_back"${taskAttr}>Rewrite</button><button type="button" class="secondary" data-change-decision="hand_off"${taskAttr}>Hand off</button></div>`;
+      } else if (specText) {
+        specBody = `${specWhere}<pre class="change-plan">${escapeHtml(specText)}</pre>`;
+      } else if (running && stage === "spec") {
+        specBody = `<p class="step-copy">Writing the spec.</p>`;
+      }
+
       let triageBody = `<p class="step-copy">Waiting for a plan to review.</p>`;
       if (waiting && stage === "triage" && item.id) {
         triageBody = `<p class="step-copy">The plan is ready. A person with write access can build it, or hand it to a person.</p><div class="change-actions"><button type="button" data-change-decision="build"${taskAttr}>Build it</button><button type="button" class="secondary" data-change-decision="hand_off"${taskAttr}>Hand off</button></div>`;
@@ -7630,6 +7667,7 @@
       const metrics = stepMetrics(item);
       const steps = [
         { id: "ask", kind: "ask", title: "Ask", sub: "the request", pill: ["Asked", "ok"], body: `<p class="step-copy">${escapeHtml(item.goal || "No request recorded.")}</p>` },
+        ...(item.spec ? [{ id: "spec", kind: "spec", title: "Spec", sub: "spec review", pill: specPill, body: specBody }] : []),
         { id: "architect", kind: "architect", title: "Architect", sub: "architect · plan", pill: architectPill, body: architectBody },
         { id: "triage", kind: "triage", title: "Triage", sub: "plan review", pill: triagePill, body: triageBody },
         { id: "builder", kind: "builder", title: "Builder", sub: "builder · change", pill: builderPill, body: builderBody },
@@ -8439,7 +8477,8 @@
       if (rerun) {
         event.preventDefault();
         event.stopPropagation();
-        rerunFailedTask(rerun.dataset.rerunId);
+        const task = [...state.tasks, ...(state.allTasks || [])].find((item) => item.id === rerun.dataset.rerunId);
+        if (task) showRerunGoalPicker({ kind: "task", entry: task, purpose: "rerun" });
         return;
       }
       const historyUpdate = event.target.closest("[data-history-update]");
@@ -8455,7 +8494,7 @@
         event.preventDefault();
         event.stopPropagation();
         const run = findRun(historyRerun.dataset.historyRerun);
-        if (run) rerunHistoryEntry(run.item);
+        if (run) showRerunGoalPicker({ kind: "history", entry: run.item, purpose: "rerun" });
         return;
       }
       if (event.target.closest("a.pr-link")) return;
@@ -8730,20 +8769,58 @@
       if (!rerunGoalPickerEl || !rerunNewGoalInput || !pending) return;
       pendingUpdate = pending;
       const asking = pending.purpose === "changes";
+      const rerunning = pending.purpose === "rerun";
       const title = document.getElementById("rerun-goal-picker-title");
       const hint = document.getElementById("rerun-goal-hint");
       const submit = document.getElementById("rerun-with-goal");
-      if (title) title.textContent = asking ? "Request changes" : "Update this run";
+      const modelRow = document.getElementById("rerun-model-row");
+      if (title) title.textContent = asking ? "Request changes" : (rerunning ? "Rerun this job" : "Update this run");
       if (hint) {
-        hint.textContent = asking
-          ? "Write what should change. The next run continues on this pull request."
-          : "Edit the goal to add context. The new run continues on the same branch and updates its pull request when one exists.";
+        if (asking) hint.textContent = "Write what should change. The next run continues on this pull request.";
+        else if (rerunning) hint.textContent = "Pick the model for this run. You can also edit the goal. The run continues on the same branch.";
+        else hint.textContent = "Edit the goal to add context. The new run continues on the same branch and updates its pull request when one exists.";
       }
-      if (submit) submit.textContent = asking ? "Send feedback" : "Update run";
+      if (submit) submit.textContent = asking ? "Send feedback" : (rerunning ? "Rerun" : "Update run");
+      if (modelRow) modelRow.hidden = !rerunning;
+      if (rerunning) fillRerunModels(pending.entry);
       rerunNewGoalInput.value = asking ? "" : (pending.entry.goal || "");
       rerunGoalPickerEl.hidden = false;
       rerunGoalPickerEl.classList.add("open");
       rerunNewGoalInput.focus();
+    }
+
+    function modelOptionLabel(model) {
+      const host = model.endpoint_name ? " · " + model.endpoint_name : "";
+      const mine = model.runner || model.local ? " (your machine)" : "";
+      return (model.name || model.model_name) + host + mine;
+    }
+
+    async function fillRerunModels(entry) {
+      const select = document.getElementById("rerun-model");
+      if (!select) return;
+      select.replaceChildren();
+      select.disabled = true;
+      const workspace = entry.workspace || (document.getElementById("workspace") || {}).value || "";
+      try {
+        const res = await fetch("/api/org/models?workspace=" + encodeURIComponent(workspace));
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "Could not list models");
+        const models = body.models || [];
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = models.length ? "Choose a model…" : "No models granted";
+        select.append(placeholder);
+        for (const model of models) {
+          const option = document.createElement("option");
+          option.value = model.id;
+          option.textContent = modelOptionLabel(model) + (model.id === entry.model_id ? " — used last time" : "");
+          if (model.id === entry.model_id) option.selected = true;
+          select.append(option);
+        }
+        select.disabled = !models.length;
+      } catch (err) {
+        notify("error", err.message, { title: "Could not list models" });
+      }
     }
 
     function hideRerunGoalPicker() {
@@ -8780,6 +8857,18 @@
       const note = (rerunNewGoalInput && rerunNewGoalInput.value.trim()) || "";
       if (pending.purpose === "changes" && !note) {
         notify("error", "Write what should change.", { title: "Need feedback" });
+        return;
+      }
+      if (pending.purpose === "rerun") {
+        const modelId = (document.getElementById("rerun-model") || {}).value || "";
+        if (!modelId) {
+          notify("error", "Choose the model for this run.", { title: "Need a model" });
+          return;
+        }
+        const goal = note && note !== (pending.entry.goal || "") ? note : "";
+        hideRerunGoalPicker();
+        if (pending.kind === "task") await rerunFailedTask(pending.entry.id, goal, modelId);
+        else await rerunHistoryEntry(pending.entry, goal, modelId);
         return;
       }
       const revised = pending.purpose === "changes"
@@ -8854,10 +8943,11 @@
       }
     }
 
-    async function rerunFailedTask(taskId, newGoal) {
+    async function rerunFailedTask(taskId, newGoal, modelId) {
       try {
         const revised = (newGoal || "").trim();
         const payload = revised ? { goal: revised } : {};
+        if (modelId) payload.model_id = modelId;
         const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/rerun`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -8877,15 +8967,17 @@
       }
     }
 
-    async function rerunHistoryEntry(entry, newGoal) {
+    async function rerunHistoryEntry(entry, newGoal, modelId) {
       const revised = (newGoal || "").trim() || entry.goal || "";
       const hasPr = Boolean(prUrl(entry));
       try {
+        // The model the person picked, else the one this change ran on.
+        const picked = modelId || entry.model_id;
         await queueTask(
           {
             workspace: entry.workspace || document.getElementById("workspace").value,
             goal: revised,
-            ...selectedModelPayload(),
+            ...(picked ? { model_id: picked } : selectedModelPayload()),
             auto_commit: document.getElementById("auto-commit").checked,
             create_pr: hasPr || document.getElementById("create-pr").checked,
             ...contextWindowPayload(),
@@ -9016,8 +9108,14 @@
       const step = button.closest(".step-body");
       const noteEl = step ? step.querySelector(".reply-note") : null;
       const note = noteEl ? noteEl.value.trim() : "";
+      const specEl = step ? step.querySelector(".spec-text") : null;
+      const specText = decision === "accept_spec" && specEl ? specEl.value.trim() : "";
       if (decision === "send_back" && !note) {
         notify("error", "Write what should change so the work can continue.", { title: "Need a note" });
+        return;
+      }
+      if (decision === "accept_spec" && specEl && !specText) {
+        notify("error", "The spec is empty. Write it, or ask for a rewrite.", { title: "Need a spec" });
         return;
       }
       button.disabled = true;
@@ -9025,11 +9123,12 @@
         const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/decide`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ decision, note }),
+          body: JSON.stringify({ decision, note, spec_text: specText }),
         });
         const body = await res.json();
         if (!res.ok) throw new Error(body.error || "could not record the decision");
         const titles = {
+          accept_spec: "Spec accepted",
           build: "Building",
           hand_off: "Handed off",
           approve: "Approved",
@@ -9063,6 +9162,7 @@
           triage_gate: gates.triage_gate,
           approval_gate: gates.approval_gate,
           base_branch: selectedBaseBranch(),
+          spec: document.getElementById("spec-first").checked,
         });
       } catch (err) {
         showNotice(errorEl, "error", err.message);
@@ -9126,6 +9226,32 @@
       return { model_id: modelId };
     }
 
+    async function loadSpecPolicy() {
+      const box = document.getElementById("spec-first");
+      const status = document.getElementById("spec-first-status");
+      if (!box) return;
+      const workspace = (document.getElementById("workspace") || {}).value || "";
+      let policy = {};
+      try {
+        const res = await fetch("/api/workspaces/specs?path=" + encodeURIComponent(workspace));
+        policy = res.ok ? await res.json() : {};
+      } catch (err) {
+        policy = {};
+      }
+      const required = Boolean(policy.required);
+      if (required) box.checked = true;
+      box.disabled = required;
+      if (status) {
+        status.hidden = !required;
+        status.textContent = policy.org_required
+          ? "Your organization requires a spec: the proposal writes one, then waits for a person to accept it."
+          : "This project requires a spec: the proposal writes one, then waits for a person to accept it.";
+      }
+    }
+    document.addEventListener("lbw-spec-policy", () => {
+      loadSpecPolicy();
+    });
+
     async function loadGrantedModels() {
       const select = document.getElementById("model");
       if (!select) return;
@@ -9150,9 +9276,7 @@
         for (const model of models) {
           const option = document.createElement("option");
           option.value = model.id;
-          const host = model.endpoint_name ? " · " + model.endpoint_name : "";
-          const mine = model.runner ? " (your machine)" : "";
-          option.textContent = (model.name || model.model_name) + host + mine;
+          option.textContent = modelOptionLabel(model);
           if (model.runner) option.dataset.runner = "1";
           if (model.id === previous) option.selected = true;
           select.append(option);
@@ -9749,7 +9873,7 @@
         const body = await res.json();
         if (!res.ok) throw new Error(body.error || "Could not list models");
         const models = (body.models || []).filter(function (model) {
-          return !model.runner;
+          return !model.runner && !model.local;
         });
         scheduleModelEl.replaceChildren();
         if (!models.length) {
@@ -10005,6 +10129,7 @@
       loadBranches();
       loadRecentWorkspaces().catch(() => {});
       loadGrantedModels();
+      loadSpecPolicy();
       setInterval(refresh, 1000);
       setInterval(() => {
         if (state.tasks.some(task => task.status === "running")) render();

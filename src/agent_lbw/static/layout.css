@@ -2869,6 +2869,80 @@ a.usage-export {
   margin: 0.6rem 0 1rem;
 }
 
+.local-models-policy {
+  margin-top: 1.5rem;
+}
+
+.local-models-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-width: 18rem;
+  margin: 0.6rem 0 1rem;
+}
+
+#local-model-form {
+  padding: 0;
+}
+
+.local-model-switch {
+  align-self: center;
+}
+
+.local-model-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+  margin: 0;
+}
+
+.local-model-names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.8rem;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
 .runner-approve label {
   grid-column: 1 / -1;
+}
+
+/* Model picker in the rerun dialog */
+.rerun-model {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+.rerun-model[hidden] {
+  display: none;
+}
+.rerun-model select {
+  width: 100%;
+}
+
+/* Spec step: the spec a person edits before accepting it */
+.spec-label {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.75rem 0;
+}
+.spec-text {
+  width: 100%;
+  min-height: 16rem;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.85rem;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+/* Spec-driven proposals policy, on organization and project agent teams */
+.spec-policy {
+  margin-bottom: 1.25rem;
+}
+.spec-policy-choice {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
 }
