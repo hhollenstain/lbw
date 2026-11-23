@@ -191,7 +191,8 @@ The action card says what happens now. It holds every decision for a
 waiting checkpoint (Accept spec, Build it, Approve, Send back, Hand off,
 Continue) and Merge, Request changes, or Rerun when the change needs them.
 Do not put a decision only inside one step's detail, where a reader has to
-find the right step first. Selecting a step loads its detail under the
+find the right step first. At plan review the card shows what building
+should cost, above Build it, and says what the estimate is based on. Selecting a step loads its detail under the
 card. Log, Changes, Screenshots, and Audit stay as tabs under that. The log
 tab is labeled Log. Audit lists who did what, newest first, and stays off
 the step track.

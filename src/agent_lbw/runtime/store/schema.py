@@ -372,6 +372,19 @@ _STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS model_list_prices (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        model TEXT NOT NULL,
+        provider TEXT NOT NULL DEFAULT '',
+        input_micros BIGINT NOT NULL DEFAULT 0,
+        output_micros BIGINT NOT NULL DEFAULT 0,
+        cache_read_micros BIGINT NOT NULL DEFAULT 0,
+        cache_write_micros BIGINT NOT NULL DEFAULT 0,
+        fetched BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (tenant_id, model)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS runners (
         id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES tenants (id),
@@ -509,6 +522,7 @@ CLEAR_ORDER = (
     "usage_skills_daily",
     "usage_runs_daily",
     "model_prices",
+    "model_list_prices",
     "agent_grants",
     "model_project_settings",
     "model_grants",

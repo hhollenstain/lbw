@@ -1864,6 +1864,21 @@ button.inbox-fold {
 .change-callout .change-actions { align-items: center; margin-top: 0.7rem; }
 .callout-row { margin: 0.5rem 0 0; }
 
+.callout-estimate {
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  white-space: normal;
+}
+
+.callout-estimate-note {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .verdict-chips {
   display: flex;
   flex-wrap: wrap;
@@ -3236,6 +3251,30 @@ a.usage-export {
 
 .runner-approve {
   display: grid;
+.usage-price-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.usage-price-source {
+  display: block;
+  margin-top: 0.25rem;
+}
+
+.usage-price-actions {
+  width: 1%;
+}
+
+.usage-price-actions button {
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+}
+
+.usage-price-actions button + button {
+  margin-top: 0.3rem;
+}
+
   grid-template-columns: minmax(0, 14rem) auto;
   gap: 0.4rem 0.6rem;
   align-items: end;

@@ -7315,6 +7315,50 @@
       function past(stepRank) {
         return done || rank > stepRank;
       }
+    const buildEstimates = {};
+
+    function formatMicros(micros) {
+      const dollars = Number(micros || 0) / 1000000;
+      if (dollars > 0 && dollars < 0.01) return "under $0.01";
+      return `$${dollars.toFixed(2)}`;
+    }
+
+    function buildEstimateBody(estimate) {
+      if (estimate === undefined || estimate === null) return `<span class="callout-estimate-note">Estimating what building this will cost…</span>`;
+      if (estimate.error) return `<span class="callout-estimate-note">No cost estimate: ${escapeHtml(estimate.error)}</span>`;
+      if (!estimate.available) return `<span class="callout-estimate-note">${escapeHtml(estimate.note || "No cost estimate for this change.")}</span>`;
+      const tokens = `${formatTokenCount(estimate.tokens)} tokens`;
+      const model = escapeHtml(estimate.model || "this model");
+      const head = estimate.cost_micros == null
+        ? `<strong>About ${tokens}</strong> to build on ${model}.`
+        : `<strong>About ${formatMicros(estimate.cost_micros)}</strong> to build on ${model} · ${tokens}.`;
+      const planned = `Planning used ${formatTokenCount(estimate.planning_tokens)} tokens${estimate.priced ? ` (${formatMicros(estimate.planning_cost_micros)})` : ""}.`;
+      return `${head}<span class="callout-estimate-note">${escapeHtml(estimate.note || "")} ${planned}</span>`;
+    }
+
+    async function loadBuildEstimate(key, taskId) {
+      buildEstimates[key] = null;
+      let estimate;
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/estimate`);
+        const body = await res.json().catch(() => ({}));
+        estimate = res.ok ? body : { error: body.error || `HTTP ${res.status}` };
+      } catch (err) {
+        estimate = { error: "LBW could not be reached" };
+      }
+      buildEstimates[key] = estimate;
+      for (const el of document.querySelectorAll("[data-build-estimate]")) {
+        if (el.dataset.buildEstimate === key) el.innerHTML = buildEstimateBody(estimate);
+      }
+    }
+
+    function buildEstimateHtml(item) {
+      const calls = (item.events || []).filter((event) => event && event.kind === "llm").length;
+      const key = `${item.id}:${calls}`;
+      if (!(key in buildEstimates)) loadBuildEstimate(key, item.id);
+      return `<p class="callout-copy callout-estimate" data-build-estimate="${escapeHtml(key)}">${buildEstimateBody(buildEstimates[key])}</p>`;
+    }
+
 
       function here(stepRank) {
         return !done && rank === stepRank;
@@ -7528,7 +7572,7 @@
       } else if (yourTurn.triage && item.id) {
         calloutStep = "triage";
         const planHtml = plan ? `<pre class="change-plan">${escapeHtml(plan)}</pre>` : `<p class="callout-copy">The architect did not write a plan.</p>`;
-        callout = calloutHtml("you", "Your turn", "Review the plan", `<p class="callout-copy">Nothing has been built yet. Build it as planned, or hand it to a person.</p>${planHtml}${criteriaList(criteria, "")}<div class="change-actions"><button type="button" data-change-decision="build"${taskAttr}>Build it</button><button type="button" class="secondary" data-change-decision="hand_off"${taskAttr}>Hand off</button></div>`);
+        callout = calloutHtml("you", "Your turn", "Review the plan", `<p class="callout-copy">Nothing has been built yet. Build it as planned, or hand it to a person.</p>${planHtml}${criteriaList(criteria, "")}${buildEstimateHtml(item)}<div class="change-actions"><button type="button" data-change-decision="build"${taskAttr}>Build it</button><button type="button" class="secondary" data-change-decision="hand_off"${taskAttr}>Hand off</button></div>`);
       } else if (yourTurn.approval && item.id) {
         calloutStep = "approval";
         const summary = item.summary ? `<p class="callout-copy">${escapeHtml(String(item.summary).trim())}</p>` : "";

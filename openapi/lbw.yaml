@@ -147,7 +147,10 @@ paths:
       operationId: listModelPrices
       responses:
         "200":
-          description: Dollars per million tokens for each model the organization prices.
+          description: >-
+            Each model the organization runs with the price a run uses: the
+            organization's own price, or else the public list price. Also the
+            prices the organization set, and when the list was last refreshed.
     put:
       operationId: saveModelPrice
       requestBody:
@@ -174,6 +177,29 @@ paths:
       responses:
         "200":
           description: The price table after the change.
+  /api/org/prices/refresh:
+    post:
+      operationId: refreshListPrices
+      responses:
+        "200":
+          description: >-
+            The price table after the public list prices are fetched again. An
+            owner or admin refreshes them. Runs already recorded keep their cost.
+  /api/tasks/{task_id}/estimate:
+    get:
+      operationId: estimateBuild
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: >-
+            Tokens and cost a planned change should spend to build, scaled from
+            its planning tokens by this project's or this organization's recent
+            builds, and priced on the change's model.
   /api/usage/meta:
     get:
       operationId: usageRegistry
