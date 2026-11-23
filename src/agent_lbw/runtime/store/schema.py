@@ -574,12 +574,14 @@ TASK_COLUMNS = frozenset(
         "fault",
         "result_ciphertext",
         "agent_kind",
+        "attempt_of",
+        "attempt",
         "created",
     }
 )
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 def read_schema_version(db: Database) -> int:
@@ -635,6 +637,9 @@ def apply_schema(db: Database) -> None:
     _add_column(db, "tasks", "fault", "TEXT")
     _add_column(db, "tasks", "result_ciphertext", "TEXT")
     _add_column(db, "tasks", "agent_kind", "TEXT")
+    # A rerun is another run of the same proposal: the first run's id, and its number.
+    _add_column(db, "tasks", "attempt_of", "TEXT")
+    _add_column(db, "tasks", "attempt", "INTEGER NOT NULL DEFAULT 1")
     _add_column(db, "sessions", "tenant_id", "TEXT")
     _add_column(db, "models", "endpoint_id", "TEXT")
     _add_column(db, "models", "enabled", "INTEGER NOT NULL DEFAULT 0")

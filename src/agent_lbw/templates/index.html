@@ -5766,6 +5766,7 @@
         });
       });
       const runs = tasks.concat(history);
+      markAttempts(runs);
       const rank = (status) => (
         status === "running" || status === "waiting" ? 0 : status === "queued" ? 1 : 2
       );
@@ -5775,6 +5776,47 @@
         return runTime(right.item) - runTime(left.item);
       });
       return runs;
+    }
+
+    // A rerun is another run of the same proposal. The list shows the latest run of
+    // each proposal, and the change view picks among its runs.
+    function markAttempts(runs) {
+      const groups = new Map();
+      for (const run of runs) {
+        run.latest = true;
+        run.attempts = [run];
+        const id = String(run.item.attempt_of || run.item.id || "");
+        if (!id) continue;
+        if (!groups.has(id)) groups.set(id, []);
+        groups.get(id).push(run);
+      }
+      for (const group of groups.values()) {
+        group.sort((left, right) => attemptNumber(left.item) - attemptNumber(right.item));
+        const latest = group[group.length - 1];
+        for (const run of group) {
+          run.attempts = group;
+          run.latest = run === latest;
+        }
+      }
+    }
+
+    function attemptNumber(item) {
+      return Number(item && item.attempt) || 1;
+    }
+
+    function holdsSelection(run) {
+      return (run.attempts || [run]).some((attempt) => attempt.key === state.selectedRunKey);
+    }
+
+    function attemptPickerHtml(run) {
+      if (!run || !run.attempts || run.attempts.length < 2) return "";
+      const options = run.attempts.slice().reverse().map((attempt) => {
+        const number = attemptNumber(attempt.item);
+        const latest = attempt.latest ? " (latest)" : "";
+        const picked = attempt.key === run.key ? " selected" : "";
+        return `<option value="${escapeHtml(attempt.key)}"${picked}>Run #${number}${latest} · ${escapeHtml(attempt.status || "unknown")}</option>`;
+      }).join("");
+      return `<label class="run-attempt"><span class="run-attempt-label">Run</span><select data-run-attempt aria-label="Run of this proposal">${options}</select></label>`;
     }
 
     function statusMatches(status, filter) {
@@ -5798,13 +5840,13 @@
     }
 
     function visibleRuns(runs) {
-      return runs.filter((run) => statusMatches(run.status, state.statusFilter) && runMatchesSearch(run, state.search));
+      return runs.filter((run) => run.latest !== false && statusMatches(run.status, state.statusFilter) && runMatchesSearch(run, state.search));
     }
 
     function ensureRunSelection(runs) {
       const visible = visibleRuns(runs);
       const pool = visible.length ? visible : runs;
-      if (pool.some((run) => run.key === state.selectedRunKey)) return;
+      if (pool.some((run) => holdsSelection(run))) return;
       const pick = pool.find((run) => run.status === "running") || pool[0] || null;
       state.selectedRunKey = pick ? pick.key : "";
       state.pinnedStage = "";
@@ -5924,7 +5966,7 @@
 
     function runCardHtml(run) {
       const entry = run.item;
-      const selected = run.key === state.selectedRunKey ? " selected" : "";
+      const selected = holdsSelection(run) ? " selected" : "";
       const failed = entry.status === "failed" || entry.status === "error";
       const succeeded = entry.status === "success";
       const canUpdate = succeeded && prIsOpen(entry);
@@ -5974,6 +6016,7 @@
             <div class="row">
               <span class="status ${escapeHtml(entry.status || "")}">${escapeHtml(entry.status || "unknown")}</span>
               ${entry.status === "waiting" ? `<span class="inbox-step">${escapeHtml(stageStepLabel(entry.stage))}</span>` : ""}
+              ${(run.attempts || []).length > 1 ? `<span class="run-number">Run #${attemptNumber(entry)}</span>` : ""}
               <span class="meta duration">${escapeHtml(when || "")}</span>
             </div>
             <p class="goal">${escapeHtml(goal)}</p>
@@ -7272,49 +7315,6 @@
       return `<ol class="step-rail flow"${role} aria-label="${escapeHtml(label)}">${rows}</ol>`;
     }
 
-    function calloutHtml(tone, badge, title, body) {
-      return `<section class="change-callout callout-${tone}" data-decision-scope aria-live="polite"><div class="callout-head"><span class="callout-badge">${escapeHtml(badge)}</span><p class="callout-title">${escapeHtml(title)}</p></div>${body}</section>`;
-    }
-
-    function workingLabel(stepId) {
-      const labels = {
-        ask: "Starting",
-        spec: "Writing the spec",
-        architect: "Planning the change",
-        triage: "Moving to the build",
-        builder: "Building the change",
-        review: "Reviewing the change",
-        approval: "Finishing the reviews",
-        pr: "Publishing",
-      };
-      return labels[stepId] || "Working";
-    }
-
-    function changeBoardHtml(item) {
-      const stage = String(item.stage || "");
-      const status = String(item.status || "");
-      const plan = String(item.plan || "").trim();
-      const criteria = Array.isArray(item.criteria) ? item.criteria.filter(Boolean).map(String) : [];
-      const evidence = Array.isArray(item.evidence) ? item.evidence : [];
-      const started = stage || plan || evidence.length || status;
-      if (!started) return "";
-      const rank = stageRank(item);
-      const done = stage === "done" || status === "success";
-      const failed = status === "failed" || status === "error";
-      const waiting = status === "waiting";
-      const running = status === "running";
-      const queued = status === "queued";
-      const handedOff = stage === "handed_off" || status === "handed_off";
-      const taskAttr = item.id ? ` data-task-id="${escapeHtml(item.id)}"` : "";
-      const triageAuto = item.triage_gate === "auto";
-      const approvalAuto = item.approval_gate === "auto";
-      const rawFocus = focusStep(item, rank, evidence);
-      const focus = ["qa", "quality", "security"].includes(rawFocus) ? "review" : rawFocus;
-      syncOpenSteps(item, focus);
-
-      function past(stepRank) {
-        return done || rank > stepRank;
-      }
     const buildEstimates = {};
 
     function formatMicros(micros) {
@@ -7359,6 +7359,49 @@
       return `<p class="callout-copy callout-estimate" data-build-estimate="${escapeHtml(key)}">${buildEstimateBody(buildEstimates[key])}</p>`;
     }
 
+    function calloutHtml(tone, badge, title, body) {
+      return `<section class="change-callout callout-${tone}" data-decision-scope aria-live="polite"><div class="callout-head"><span class="callout-badge">${escapeHtml(badge)}</span><p class="callout-title">${escapeHtml(title)}</p></div>${body}</section>`;
+    }
+
+    function workingLabel(stepId) {
+      const labels = {
+        ask: "Starting",
+        spec: "Writing the spec",
+        architect: "Planning the change",
+        triage: "Moving to the build",
+        builder: "Building the change",
+        review: "Reviewing the change",
+        approval: "Finishing the reviews",
+        pr: "Publishing",
+      };
+      return labels[stepId] || "Working";
+    }
+
+    function changeBoardHtml(item) {
+      const stage = String(item.stage || "");
+      const status = String(item.status || "");
+      const plan = String(item.plan || "").trim();
+      const criteria = Array.isArray(item.criteria) ? item.criteria.filter(Boolean).map(String) : [];
+      const evidence = Array.isArray(item.evidence) ? item.evidence : [];
+      const started = stage || plan || evidence.length || status;
+      if (!started) return "";
+      const rank = stageRank(item);
+      const done = stage === "done" || status === "success";
+      const failed = status === "failed" || status === "error";
+      const waiting = status === "waiting";
+      const running = status === "running";
+      const queued = status === "queued";
+      const handedOff = stage === "handed_off" || status === "handed_off";
+      const taskAttr = item.id ? ` data-task-id="${escapeHtml(item.id)}"` : "";
+      const triageAuto = item.triage_gate === "auto";
+      const approvalAuto = item.approval_gate === "auto";
+      const rawFocus = focusStep(item, rank, evidence);
+      const focus = ["qa", "quality", "security"].includes(rawFocus) ? "review" : rawFocus;
+      syncOpenSteps(item, focus);
+
+      function past(stepRank) {
+        return done || rank > stepRank;
+      }
 
       function here(stepRank) {
         return !done && rank === stepRank;
@@ -7815,7 +7858,9 @@
           workspace: workspaceEl.value || "",
         });
       });
-      return oneJobPerPull(tasks.concat(history));
+      const entries = tasks.concat(history);
+      markAttempts(entries);
+      return oneJobPerPull(entries.filter((entry) => entry.latest));
     }
 
     function inboxStepLabel(entry, section) {
@@ -7953,9 +7998,7 @@
 
     function inboxRowHtml(entry, items, section) {
       const task = entry.item;
-      const selected = entry.kind === "task"
-        ? (state.selected === task.id ? " selected" : "")
-        : (entry.key === state.selectedRunKey ? " selected" : "");
+      const selected = holdsSelection(entry) ? " selected" : "";
       const step = inboxStepLabel(entry, section);
       const project = projectLabel(entry.workspace || task.workspace, items);
       const title = escapeHtml(
@@ -7963,7 +8006,7 @@
           .filter(Boolean)
           .join(" — ")
       );
-      const body = `<span class="inbox-goal">${escapeHtml(goalHeadline(task))}</span><span class="inbox-meta"><span class="inbox-dot${entry.status === "running" ? " is-running" : ""}" aria-hidden="true"></span><span class="inbox-step">${escapeHtml(step)}</span><span class="inbox-project">${escapeHtml(project)}</span></span>`;
+      const body = `<span class="inbox-goal">${escapeHtml(goalHeadline(task))}</span><span class="inbox-meta"><span class="inbox-dot${entry.status === "running" ? " is-running" : ""}" aria-hidden="true"></span><span class="inbox-step">${escapeHtml(step)}</span>${(entry.attempts || []).length > 1 ? `<span class="run-number">Run #${attemptNumber(task)}</span>` : ""}<span class="inbox-project">${escapeHtml(project)}</span></span>`;
       const button = entry.kind === "history"
         ? `<button type="button" class="inbox-item${selected}" data-run-key="${escapeHtml(entry.key)}" title="${title}">${body}</button>`
         : `<button type="button" class="inbox-item${selected}" data-inbox-id="${escapeHtml(task.id)}" data-inbox-workspace="${escapeHtml(task.workspace || "")}" title="${title}">${body}</button>`;
@@ -8222,6 +8265,7 @@
       const titleText = titleItem ? goalHeadline(titleItem) : "";
       const metaHover = selected ? [selected.workspace || "", selected.base_url || ""].filter(Boolean).join(" · ") : "";
       const prHtml = prLinkHtml(prUrl(selected || selectedHistory));
+      const attemptsHtml = attemptPickerHtml(selectedRun);
       const target = runDetailEl;
       const root = target.querySelector("[data-progress-root]");
       const sameItem = Boolean(root && itemKey && root.dataset.itemKey === itemKey);
@@ -8234,6 +8278,8 @@
         if (titleEl) titleEl.textContent = titleText;
         const prEl = root.querySelector("[data-progress-pr]");
         if (prEl) prEl.innerHTML = prHtml;
+        const attemptsEl = root.querySelector("[data-progress-attempts]");
+        if (attemptsEl && attemptsEl.innerHTML !== attemptsHtml) attemptsEl.innerHTML = attemptsHtml;
         const body = root.querySelector("[data-progress-body]");
         if (body && lastProgressHtml !== progressHtml) {
           body.innerHTML = progressHtml;
@@ -8251,6 +8297,7 @@
                 <p class="meta" data-progress-meta title="${escapeHtml(metaHover)}">${escapeHtml(metaText)}</p>
               </div>
               <div class="change-head-side">
+                <div class="run-attempts" data-progress-attempts>${attemptsHtml}</div>
                 <div class="progress-pr" data-progress-pr>${prHtml}</div>
                 <p class="task-tokens" id="task-tokens" data-task-tokens title="${escapeHtml(tokenHover)}" aria-label="${escapeHtml(tokenHover)}">${renderTokenBar(tokenUsage.used, tokenUsage.window)}</p>
               </div>
@@ -8938,8 +8985,15 @@
     }
 
     async function rerunHistoryEntry(entry, newGoal, modelId) {
+      // A stored run reruns as the next run of the same proposal, with its gates and spec.
+      if (entry.id) {
+        const changed = (newGoal || "").trim();
+        await rerunFailedTask(entry.id, changed && changed !== entry.goal ? changed : "", modelId);
+        return;
+      }
       const revised = (newGoal || "").trim() || entry.goal || "";
       const hasPr = Boolean(prUrl(entry));
+      const gates = humanGates();
       try {
         // The model the person picked, else the one this change ran on.
         const picked = modelId || entry.model_id;
@@ -8954,6 +9008,10 @@
             resume_branch: entry.branch || undefined,
             resume_sha: entry.commit_sha || undefined,
             pr_url: entry.status === "success" ? (prUrl(entry) || undefined) : undefined,
+            gate: gates.triage_gate === "ask" || gates.approval_gate === "ask" ? "ask" : "auto",
+            triage_gate: gates.triage_gate,
+            approval_gate: gates.approval_gate,
+            spec: document.getElementById("spec-first").checked,
           },
           entry.status === "success" ? "Update queued" : "Rerun queued",
         );
@@ -8978,12 +9036,12 @@
       const keepOn = keepEl.checked;
       const mine = runsOnMyRunner();
       const bypassEl = document.getElementById("bypass-gates");
-      const locked = mine || keepOn || Boolean(bypassEl && bypassEl.checked);
+      const locked = keepOn || Boolean(bypassEl && bypassEl.checked);
       const triageEl = document.getElementById("gate-triage");
       const approvalEl = document.getElementById("gate-approval");
       if (triageEl) triageEl.disabled = locked;
       if (approvalEl) approvalEl.disabled = locked;
-      if (bypassEl) bypassEl.disabled = mine || keepOn;
+      if (bypassEl) bypassEl.disabled = keepOn;
       keepEl.disabled = mine;
       renderFlowPreview();
     }
@@ -9061,6 +9119,17 @@
       const taskId = button ? (button.dataset.taskId || state.selected) : "";
       if (!button || !taskId) return;
       decideChange(taskId, button.dataset.changeDecision, button);
+    });
+
+    runDetailEl.addEventListener("change", (event) => {
+      const picker = event.target.closest("[data-run-attempt]");
+      if (!picker || picker.value === state.selectedRunKey) return;
+      state.selectedRunKey = picker.value;
+      state.pinnedStage = "";
+      state.taskPane = "progress";
+      state.selectedChange = "";
+      state.closedChangeDirs = new Set();
+      render();
     });
 
     runDetailEl.addEventListener("toggle", (event) => {

@@ -27,6 +27,13 @@ import (
 // MaxPatchBytes matches the largest change LBW accepts.
 const MaxPatchBytes = 5 << 20
 
+// DocumentLimit is the longest spec or plan the runner sends back. LBW keeps 40,000 characters.
+const DocumentLimit = 40000
+
+// readOnlyTools are the tools a spec or plan job turns off: every tool that can
+// write, including the shell and subagents. It reads with Read, Glob, and Grep.
+var readOnlyTools = []string{"Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "Task", "Agent"}
+
 // Runner runs jobs with one config. Claude is the program; tests swap it.
 type Runner struct {
 	Config *config.Config
@@ -54,17 +61,37 @@ func (r *Runner) Run(ctx context.Context, job *client.Job, emit func(client.Even
 		_, _ = git(context.Background(), repo, "worktree", "prune")
 	}()
 	emit(client.Event{Kind: "step", Message: fmt.Sprintf("Working in a fresh worktree at %s", short(job.BaseSHA))})
-	outcome := claude.Run(ctx, claude.Options{
+	if job.StartPatch != "" && !ReadOnly(job) {
+		if err := applyStart(ctx, r.Config.WorkDir, tree, job); err != nil {
+			return failed(err)
+		}
+		emit(client.Event{Kind: "step", Message: "Continuing from the work that was sent back"})
+	}
+	opts := claude.Options{
 		Program:        r.Claude,
 		Dir:            tree,
 		Prompt:         Prompt(job),
 		PermissionMode: r.Config.PermissionMode,
-		AllowedTools:   r.Config.AllowedTools,
+		AllowedTools:   AllowedTools(r.Config.AllowedTools, job),
 		MaxTurns:       r.Config.MaxTurns,
 		Model:          model(job, r.Config.Model),
-	}, emit)
+	}
+	if r.Config.SandboxOn() && !ReadOnly(job) {
+		opts.Settings = r.Config.SandboxSettings()
+	}
+	if ReadOnly(job) {
+		opts.DisallowedTools = readOnlyTools
+		opts.ResultLimit = DocumentLimit
+	}
+	outcome := claude.Run(ctx, opts, emit)
 	if !outcome.OK {
 		return client.Result{Status: "failed", Summary: outcome.Summary, Error: outcome.Error}
+	}
+	if ReadOnly(job) {
+		if strings.TrimSpace(outcome.Summary) == "" {
+			return client.Result{Status: "failed", Error: "Claude Code did not write the " + job.Phase}
+		}
+		return client.Result{Status: "done", Summary: outcome.Summary}
 	}
 	patch, err := collect(ctx, tree, job)
 	if err != nil {
@@ -73,14 +100,65 @@ func (r *Runner) Run(ctx context.Context, job *client.Job, emit func(client.Even
 	return client.Result{Status: "done", Summary: outcome.Summary, Patch: patch}
 }
 
+// AllowedTools is the runner's allowlist plus, for a build, the project's own
+// commands. A command with a newline or parentheses is left out, because it
+// cannot be written as one Claude Code permission rule.
+func AllowedTools(base []string, job *client.Job) []string {
+	if ReadOnly(job) {
+		return []string{"Read", "Glob", "Grep"}
+	}
+	tools := append([]string(nil), base...)
+	for _, command := range job.Commands {
+		command = strings.TrimSpace(command)
+		if command == "" || len(command) > 300 || strings.ContainsAny(command, "()\n\r") {
+			continue
+		}
+		tools = append(tools, "Bash("+command+")", "Bash("+command+":*)")
+	}
+	return tools
+}
+
+// ReadOnly says whether the job only reads the repository and answers with a
+// spec or a plan for a person to accept.
+func ReadOnly(job *client.Job) bool {
+	return job.Phase == "spec" || job.Phase == "plan"
+}
+
 // Prompt is the instruction Claude Code receives. The repository's own
 // CLAUDE.md and AGENTS.md still apply, because Claude Code reads them itself.
 func Prompt(job *client.Job) string {
 	var b strings.Builder
+	if ReadOnly(job) {
+		b.WriteString("You are writing the " + job.Phase + " for a job from LBW in a git worktree of this repository.\n")
+		b.WriteString("Read the repository as much as you need. Do not change any files. ")
+		b.WriteString("A person reads your final reply and accepts it before any work starts, ")
+		b.WriteString("so your final reply is only the " + job.Phase + ", with nothing before or after it.\n\n")
+		b.WriteString(strings.TrimSpace(job.Instructions))
+		b.WriteString("\n")
+		return b.String()
+	}
 	b.WriteString("You are working on a job from LBW in a git worktree of this repository.\n\n")
 	b.WriteString("Goal:\n")
 	b.WriteString(strings.TrimSpace(job.Goal))
 	b.WriteString("\n")
+	if spec := strings.TrimSpace(job.Spec); spec != "" {
+		b.WriteString("\nA person accepted this spec")
+		if job.SpecPath != "" {
+			b.WriteString(" (" + job.SpecPath + ")")
+		}
+		b.WriteString(". It is the source of truth for the change. Build what it requires and prove each acceptance criterion. ")
+		b.WriteString("Do not write the spec file: LBW commits it with your change.\n")
+		b.WriteString(spec)
+		b.WriteString("\n")
+	}
+	if plan := strings.TrimSpace(job.Plan); plan != "" {
+		b.WriteString("\nA person accepted this plan. Follow it:\n")
+		b.WriteString(plan)
+		b.WriteString("\n")
+	}
+	if job.StartPatch != "" {
+		b.WriteString("\nThe worktree already has the earlier work on this goal, committed. Continue from it.\n")
+	}
 	if notes := strings.TrimSpace(job.ReviewNotes); notes != "" {
 		b.WriteString("\nA reviewer asked for these changes:\n")
 		b.WriteString(notes)
@@ -126,6 +204,31 @@ func (r *Runner) repository(ctx context.Context, job *client.Job, emit func(clie
 		return "", fmt.Errorf("commit %s is not on %s: push it first", short(job.BaseSHA), job.RemoteURL)
 	}
 	return cache, nil
+}
+
+// applyStart puts the work a person sent back onto the fresh worktree, so the
+// build continues from it. collect then sends it back with the new commits.
+func applyStart(ctx context.Context, workDir, tree string, job *client.Job) error {
+	if len(job.StartPatch) > MaxPatchBytes {
+		return fmt.Errorf("the earlier work is %d bytes, more than LBW accepts", len(job.StartPatch))
+	}
+	file, err := os.CreateTemp(workDir, "start-*.mbox")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	_, err = file.WriteString(job.StartPatch)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := gitAuthor(ctx, tree, "am", "--3way", "--keep-cr", file.Name()); err != nil {
+		_, _ = git(context.Background(), tree, "am", "--abort")
+		return fmt.Errorf("the earlier work did not apply: %w", err)
+	}
+	return nil
 }
 
 // collect commits whatever Claude Code left uncommitted and returns every

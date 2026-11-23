@@ -1268,7 +1268,7 @@ def create_app(
         run_from_sha = (payload.sha if payload else "") or None
         new_goal = (payload.goal if payload else "") or None
         picked = (payload.model_id if payload else "").strip()
-        old_task = ui.manager.get(task_id)
+        old_task = ui.manager.load_job(task_id)
         if old_task is None:
             return JSONResponse({"error": "task not found"}, status_code=404)
         if old_task.status not in ("failed", "error", "success"):

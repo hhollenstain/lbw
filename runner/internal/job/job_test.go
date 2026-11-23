@@ -137,3 +137,79 @@ func TestModelPrefersTheJobOverTheRunnerSetting(t *testing.T) {
 		t.Fatalf("runner fallback: got %q", got)
 	}
 }
+
+func TestASpecJobAnswersWithTheSpecAndSendsNoChange(t *testing.T) {
+	remote, base := Repo(t)
+	r := &Runner{Config: &config.Config{WorkDir: t.TempDir()}, Claude: fakeClaude(t)}
+	job := &client.Job{JobID: "s", Goal: "Add a hello file", BaseSHA: base, RemoteURL: remote, Phase: "spec", Instructions: "Write the spec."}
+	got := r.Run(context.Background(), job, func(client.Event) {})
+	if got.Status != "done" || got.Patch != "" || got.Summary != "Added hello.txt." {
+		t.Fatalf("result = %+v", got)
+	}
+	text := Prompt(job)
+	for _, want := range []string{"writing the spec", "Do not change any files", "Write the spec."} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prompt is missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestABuildFollowsTheAcceptedSpecAndPlan(t *testing.T) {
+	text := Prompt(&client.Job{Goal: "Add a hello file", SpecPath: "specs/hello.md", Spec: "## Acceptance criteria\n- hello.txt exists", Plan: "1. Write hello.txt"})
+	for _, want := range []string{"specs/hello.md", "hello.txt exists", "accepted this plan", "1. Write hello.txt"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prompt is missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestWorkSentBackIsAppliedFirstAndSentAgain(t *testing.T) {
+	remote, base := Repo(t)
+	earlier := t.TempDir()
+	gitIn(t, earlier, "clone", "-q", remote, ".")
+	if err := os.WriteFile(filepath.Join(earlier, "first.txt"), []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, earlier, "add", "first.txt")
+	gitIn(t, earlier, "commit", "-q", "-m", "First try")
+	start := gitIn(t, earlier, "format-patch", "--stdout", base+"..HEAD")
+	r := &Runner{Config: &config.Config{WorkDir: t.TempDir()}, Claude: fakeClaude(t)}
+	job := &client.Job{JobID: "b", TaskID: "t", Goal: "Add files", BaseSHA: base, RemoteURL: remote, StartPatch: start + "\n", ReviewNotes: "Also add hello"}
+	got := r.Run(context.Background(), job, func(client.Event) {})
+	if got.Status != "done" {
+		t.Fatalf("result = %+v", got)
+	}
+	for _, want := range []string{"Subject: [PATCH 1/2] First try", "+first", "+hello from claude"} {
+		if !strings.Contains(got.Patch, want) {
+			t.Fatalf("patch is missing %q:\n%s", want, got.Patch)
+		}
+	}
+}
+
+func TestABuildMayRunTheProjectsOwnCommands(t *testing.T) {
+	base := []string{"Read"}
+	job := &client.Job{Commands: []string{"uv run pytest -q", "make (bad)", "", "npm test\nrm -rf /"}}
+	got := strings.Join(AllowedTools(base, job), " | ")
+	if got != "Read | Bash(uv run pytest -q) | Bash(uv run pytest -q:*)" {
+		t.Fatalf("allowed = %s", got)
+	}
+	job.Phase = "spec"
+	if got := strings.Join(AllowedTools(base, job), ","); got != "Read,Glob,Grep" {
+		t.Fatalf("a spec job may use: %v", got)
+	}
+	if len(base) != 1 {
+		t.Fatalf("the runner's own list changed: %v", base)
+	}
+}
+
+func TestASpecJobCannotWriteOrRunCommands(t *testing.T) {
+	for _, tool := range []string{"Write", "Edit", "Bash", "Task", "Agent"} {
+		found := false
+		for _, off := range readOnlyTools {
+			found = found || off == tool
+		}
+		if !found {
+			t.Fatalf("%s is not turned off for a spec job", tool)
+		}
+	}
+}

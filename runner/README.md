@@ -30,6 +30,13 @@ Settings live in `config.json` in the runner folder (`LBW_RUNNER_HOME`, or
 checkout you already have, `allowed_tools` widens what Claude Code may run,
 and `ca_file` trusts a local certificate authority.
 
+Jobs run Claude Code's shell commands in its sandbox: any command is approved
+there, writes stay in the job's worktree, and the network reaches only
+`sandbox_domains` (by default the common package registries and GitHub). A
+build may also run the project's own setup, test, and lint commands. On Linux
+the sandbox needs `bubblewrap` and `socat`. Set `"sandbox": false`, or
+`LBW_RUNNER_SANDBOX=off`, to run without it.
+
 The runner also relays model calls to a model server on this machine, such as
 Ollama, when you choose one of your local models on the job form. You set the
 server's address on your LBW profile. The runner relays to this machine and to

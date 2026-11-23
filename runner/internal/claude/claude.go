@@ -70,6 +70,12 @@ type Options struct {
 	AllowedTools   []string
 	MaxTurns       int
 	Model          string
+	// DisallowedTools are passed to claude --disallowedTools.
+	DisallowedTools []string
+	// ResultLimit is how much of the final reply is kept. Zero keeps 4000 characters.
+	ResultLimit int
+	// Settings is passed to claude --settings, such as the sandbox settings.
+	Settings string
 }
 
 // Args are the command-line arguments for a headless, streamed run.
@@ -81,11 +87,17 @@ func (o Options) Args() []string {
 	if len(o.AllowedTools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(o.AllowedTools, ","))
 	}
+	if len(o.DisallowedTools) > 0 {
+		args = append(args, "--disallowedTools", strings.Join(o.DisallowedTools, ","))
+	}
 	if o.MaxTurns > 0 {
 		args = append(args, "--max-turns", fmt.Sprint(o.MaxTurns))
 	}
 	if o.Model != "" {
 		args = append(args, "--model", o.Model)
+	}
+	if o.Settings != "" {
+		args = append(args, "--settings", o.Settings)
 	}
 	return args
 }
@@ -118,7 +130,7 @@ func Run(ctx context.Context, opts Options, emit func(client.Event)) Outcome {
 	if err := cmd.Start(); err != nil {
 		return Outcome{Error: fmt.Sprintf("could not start claude: %v", err)}
 	}
-	parser := &Parser{}
+	parser := &Parser{ResultLimit: opts.ResultLimit}
 	parser.Read(stdout, emit)
 	waitErr := cmd.Wait()
 	outcome := parser.Outcome()
@@ -137,9 +149,11 @@ func Run(ctx context.Context, opts Options, emit func(client.Event)) Outcome {
 
 // Parser turns Claude Code's stream-json lines into LBW events.
 type Parser struct {
-	model     string
-	sawResult bool
-	outcome   Outcome
+	// ResultLimit is how much of the final reply is kept. Zero keeps 4000 characters.
+	ResultLimit int
+	model       string
+	sawResult   bool
+	outcome     Outcome
 }
 
 type line struct {
@@ -224,7 +238,11 @@ func (p *Parser) Line(raw []byte, emit func(client.Event)) {
 	case "result":
 		p.sawResult = true
 		p.outcome.OK = !item.IsError && (item.Subtype == "" || item.Subtype == "success")
-		p.outcome.Summary = clip(item.Result, 4000)
+		limit := p.ResultLimit
+		if limit <= 0 {
+			limit = 4000
+		}
+		p.outcome.Summary = clip(item.Result, limit)
 		if !p.outcome.OK {
 			p.outcome.Error = "Claude Code stopped: " + strings.TrimPrefix(item.Subtype, "error_")
 			if item.Subtype == "" {

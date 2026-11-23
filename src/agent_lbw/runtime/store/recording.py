@@ -23,6 +23,7 @@ from agent_lbw.runtime.store.projects import ensure_project
 from agent_lbw.runtime.store.schedules import delete_schedule_row, save_schedule
 from agent_lbw.runtime.store.tasks import (
     fault_for,
+    next_attempt,
     save_task_request,
     save_task_result,
     tenant_dek,
@@ -61,6 +62,12 @@ def record_task(root: Path, database_url: str, task) -> None:
     task.tenant_id = account["org"]["id"]
     with database(root, database_url) as db:
         project = _project(db, account, workspace, workspace.name or "project")
+        attempt_of = str(getattr(task, "attempt_of", "") or "")
+        if attempt_of:
+            task.attempt = max(
+                int(getattr(task, "attempt", 1) or 1),
+                next_attempt(db, account["org"]["id"], attempt_of),
+            )
         save_task_request(
             db,
             root,
@@ -76,6 +83,8 @@ def record_task(root: Path, database_url: str, task) -> None:
             agent_id=str(getattr(task, "agent_id", "") or "") or None,
             model_id=str(getattr(task, "model_id", "") or "") or None,
             agent_kind=str(getattr(task, "agent_kind", "") or "") or None,
+            attempt_of=attempt_of or None,
+            attempt=int(getattr(task, "attempt", 1) or 1),
         )
         who = name or "Someone"
         record_audit(
@@ -517,7 +526,8 @@ def _project_tasks(root: Path, database_url: str, workspace: Path) -> list[dict]
                 """
                 SELECT tasks.id, tasks.status, tasks.branch, tasks.pr_url,
                        tasks.goal_ciphertext, tasks.result_ciphertext, tasks.created,
-                       tasks.tenant_id, tasks.requester_id, projects.locator
+                       tasks.tenant_id, tasks.requester_id, tasks.attempt_of, tasks.attempt,
+                       projects.locator
                 FROM tasks
                 JOIN projects ON projects.id = tasks.project_id
                 WHERE projects.tenant_id = ?
@@ -548,6 +558,20 @@ def open_job(root: Path, database_url: str, task_id: str) -> dict | None:
     return _open_record(root, database_url, row)
 
 
+def stored_job(root: Path, database_url: str, task_id: str) -> dict | None:
+    """One stored job in any state, so a finished run can be run again."""
+    row = _task_row(root, database_url, task_id)
+    if row is None:
+        return None
+    return _open_record(root, database_url, row, finished=True)
+
+
+def _attempt_fields(row: dict) -> dict:
+    """Which proposal this run belongs to, and its run number."""
+    root_id = str(row.get("attempt_of") or "") or str(row["id"])
+    return {"attempt_of": root_id, "attempt": int(row.get("attempt") or 1)}
+
+
 def _history_item(root: Path, database_url: str, row: dict) -> dict:
     goal, result = _goal_and_result(root, database_url, row)
     steps = result.get("steps") if isinstance(result.get("steps"), list) else []
@@ -574,6 +598,7 @@ def _history_item(root: Path, database_url: str, row: dict) -> dict:
         "pr_url": row["pr_url"],
         "created_at": datetime.fromtimestamp(created, UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "events": [*steps, *file_events_from_diff(diff)],
+        **_attempt_fields(row),
         **_people(root, database_url, row),
     }
 
@@ -591,7 +616,8 @@ def _open_rows(root: Path, database_url: str) -> list[dict]:
                 SELECT tasks.id, tasks.status, tasks.branch, tasks.pr_url,
                        tasks.goal_ciphertext, tasks.result_ciphertext, tasks.created,
                        tasks.tenant_id, tasks.requester_id, tasks.agent_id,
-                       tasks.model_id, tasks.agent_kind, projects.locator
+                       tasks.model_id, tasks.agent_kind, tasks.attempt_of, tasks.attempt,
+                       projects.locator
                 FROM tasks
                 JOIN projects ON projects.id = tasks.project_id
                 WHERE tasks.tenant_id = ?
@@ -618,7 +644,8 @@ def _task_row(root: Path, database_url: str, task_id: str) -> dict | None:
                 SELECT tasks.id, tasks.status, tasks.branch, tasks.pr_url,
                        tasks.goal_ciphertext, tasks.result_ciphertext, tasks.created,
                        tasks.tenant_id, tasks.requester_id, tasks.agent_id,
-                       tasks.model_id, tasks.agent_kind, projects.locator
+                       tasks.model_id, tasks.agent_kind, tasks.attempt_of, tasks.attempt,
+                       projects.locator
                 FROM tasks
                 JOIN projects ON projects.id = tasks.project_id
                 WHERE tasks.tenant_id = ? AND tasks.id = ?
@@ -632,7 +659,9 @@ def _task_row(root: Path, database_url: str, task_id: str) -> dict | None:
     return dict(row)
 
 
-def _open_record(root: Path, database_url: str, row: dict) -> dict | None:
+def _open_record(
+    root: Path, database_url: str, row: dict, *, finished: bool = False
+) -> dict | None:
     goal, result = _goal_and_result(root, database_url, row)
     locator = str(row["locator"] or "")
     saved = _saved_entry(Path(locator), str(row["id"])) if locator else {}
@@ -652,7 +681,7 @@ def _open_record(root: Path, database_url: str, row: dict) -> dict | None:
     elif not stage:
         stage = saved_stage
     status = _shown_status(status, stage, decision)
-    if status not in _OPEN_STATUSES:
+    if status not in _OPEN_STATUSES and not finished:
         return None
     criteria = result.get("criteria")
     if not isinstance(criteria, list) or not criteria:
@@ -695,6 +724,7 @@ def _open_record(root: Path, database_url: str, row: dict) -> dict | None:
         "review_notes": str(result.get("review_notes") or ""),
         "events": [*steps, *file_events_from_diff(diff)],
         "change_base": str(result.get("start") or ""),
+        **_attempt_fields(row),
         "spec": result.get("spec") if isinstance(result.get("spec"), dict) else {},
         "human_gates": (
             result.get("human_gates") if isinstance(result.get("human_gates"), dict) else {}

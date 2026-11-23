@@ -36,6 +36,14 @@ type Config struct {
 	PermissionMode string `json:"permission_mode,omitempty"`
 	// AllowedTools is passed to claude --allowedTools.
 	AllowedTools []string `json:"allowed_tools,omitempty"`
+	// Sandbox runs Claude Code's shell commands in its sandbox and approves any
+	// command there without asking. Writes stay in the job's worktree and the
+	// network reaches only SandboxDomains. Unset means on, except on Windows,
+	// where Claude Code has no sandbox.
+	Sandbox *bool `json:"sandbox,omitempty"`
+	// SandboxDomains are the hosts sandboxed commands may reach. Unset means
+	// DefaultSandboxDomains, the common package registries.
+	SandboxDomains []string `json:"sandbox_domains,omitempty"`
 	// MaxTurns limits one job's agent turns. Zero means Claude Code's default.
 	MaxTurns int `json:"max_turns,omitempty"`
 	// Model asks Claude Code for a model when the job does not name one. Empty
@@ -61,6 +69,52 @@ type Config struct {
 var DefaultAllowedTools = []string{
 	"Read", "Edit", "Write", "Glob", "Grep", "MultiEdit",
 	"Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
+}
+
+// DefaultSandboxDomains let a sandboxed build install packages and fetch modules.
+var DefaultSandboxDomains = []string{
+	"pypi.org", "files.pythonhosted.org",
+	"registry.npmjs.org", "registry.yarnpkg.com",
+	"proxy.golang.org", "sum.golang.org",
+	"crates.io", "static.crates.io", "index.crates.io",
+	"rubygems.org",
+	"github.com", "codeload.github.com", "objects.githubusercontent.com",
+}
+
+// SandboxOn says whether jobs run shell commands in Claude Code's sandbox.
+// LBW_RUNNER_SANDBOX=off or on overrides config.json, for containers, where the
+// container is the boundary.
+func (c *Config) SandboxOn() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LBW_RUNNER_SANDBOX"))) {
+	case "off", "false", "0":
+		return false
+	case "on", "true", "1":
+		return true
+	}
+	if c.Sandbox != nil {
+		return *c.Sandbox
+	}
+	return runtime.GOOS != "windows"
+}
+
+// SandboxSettings is the --settings value that turns the sandbox on for one
+// run: any shell command is approved inside it, a command can never leave it,
+// and Claude Code stops instead of running unsandboxed when it cannot start.
+func (c *Config) SandboxSettings() string {
+	domains := c.SandboxDomains
+	if len(domains) == 0 {
+		domains = DefaultSandboxDomains
+	}
+	data, _ := json.Marshal(map[string]any{
+		"sandbox": map[string]any{
+			"enabled":                  true,
+			"autoAllowBashIfSandboxed": true,
+			"allowUnsandboxedCommands": false,
+			"failIfUnavailable":        true,
+			"network":                  map[string]any{"allowedDomains": domains},
+		},
+	})
+	return string(data)
 }
 
 // Home is the runner's folder: LBW_RUNNER_HOME, or lbw-runner in the user config folder.

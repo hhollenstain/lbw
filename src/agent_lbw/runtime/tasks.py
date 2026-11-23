@@ -244,6 +244,9 @@ class Task:
     spec_path: str = ""
     spec_text: str = ""
     spec_accepted: bool = False
+    # A rerun is another run of the same proposal: its first run's id, and this run's number.
+    attempt_of: str = ""
+    attempt: int = 1
 
     def to_dict(self, *, include_logs: bool = True) -> dict:
         payload = {
@@ -296,6 +299,8 @@ class Task:
             "spec_path": self.spec_path,
             "spec_text": self.spec_text,
             "spec_accepted": self.spec_accepted,
+            "attempt_of": self.attempt_of or self.id,
+            "attempt": self.attempt,
         }
         if include_logs:
             payload["logs"] = list(self.logs)
@@ -384,6 +389,8 @@ class TaskManager:
         spec_path: str = "",
         spec_text: str = "",
         spec_accepted: bool = False,
+        attempt_of: str = "",
+        attempt: int = 1,
     ) -> Task:
         workspace = workspace.expanduser().resolve()
         if not workspace.is_dir():
@@ -445,6 +452,8 @@ class TaskManager:
             spec_text=spec_text if spec else "",
             spec_accepted=bool(spec and spec_accepted and spec_text.strip()),
             actor_id=(requester_id or "").strip(),
+            attempt_of=(attempt_of or "").strip(),
+            attempt=max(1, int(attempt or 1)),
         )
         with self._lock:
             self._tasks[task.id] = task
@@ -554,9 +563,18 @@ class TaskManager:
             model_id = old_task.model_id
             agent_kind = old_task.agent_kind
             context_window = old_task.context_window if old_task.pin_context_window else None
+        first = old_task.attempt_of or old_task.id
+        with self._lock:
+            numbers = [
+                item.attempt
+                for item in self._tasks.values()
+                if item.id == first or item.attempt_of == first
+            ]
         return self.submit(
             Path(old_task.workspace),
             revised or old_task.goal,
+            attempt_of=first,
+            attempt=max([old_task.attempt, *numbers]) + 1,
             auto_commit=old_task.auto_commit,
             create_pr=create_pr,
             model_name=model_name,
@@ -643,6 +661,22 @@ class TaskManager:
             record = open_job(self.store_root, self.settings.database_url, task_id)
         except Exception as exc:
             log.warning("task %s was not restored: %s", task_id, exc)
+            return None
+        if record is None:
+            return None
+        return self._adopt(record, start=False)
+
+    def load_job(self, task_id: str) -> Task | None:
+        """This job, from memory or from its stored row in any state. It is not started."""
+        current = self.adopt_job(task_id)
+        if current is not None or self.store_root is None:
+            return current
+        try:
+            from agent_lbw.runtime.store.recording import stored_job
+
+            record = stored_job(self.store_root, self.settings.database_url, task_id)
+        except Exception as exc:
+            log.warning("task %s was not loaded: %s", task_id, exc)
             return None
         if record is None:
             return None
@@ -834,6 +868,7 @@ class TaskManager:
         ]
         evidence = [item for item in (record.get("evidence") or []) if isinstance(item, dict)]
         decision = str(record.get("decision") or "") or None
+        attempt_of = str(record.get("attempt_of") or "")
         return Task(
             id=str(record["id"]),
             workspace=str(record.get("workspace") or ""),
@@ -875,6 +910,8 @@ class TaskManager:
             spec_accepted=bool(spec.get("accepted")),
             events=[item for item in (record.get("events") or []) if isinstance(item, dict)],
             change_base=str(record.get("change_base") or "") or None,
+            attempt_of=attempt_of if attempt_of != str(record["id"]) else "",
+            attempt=int(record.get("attempt") or 1),
         )
 
     def _run(self, task: Task) -> None:

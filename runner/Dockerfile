@@ -20,6 +20,9 @@ RUN apt-get update \
 COPY --from=build /out/lbw-runner /usr/local/bin/lbw-runner
 USER runner
 ENV LBW_RUNNER_HOME=/home/runner/.lbw-runner
+# The container is the boundary: Claude Code's sandbox needs namespaces Docker
+# does not give by default, so jobs here run without it.
+ENV LBW_RUNNER_SANDBOX=off
 VOLUME ["/home/runner/.lbw-runner"]
 ENTRYPOINT ["lbw-runner"]
 CMD ["run"]

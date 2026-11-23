@@ -1958,6 +1958,31 @@ button.inbox-fold {
 .change-head-side .progress-pr { margin: 0; }
 .change-head-side .progress-pr:empty { display: none; }
 
+/* A proposal that ran more than once: pick a run, latest first. */
+.run-attempts:empty { display: none; }
+
+.run-attempt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.run-attempt select {
+  max-width: 16rem;
+  font-size: 0.8rem;
+}
+
+.run-number {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 /* Proposal form: the path a change takes, drawn from the checkpoints. */
 .flow-setup {
   margin: 1.1rem 0 0.4rem;
@@ -3226,6 +3251,30 @@ a.usage-export {
   font-size: 0.86rem;
 }
 
+.usage-price-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.usage-price-source {
+  display: block;
+  margin-top: 0.25rem;
+}
+
+.usage-price-actions {
+  width: 1%;
+}
+
+.usage-price-actions button {
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+}
+
+.usage-price-actions button + button {
+  margin-top: 0.3rem;
+}
+
 /* Integrations on the profile. */
 .integration-row {
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3251,30 +3300,6 @@ a.usage-export {
 
 .runner-approve {
   display: grid;
-.usage-price-scroll {
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.usage-price-source {
-  display: block;
-  margin-top: 0.25rem;
-}
-
-.usage-price-actions {
-  width: 1%;
-}
-
-.usage-price-actions button {
-  display: block;
-  width: 100%;
-  white-space: nowrap;
-}
-
-.usage-price-actions button + button {
-  margin-top: 0.3rem;
-}
-
   grid-template-columns: minmax(0, 14rem) auto;
   gap: 0.4rem 0.6rem;
   align-items: end;

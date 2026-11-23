@@ -87,3 +87,17 @@ func TestArgsAreHeadlessAndStreamed(t *testing.T) {
 		t.Fatalf("args = %s", args)
 	}
 }
+
+func TestASpecOrPlanRunTurnsOffEditing(t *testing.T) {
+	args := strings.Join(Options{Prompt: "x", DisallowedTools: []string{"Edit", "Write"}}.Args(), " ")
+	if !strings.Contains(args, "--disallowedTools Edit,Write") {
+		t.Fatalf("args = %s", args)
+	}
+}
+
+func TestSettingsArePassedThrough(t *testing.T) {
+	args := Options{Prompt: "x", Settings: `{"sandbox":{"enabled":true}}`}.Args()
+	if args[len(args)-2] != "--settings" || args[len(args)-1] != `{"sandbox":{"enabled":true}}` {
+		t.Fatalf("args = %v", args)
+	}
+}

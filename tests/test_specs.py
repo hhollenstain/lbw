@@ -15,6 +15,7 @@ from agent_lbw.llm.client import AssistantTurn, ScriptedClient, ToolCall
 from agent_lbw.runtime.db import database
 from agent_lbw.runtime.improve import CycleResult, SpecRequest, run_cycle
 from agent_lbw.runtime.spec import acceptance_criteria, clean_spec, save_spec, spec_path_for
+from agent_lbw.runtime.store.recording import open_job
 from agent_lbw.runtime.store.rules import ensure_workspace_project
 from agent_lbw.runtime.tasks import TaskManager
 from agent_lbw.web_ui import create_app
@@ -282,6 +283,11 @@ def test_a_person_accepts_an_edited_spec_and_the_job_builds(
         assert held["status"] == "waiting" and held["stage"] == "spec"
         assert held["spec_text"] == SPEC and held["spec_path"] == "specs/ship.md"
 
+        for _ in range(100):
+            stored = open_job(tmp_path, settings.database_url, task_id) or {}
+            if (stored.get("spec") or {}).get("on"):
+                break
+            time.sleep(0.05)
         restarted = TaskManager(settings, runner=_stub)
         restarted.store_root = tmp_path
         try:
