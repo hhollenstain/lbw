@@ -6186,6 +6186,23 @@
       return `<section class="ci-checks">${head}<ul class="ci-list">${mergeRow}${rows}</ul>${mergeAction}${action}</section>`;
     }
 
+    // The run of this proposal whose pull request is still open, newest first.
+    // A later run can fail without touching that pull request, and its checks
+    // and merge conflict still need a place on the change.
+    function openPullOfProposal(item) {
+      if (!item || !item.id) return null;
+      const run = workspaceRuns().find((entry) => (entry.attempts || [entry]).some((attempt) => attempt.item.id === item.id));
+      const attempts = run ? (run.attempts || [run]).slice() : [];
+      attempts.sort((left, right) => attemptNumber(right.item) - attemptNumber(left.item));
+      for (const attempt of attempts) {
+        const url = prUrl(attempt.item);
+        if (!url || !attempt.item.id || attempt.item.merged) continue;
+        if (["merged", "closed"].includes(prStateOf(url))) continue;
+        return attempt.item;
+      }
+      return null;
+    }
+
     async function loadCiChecks(taskId, refresh) {
       const previous = state.ciChecks[taskId] || {};
       state.ciChecks[taskId] = { ...previous, loading: true, at: previous.at || 0 };
@@ -8013,7 +8030,10 @@
         const next = canReply
           ? replyBox("Say what should change, then continue. Or rerun it from the start.", item.id, rerun)
           : (rerun ? `<div class="change-actions">${rerun}</div>` : "");
-        callout = calloutHtml("bad", "Failed", stuck ? "This job cannot be retried" : "The change did not finish", `<p class="callout-copy">${escapeHtml(why)}</p>${next}`);
+        const pullRun = openPullOfProposal(item);
+        const pullUrl = pullRun ? prUrl(pullRun) : "";
+        const pullChecks = pullRun ? `<div class="change-actions">${prLinkHtml(pullUrl)}</div>${ciChecksHtml(pullRun)}` : "";
+        callout = calloutHtml("bad", "Failed", stuck ? "This job cannot be retried" : "The change did not finish", `<p class="callout-copy">${escapeHtml(why)}</p>${next}${pullChecks}`);
       } else if (done) {
         calloutStep = "pr";
         const pull = url ? prStateOf(url) : "";

@@ -200,6 +200,8 @@ A failed change that names a phase in `restart_from` shows Rerun from that
 step (Build or Pull request) first, and Rerun all beside it.
 An open pull request's CI checks list a merge conflict with its base branch
 when GitHub reports one, with Fix merge conflict to start a merge run.
+A failed later run of a proposal whose pull request is still open shows that
+pull request's link and checks under the failure.
 Do not put a decision only inside one step's detail, where a reader has to
 find the right step first. At plan review the card shows what building
 should cost, above Build it, and says what the estimate is based on. Selecting a step loads its detail under the
