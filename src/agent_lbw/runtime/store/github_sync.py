@@ -13,6 +13,7 @@ from pathlib import Path
 
 from agent_lbw.runtime.db import Database, database, database_configured
 from agent_lbw.runtime.store.auth import current_actor
+from agent_lbw.runtime.store.favorites import favorite_project_ids, move_favorites
 from agent_lbw.runtime.store.github import (
     GitHubAppError,
     github_api,
@@ -346,6 +347,7 @@ def recorded_workspaces(store_root: Path, database_url: str = "") -> list[dict]:
             align_project_locators(db, account["org"]["id"])
             actor = current_actor() or str(account.get("current_user_id") or "")
             rows = projects_for_person(db, account["org"]["id"], actor)
+            favorites = favorite_project_ids(db, account["org"]["id"], actor)
     except (OSError, ValueError):
         return []
     from agent_lbw.runtime.workspaces import default_checkout_parent, describe_workspace
@@ -393,6 +395,8 @@ def recorded_workspaces(store_root: Path, database_url: str = "") -> list[dict]:
                 "locator": locator,
             }
         )
+    for entry in entries:
+        entry["favorite"] = str(entry["project_id"]) in favorites
     return entries
 
 
@@ -647,6 +651,7 @@ def _retarget_project(db: Database, source: str, target: str) -> None:
     _move_model_settings(db, source, target)
     _move_scope(db, "agent_grants", ("agent_id",), source, target)
     _move_scope(db, "rules", ("tenant_id", "name"), source, target)
+    move_favorites(db, source, target)
 
 
 def _move_model_settings(db: Database, source: str, target: str) -> None:

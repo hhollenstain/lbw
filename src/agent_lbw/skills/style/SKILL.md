@@ -102,6 +102,16 @@ at shows the person glyph. A skipped checkpoint is dashed and reads
 Automatic. The checkboxes sit in Checkpoints and Result groups with
 sentence-case `--ink` labels, not uppercase field labels.
 
+The sidebar project list has no border of its own. A row is the project
+name at `0.88rem` in `--ink`, with an `8px` radius and a `--panel` fill on
+hover or while the keyboard is on it. The current project is `--navy`
+weight 680 with a small `--accent` dot before it. Matched letters in a
+search are bold and underlined, not tinted. A group label (Favorites,
+Current, All projects) is uppercase `--muted` at `0.7rem`. The star is an
+outline in `--muted` that shows on hover. A favorite is a filled `--warn`
+star and always shows. All projects and Show fewer are a plain `--muted`
+text button that turns `--navy` on hover. The list scrolls past `16rem`.
+
 ## Type
 
 Body text is `15px/1.5` system UI. The logo wordmark is Avenir Next, weight

@@ -294,6 +294,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProjectModelList"
+  /api/workspaces/favorites:
+    put:
+      operationId: setProjectFavorite
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectFavoriteWrite"
+      responses:
+        "200":
+          description: The signed-in person's favorite projects after one star changes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectFavoriteList"
   /api/github/repos/enabled:
     put:
       operationId: setGitHubRepoEnabled
@@ -975,6 +991,22 @@ components:
           type: string
         enabled:
           type: boolean
+    ProjectFavoriteWrite:
+      type: object
+      required: [project_id, favorite]
+      properties:
+        project_id:
+          type: string
+        favorite:
+          type: boolean
+    ProjectFavoriteList:
+      type: object
+      required: [favorites]
+      properties:
+        favorites:
+          type: array
+          items:
+            type: string
     ProjectModelWrite:
       type: object
       required: [model_id, enabled]

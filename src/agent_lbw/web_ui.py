@@ -40,6 +40,8 @@ from agent_lbw.openapi_models import (
     AuditList,
     DecidePayload,
     InvestigateChecks,
+    ProjectFavoriteList,
+    ProjectFavoriteWrite,
     ProjectModelList,
     ProjectModelWrite,
     ProjectSpecPolicy,
@@ -472,6 +474,7 @@ class UiState:
         """Remove a project row that has no jobs. The checkout folder stays."""
         store = Path(self.store_root)
         from agent_lbw.runtime.db import database, database_configured
+        from agent_lbw.runtime.store.favorites import drop_favorites
         from agent_lbw.runtime.store.install import read_account
         from agent_lbw.runtime.store.recording import project_id_for_checkout
 
@@ -489,6 +492,7 @@ class UiState:
             jobs = db.fetchone("SELECT id FROM tasks WHERE project_id = ? LIMIT 1", (project_id,))
             if jobs is not None:
                 return
+            drop_favorites(db, project_id)
             db.execute("DELETE FROM project_grants WHERE project_id = ?", (project_id,))
             db.execute("DELETE FROM rule_requirements WHERE project_id = ?", (project_id,))
             db.execute("DELETE FROM schedules WHERE project_id = ?", (project_id,))
@@ -1902,6 +1906,31 @@ def create_app(
 
     def _workspace_root(ui: UiState, path: str | None) -> Path:
         return Path(path or ui.default_workspace).expanduser().resolve()
+
+    @app.put("/api/workspaces/favorites", response_model=ProjectFavoriteList)
+    def update_project_favorite(
+        request: Request, payload: ProjectFavoriteWrite
+    ) -> ProjectFavoriteList | JSONResponse:
+        ui: UiState = request.app.state.ui
+        from agent_lbw.runtime.db import database, database_configured
+        from agent_lbw.runtime.store.favorites import set_favorite
+
+        root = Path(ui.store_root)
+        url = ui.manager.settings.database_url
+        # A star is one person's shortcut, not a change to the organization.
+        request.state.audit_explicit = True
+        if not database_configured(root, url):
+            return JSONResponse({"error": "no organization database"}, status_code=400)
+        try:
+            with database(root, url) as db:
+                favorites = set_favorite(db, payload.project_id, favorite=payload.favorite)
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except KeyError:
+            return JSONResponse({"error": "unknown project"}, status_code=404)
+        except (OSError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return ProjectFavoriteList(favorites=favorites)
 
     @app.get("/api/workspaces/models", response_model=ProjectModelList)
     def list_project_models(

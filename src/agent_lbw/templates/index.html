@@ -2379,10 +2379,9 @@
       <div class="sidebar-stack" id="sidebar-stack">
       <div class="project-switch">
         <label class="project-switch-label" for="project-search">Project</label>
-        <div class="project-finder">
-          <input id="project-search" class="project-search" type="search" placeholder="Find a project" aria-label="Find a project" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="project-menu">
-          <div id="project-menu" class="project-menu" role="listbox" hidden></div>
-        </div>
+        <input id="project-search" class="project-search" type="search" placeholder="Find a project" aria-label="Find a project" autocomplete="off" aria-controls="project-list">
+        <ul id="project-list" class="project-list" aria-label="Projects"></ul>
+        <button type="button" id="project-list-more" class="project-list-more" aria-expanded="false" aria-controls="project-list" hidden>All projects</button>
         <select id="project-select" aria-label="Project" hidden>
           {% for ws in known_workspaces %}
           <option value="{{ ws.path }}" {% if ws.path == default_workspace %}selected{% endif %}>{{ ws.name }}{% if ws.missing %} (no checkout){% endif %}</option>
@@ -4160,6 +4159,7 @@
           search.value = "";
           search.placeholder = "No projects yet";
         }
+        renderProjectList();
         paintWorkspaceSummary({});
         if (archiveProjectEl) archiveProjectEl.hidden = true;
         return;
@@ -4177,12 +4177,8 @@
         projectSelectEl.value = picked;
       }
       const search = document.getElementById("project-search");
-      const chosen = workspaces.find((item) => item.path === (projectSelectEl.value || picked));
-      if (search && document.activeElement !== search) {
-        search.disabled = false;
-        search.placeholder = "Find a project";
-        search.value = chosen ? finderLabel(chosen) : "";
-      }
+      if (search) search.placeholder = "Find a project";
+      renderProjectList();
       if (archiveProjectEl) archiveProjectEl.hidden = workspaces.length < 2;
     }
 
@@ -4397,42 +4393,79 @@
       });
     }
     const projectSearchEl = document.getElementById("project-search");
-    const projectMenuEl = document.getElementById("project-menu");
-    let projectQuery = "";
+    const projectMoreEl = document.getElementById("project-list-more");
+    state.projectQuery = "";
+    state.projectActive = 0;
+    state.projectListOpen = readProjectListOpen();
+
+    function readProjectListOpen() {
+      try {
+        return localStorage.getItem("lbw-project-list-open") === "1";
+      } catch (err) {
+        return false;
+      }
+    }
+
+    function saveProjectListOpen(open) {
+      try {
+        localStorage.setItem("lbw-project-list-open", open ? "1" : "0");
+      } catch (err) {
+        // A blocked store only forgets the expanded list.
+      }
+    }
+
     if (projectSearchEl) {
-      projectSearchEl.addEventListener("focus", () => {
-        projectQuery = "";
-        openProjectMenu();
-        projectSearchEl.select();
-      });
       projectSearchEl.addEventListener("input", () => {
-        projectQuery = projectSearchEl.value;
-        openProjectMenu();
-      });
-      projectSearchEl.addEventListener("blur", () => {
-        closeProjectMenu();
-        const current = (state.workspaceCatalog || []).find((item) => item.path === workspaceEl.value);
-        projectSearchEl.value = current ? finderLabel(current) : "";
+        state.projectQuery = projectSearchEl.value;
+        state.projectActive = 0;
+        renderProjectList();
       });
       projectSearchEl.addEventListener("keydown", (event) => {
+        const rows = projectRowsShown();
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          if (!rows.length) return;
+          const step = event.key === "ArrowDown" ? 1 : -1;
+          state.projectActive = (state.projectActive + step + rows.length) % rows.length;
+          renderProjectList();
+          return;
+        }
         if (event.key === "Escape") {
-          projectSearchEl.blur();
+          if (!projectSearchEl.value) {
+            projectSearchEl.blur();
+            return;
+          }
+          event.preventDefault();
+          clearProjectQuery();
           return;
         }
         if (event.key !== "Enter") return;
         event.preventDefault();
-        const first = projectMenuEl && projectMenuEl.querySelector(".project-menu-item");
-        if (first) first.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        const picked = rows[state.projectActive] || rows[0];
+        if (picked) chooseProject(picked.item);
+      });
+    }
+    if (projectMoreEl) {
+      projectMoreEl.addEventListener("click", () => {
+        state.projectListOpen = !state.projectListOpen;
+        saveProjectListOpen(state.projectListOpen);
+        renderProjectList();
       });
     }
 
-    function finderLabel(item) {
+    function clearProjectQuery() {
+      state.projectQuery = "";
+      state.projectActive = 0;
+      if (projectSearchEl) projectSearchEl.value = "";
+      renderProjectList();
+    }
+
+    function projectTitle(item) {
       const locator = String((item && item.locator) || "");
       if (locator && locator.indexOf("/") > 0 && !locator.startsWith("/") && locator.indexOf("\\") < 0) {
-        return item.missing ? locator + " (no checkout)" : locator;
+        return locator;
       }
-      const name = (item && (item.name || item.path)) || "";
-      return item && item.missing ? name + " (no checkout)" : name;
+      return String((item && (item.name || item.path)) || "");
     }
 
     function projectLink(item) {
@@ -4443,62 +4476,253 @@
       return String((item && item.path) || "");
     }
 
-    function openProjectMenu() {
-      if (!projectMenuEl) return;
-      projectMenuEl.hidden = false;
-      if (projectSearchEl) projectSearchEl.setAttribute("aria-expanded", "true");
-      renderProjectMenu();
+    function isWordStart(text, index) {
+      if (index === 0) return true;
+      return /[\/\-_.\s]/.test(text[index - 1]);
     }
 
-    function closeProjectMenu() {
-      if (projectMenuEl) projectMenuEl.hidden = true;
-      if (projectSearchEl) projectSearchEl.setAttribute("aria-expanded", "false");
-    }
-
-    function projectMatches(item, query) {
-      const name = String((item && item.name) || "");
-      const locator = String((item && item.locator) || "");
-      const remote = String((item && item.git_remote) || "");
-      const path = String((item && item.path) || "");
-      if (repoMatches(name, query) || repoMatches(remote, query)) return true;
-      const repo = locator.indexOf("/") > 0 && !locator.startsWith("/") && locator.indexOf("\\") < 0;
-      if (repo && repoMatches(locator, query)) return true;
-      const folded = String(query || "").toLowerCase();
-      if (!folded) return true;
-      return path.toLowerCase().includes(folded) || locator.toLowerCase().includes(folded);
-    }
-
-    function renderProjectMenu() {
-      if (!projectMenuEl) return;
-      const rows = (state.workspaceCatalog || []).filter((item) => projectMatches(item, projectQuery));
-      projectMenuEl.replaceChildren();
-      if (!rows.length) {
-        const empty = document.createElement("div");
-        empty.className = "project-menu-empty";
-        empty.textContent = (state.workspaceCatalog || []).length
-          ? "No project matches."
-          : "No projects yet";
-        projectMenuEl.append(empty);
-        return;
+    // Score how well a query matches text, or return null. A run of letters
+    // beats scattered ones, and a match at the start of a word beats one
+    // inside it. hits are the matched character positions, for highlighting.
+    function fuzzyMatch(text, query) {
+      const hay = String(text || "").toLowerCase();
+      const needle = String(query || "").toLowerCase().replace(/\s+/g, "");
+      if (!needle) return { score: 0, hits: [] };
+      const at = hay.indexOf(needle);
+      if (at >= 0) {
+        const hits = [];
+        for (let index = at; index < at + needle.length; index += 1) hits.push(index);
+        const start = isWordStart(hay, at) ? 300 : 0;
+        return { score: 1000 + start - at - hay.length / 10, hits: hits };
       }
-      for (const item of rows) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "project-menu-item";
-        button.setAttribute("role", "option");
-        button.textContent = finderLabel(item);
-        if (item.path === workspaceEl.value) button.setAttribute("aria-selected", "true");
-        button.addEventListener("mousedown", (event) => {
-          event.preventDefault();
-          chooseProject(item);
+      return scatteredMatch(hay, needle, true) || scatteredMatch(hay, needle, false);
+    }
+
+    // Match the query's letters in order. With wordStarts, a letter jumps
+    // ahead to the start of a word when it is not next to the last one.
+    function scatteredMatch(hay, needle, wordStarts) {
+      const hits = [];
+      let score = 500;
+      let from = 0;
+      for (const ch of needle) {
+        let found = -1;
+        for (let index = from; index < hay.length; index += 1) {
+          if (hay[index] !== ch) continue;
+          if (found < 0) found = index;
+          if (!wordStarts || (hits.length && index === hits[hits.length - 1] + 1)) break;
+          if (isWordStart(hay, index)) {
+            found = index;
+            break;
+          }
+        }
+        if (found < 0) return null;
+        if (isWordStart(hay, found)) score += 15;
+        if (hits.length && found === hits[hits.length - 1] + 1) score += 10;
+        if (hits.length) score -= found - hits[hits.length - 1] - 1;
+        hits.push(found);
+        from = found + 1;
+      }
+      return { score: score - hits[0] - hay.length / 10, hits: hits };
+    }
+
+    // The title and name match letters in order. A remote or a folder path is
+    // long enough that scattered letters match almost anything, so those
+    // only match the query as written.
+    function matchProject(item, query) {
+      const title = fuzzyMatch(projectTitle(item), query);
+      let best = title ? { score: title.score, hits: title.hits } : null;
+      const name = fuzzyMatch(item && item.name, query);
+      if (name && (!best || name.score - 100 > best.score)) {
+        best = { score: name.score - 100, hits: [] };
+      }
+      const needle = String(query || "").toLowerCase().trim();
+      for (const value of [item && item.git_remote, item && item.path]) {
+        if (!String(value || "").toLowerCase().includes(needle)) continue;
+        if (!best) best = { score: 0, hits: [] };
+      }
+      return best;
+    }
+
+    function byTitle(left, right) {
+      return projectTitle(left).localeCompare(projectTitle(right), undefined, { sensitivity: "base" });
+    }
+
+    // The rows the list draws, in order. Each row is { item, hits, group }.
+    function projectRowsShown() {
+      const catalog = (state.workspaceCatalog || []).slice().sort(byTitle);
+      const current = workspaceEl ? workspaceEl.value : "";
+      const query = state.projectQuery.trim();
+      if (query) {
+        const ranked = [];
+        for (const item of catalog) {
+          const found = matchProject(item, query);
+          if (!found) continue;
+          const lift = item.favorite ? 50 : 0;
+          ranked.push({ item: item, hits: found.hits, group: "", score: found.score + lift });
+        }
+        ranked.sort((left, right) => right.score - left.score);
+        return ranked;
+      }
+      const favorites = catalog.filter((item) => item.favorite);
+      const rows = favorites.map((item) => ({ item: item, hits: [], group: "Favorites" }));
+      if (state.projectListOpen) {
+        for (const item of catalog) {
+          if (!item.favorite) rows.push({ item: item, hits: [], group: "All projects" });
+        }
+        return rows;
+      }
+      const chosen = catalog.find((item) => item.path === current && !item.favorite);
+      if (chosen) rows.push({ item: chosen, hits: [], group: favorites.length ? "Current" : "" });
+      return rows;
+    }
+
+    function highlightedTitle(item, hits) {
+      const title = projectTitle(item);
+      const span = document.createElement("span");
+      span.className = "project-row-name";
+      if (!hits.length) {
+        span.textContent = title;
+        return span;
+      }
+      const marked = new Set(hits);
+      let run = "";
+      let inMark = false;
+      function flush() {
+        if (!run) return;
+        if (inMark) {
+          const mark = document.createElement("mark");
+          mark.textContent = run;
+          span.append(mark);
+        } else {
+          span.append(document.createTextNode(run));
+        }
+        run = "";
+      }
+      for (let index = 0; index < title.length; index += 1) {
+        const hit = marked.has(index);
+        if (hit !== inMark) {
+          flush();
+          inMark = hit;
+        }
+        run += title[index];
+      }
+      flush();
+      return span;
+    }
+
+    function starIcon() {
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", "0 0 24 24");
+      svg.setAttribute("aria-hidden", "true");
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", "M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z");
+      path.setAttribute("stroke-linejoin", "round");
+      svg.append(path);
+      return svg;
+    }
+
+    function projectRow(row, index) {
+      const item = row.item;
+      const current = workspaceEl ? workspaceEl.value : "";
+      const li = document.createElement("li");
+      li.className = "project-row";
+      if (index === state.projectActive && state.projectQuery.trim()) li.classList.add("is-active");
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "project-row-pick";
+      pick.dataset.projectPath = item.path;
+      pick.title = item.path;
+      if (item.path === current) pick.setAttribute("aria-current", "true");
+      pick.append(highlightedTitle(item, row.hits));
+      if (item.missing) {
+        const note = document.createElement("span");
+        note.className = "project-row-note";
+        note.textContent = "no checkout";
+        pick.append(note);
+      }
+      pick.addEventListener("click", () => chooseProject(item));
+      li.append(pick);
+      if (item.project_id) {
+        const star = document.createElement("button");
+        star.type = "button";
+        star.className = "project-row-star";
+        star.dataset.projectFavorite = item.project_id;
+        star.setAttribute("aria-pressed", item.favorite ? "true" : "false");
+        const verb = item.favorite ? "Remove " + projectTitle(item) + " from favorites" : "Favorite " + projectTitle(item);
+        star.setAttribute("aria-label", verb);
+        star.title = item.favorite ? "Remove from favorites" : "Add to favorites";
+        star.append(starIcon());
+        star.addEventListener("click", () => toggleFavorite(item));
+        li.append(star);
+      }
+      return li;
+    }
+
+    function renderProjectList() {
+      const listEl = document.getElementById("project-list");
+      const moreEl = document.getElementById("project-list-more");
+      if (!listEl) return;
+      const catalog = state.workspaceCatalog || [];
+      const rows = projectRowsShown();
+      const query = state.projectQuery.trim();
+      if (state.projectActive >= rows.length) state.projectActive = 0;
+      listEl.replaceChildren();
+      listEl.classList.toggle("is-searching", Boolean(query));
+      let group = null;
+      for (const [index, row] of rows.entries()) {
+        if (row.group && row.group !== group) {
+          const heading = document.createElement("li");
+          heading.className = "project-list-group";
+          heading.textContent = row.group;
+          listEl.append(heading);
+        }
+        group = row.group;
+        listEl.append(projectRow(row, index));
+      }
+      if (query && !rows.length) {
+        const empty = document.createElement("li");
+        empty.className = "project-list-empty";
+        empty.textContent = "No project matches.";
+        listEl.append(empty);
+      } else if (!query && catalog.length > 1 && !catalog.some((item) => item.favorite)) {
+        const tip = document.createElement("li");
+        tip.className = "project-list-empty";
+        tip.textContent = "Star a project to keep it here.";
+        listEl.append(tip);
+      }
+      if (!moreEl) return;
+      const hidden = catalog.length - rows.length;
+      moreEl.hidden = Boolean(query) || (!state.projectListOpen && hidden <= 0);
+      moreEl.setAttribute("aria-expanded", state.projectListOpen ? "true" : "false");
+      moreEl.textContent = state.projectListOpen ? "Show fewer" : "All projects (" + catalog.length + ")";
+    }
+
+    async function toggleFavorite(item) {
+      const next = !item.favorite;
+      item.favorite = next;
+      renderProjectList();
+      try {
+        const res = await fetch("/api/workspaces/favorites", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ project_id: item.project_id, favorite: next }),
         });
-        projectMenuEl.append(button);
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || "could not save that favorite");
+        const kept = new Set(body.favorites || []);
+        for (const entry of state.workspaceCatalog || []) {
+          if (entry.project_id) entry.favorite = kept.has(entry.project_id);
+        }
+      } catch (err) {
+        item.favorite = !next;
+        notify("error", err.message, { title: "Could not save that favorite" });
       }
+      renderProjectList();
     }
 
     function chooseProject(item) {
-      closeProjectMenu();
-      if (projectSearchEl) projectSearchEl.value = finderLabel(item);
+      if (state.projectQuery) clearProjectQuery();
+      if (projectSearchEl) projectSearchEl.blur();
       if (!item.path || item.path === workspaceEl.value) return;
       selectWorkspace(item.path, { close: false }).catch((err) => {
         notify("error", err.message, { title: "Could not switch project" });

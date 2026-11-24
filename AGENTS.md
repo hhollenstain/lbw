@@ -82,7 +82,8 @@ itself is also in `skills/agent-lbw/SKILL.md`.
 
 Shared rows live in `runtime/store/`. Each file owns one concern: `schema` creates
 the tables, `crypto` seals secrets, `install` is the local account, `teams`,
-`duties`, and `projects` are access, `tasks` stores a request, `schedules`
+`duties`, and `projects` are access, `favorites` is the projects a person
+stars, `tasks` stores a request, `schedules`
 indexes when one should run, and `recording` is what the task queue and the
 scheduler call.
 

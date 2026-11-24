@@ -89,6 +89,15 @@ _STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS project_favorites (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        identity_id TEXT NOT NULL REFERENCES identities (id),
+        project_id TEXT NOT NULL REFERENCES projects (id),
+        created INTEGER NOT NULL,
+        PRIMARY KEY (identity_id, project_id)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS rules (
         id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES tenants (id),
@@ -544,6 +553,7 @@ CLEAR_ORDER = (
     "schedules",
     "tasks",
     "project_grants",
+    "project_favorites",
     "projects",
     "duty_grants",
     "team_memberships",
@@ -583,7 +593,7 @@ TASK_COLUMNS = frozenset(
 
 # Raise this with every change below, or a database already at the old
 # version never runs it: ensure_schema only migrates when this goes up.
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 def read_schema_version(db: Database) -> int:

@@ -133,6 +133,15 @@ class AgentTeamProjectWrite(BaseModel):
     path: str = ""
 
 
+class ProjectFavoriteWrite(BaseModel):
+    project_id: str
+    favorite: bool
+
+
+class ProjectFavoriteList(BaseModel):
+    favorites: list[str] = Field(default_factory=list)
+
+
 class ProjectModelWrite(BaseModel):
     model_id: str
     enabled: bool
