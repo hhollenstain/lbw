@@ -23,6 +23,7 @@ from agent_lbw.web_ui import create_app
 PR = "https://github.com/acme/demo/pull/7"
 LOG = "\n".join(f"2026-11-24T01:00:{i % 60:02d}.0000000Z line {i}" for i in range(400))
 LOG += "\n\x1b[31mFAILED tests/test_app.py::test_home - assert 500 == 200\x1b[0m"
+LOG += "\nPost job cleanup.\n" + "\n".join(f"cleanup {i}" for i in range(300))
 
 
 def fake_github(method: str, path: str, *, token: str) -> object:
@@ -96,6 +97,7 @@ def test_what_a_failed_check_printed_is_gathered() -> None:
     assert "[LBW shortened this log to its last lines]" in text
     assert "line 100\n" not in text
     assert "ci/deploy-preview" not in text
+    assert "cleanup 299" not in text
 
 
 def _done(task: Task) -> CycleResult:

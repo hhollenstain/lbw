@@ -237,6 +237,8 @@ def _log_tail(base: str, job_id: int, token: str, download: Download) -> str:
     except GitHubAppError as exc:
         return f"(The log was not read: {exc})"
     clean = _STAMP.sub("", _ANSI.sub("", raw))
+    # GitHub's own cleanup steps end every Actions log. The failure is above them.
+    clean = clean.split("Post job cleanup.", 1)[0]
     lines = clean.splitlines()
     tail = "\n".join(lines[-_LOG_LINES:])
     if len(tail) > _LOG_CHARS:
