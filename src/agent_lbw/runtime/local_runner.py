@@ -51,6 +51,7 @@ from agent_lbw.sandbox import Workspace
 from agent_lbw.tools.git import (
     current_branch,
     current_sha,
+    is_protected_branch,
     parse_github_remote,
     run_git,
     stash_local_edits,
@@ -259,7 +260,7 @@ def run_on_runner(
             criteria=[*criteria, *(item for item in checks if item not in criteria)],
         )
     held = task.branch or ""
-    if decision == "send_back" and held.startswith(_BRANCH_PREFIX):
+    if decision == "send_back" and _holds_runner_work(task, held):
         tip = held
     start_patch = ""
     if tip != base:
@@ -334,6 +335,7 @@ def run_on_runner(
         create_pr=_wants_pr(task, workspace, settings),
         store_root=store_root,
         pr_base=task.base_branch,
+        keep_pull_request=bool(getattr(task, "ci_pr_url", "")),
     )
 
 
@@ -410,6 +412,31 @@ def _start_event(task) -> dict | None:
     return None
 
 
+def _notes_for_runner(task) -> str:
+    """Review notes, and what failed checks printed when the run investigates them.
+
+    The checks' output goes to the runner in memory. It is not stored.
+    """
+    parts = [str(task.review_notes or "").strip(), str(getattr(task, "ci_context", "") or "")]
+    return "\n\n".join(part.strip() for part in parts if part.strip())
+
+
+def _continues_pull_request(task) -> bool:
+    """A run that continues an open pull request, such as a fix for its failed checks."""
+    return bool(task.resume_branch and (task.change_base or getattr(task, "ci_pr_url", "")))
+
+
+def _branch_for(task) -> str:
+    """Where the runner's commits go: the pull request's branch, or a fresh one."""
+    if _continues_pull_request(task) and not is_protected_branch(task.resume_branch):
+        return str(task.resume_branch)
+    return f"{_BRANCH_PREFIX}{task.id[:8]}"
+
+
+def _holds_runner_work(task, branch: str) -> bool:
+    return bool(branch) and (branch.startswith(_BRANCH_PREFIX) or branch == _branch_for(task))
+
+
 def _recorded_start(task) -> str:
     """The commit this job's change starts from, once a run recorded it."""
     events = getattr(task, "events", None) or []
@@ -449,7 +476,7 @@ def _waiting(
 def _publish_approved(workspace: Workspace, task, settings: Settings, store_root: Path):
     """Publish the runner's commits a person approved. Nothing runs on the runner."""
     held = task.branch or ""
-    if not held.startswith(_BRANCH_PREFIX):
+    if not _holds_runner_work(task, held):
         return _failed(task, "the approved change is not on a runner branch")
     moved = _switch(workspace, [held])
     if moved:
@@ -464,6 +491,7 @@ def _publish_approved(workspace: Workspace, task, settings: Settings, store_root
         create_pr=_wants_pr(task, workspace, settings),
         store_root=store_root,
         pr_base=task.base_branch,
+        keep_pull_request=bool(getattr(task, "ci_pr_url", "")),
     )
 
 
@@ -533,7 +561,7 @@ def _dispatch(extra, task, settings, store_root, hub, facts, job_seconds, pickup
             "job_id": job_id,
             "task_id": task.id,
             "goal": task.goal or "",
-            "review_notes": task.review_notes or "",
+            "review_notes": _notes_for_runner(task),
             "base_branch": task.base_branch or facts.get("branch") or "",
             "model": task.model_name if task.model_id else "",
             "max_seconds": int(job_seconds),
@@ -630,7 +658,7 @@ def _apply(workspace: Workspace, task, settings: Settings, base_sha: str, patch:
     """
     if len(patch.encode("utf-8")) > MAX_PATCH_BYTES:
         return "the runner's change is larger than LBW accepts"
-    branch = f"{_BRANCH_PREFIX}{task.id[:8]}"
+    branch = _branch_for(task)
     committer = _committer(task, settings)
     env = {key: value for key, value in committer.items() if key.startswith("GIT_COMMITTER")}
     with tempfile.TemporaryDirectory(prefix="lbw-runner-") as scratch:

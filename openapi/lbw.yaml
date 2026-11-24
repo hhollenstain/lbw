@@ -453,6 +453,58 @@ paths:
           description: The call's id, method, path, body, and the owner's server address.
         "204":
           description: No call is waiting.
+  /api/tasks/{task_id}/checks:
+    get:
+      operationId: listTaskChecks
+      description: >-
+        The CI checks on the head commit of this job's pull request, failed
+        ones first. Read from GitHub with the organization's GitHub App and
+        cached for 30 seconds; refresh=true reads them again.
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: refresh
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: >-
+            pr_url, sha, state (failing, pending, passing, or none), checks
+            (name, state, conclusion, url, summary), and the failed names.
+        "404":
+          description: The job is gone or has no pull request.
+        "409":
+          description: GitHub could not say what the checks are.
+  /api/tasks/{task_id}/checks/investigate:
+    post:
+      operationId: investigateTaskChecks
+      description: >-
+        Start the next run of this job on its open pull request to fix failed
+        checks. The run reads what the checks printed, writes a fix, and waits
+        for approval. Approving pushes the fix to the pull request.
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvestigateChecks"
+      responses:
+        "201":
+          description: The investigation run.
+        "404":
+          description: The job is gone or has no pull request.
+        "409":
+          description: The pull request is not open, or no check has failed.
   /api/tasks/{task_id}/rerun:
     post:
       operationId: rerunTask
@@ -1061,6 +1113,15 @@ components:
           type: boolean
           default: false
           description: Write a spec first. A job that already has a spec keeps it.
+    InvestigateChecks:
+      type: object
+      properties:
+        checks:
+          type: array
+          items:
+            type: string
+          default: []
+          description: The failed checks to fix, by name. Empty means every failed check.
     RunnerModelAnswer:
       type: object
       required: [status]

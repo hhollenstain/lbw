@@ -276,6 +276,12 @@ scheduler call.
 
 - Do not commit, stage, or push `.lbw/` or `history.json`. Config, cloned
   skills, run logs, and screenshots stay local.
+- A change whose pull request is open lists its CI checks (`runtime/ci_checks.py`,
+  `GET /api/tasks/{id}/checks`). A person can investigate failed ones: the next
+  run of the proposal reads what they printed, writes a fix on the pull
+  request's branch, and waits for approval. Approving pushes the fix and
+  comments on the pull request; its title and text stay. The checks' output
+  is read when the run starts and kept in memory. It is not stored.
 - Publishing commits the project files, pushes that branch, and then opens the pull request. The pull request is not opened while those files are still uncommitted, or before the push succeeds.
 - Do not force-push, skip hooks, or rewrite published history.
 - Do not bind-mount this app's `.lbw` over `/workspaces/.lbw`.

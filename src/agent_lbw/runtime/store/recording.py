@@ -324,7 +324,17 @@ def _job_payload(task) -> dict:
             "triage": str(getattr(task, "triage_gate", "") or ""),
             "approval": str(getattr(task, "approval_gate", "") or ""),
         },
+        "ci": _ci_record(task),
     }
+
+
+def _ci_record(task: object) -> dict:
+    """Which failed checks a run investigates. Their output is not stored."""
+    pr_url = str(getattr(task, "ci_pr_url", "") or "")
+    if not pr_url:
+        return {}
+    names = [str(name)[:200] for name in getattr(task, "ci_checks", None) or []][:30]
+    return {"pr_url": pr_url, "checks": names}
 
 
 def _spec_record(task: object) -> dict:
@@ -725,6 +735,7 @@ def _open_record(
         "events": [*steps, *file_events_from_diff(diff)],
         "change_base": str(result.get("start") or ""),
         **_attempt_fields(row),
+        "ci": result.get("ci") if isinstance(result.get("ci"), dict) else {},
         "spec": result.get("spec") if isinstance(result.get("spec"), dict) else {},
         "human_gates": (
             result.get("human_gates") if isinstance(result.get("human_gates"), dict) else {}

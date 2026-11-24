@@ -41,10 +41,17 @@ Repository permissions:
 | Contents | Read and write |
 | Issues | Read and write |
 | Pull requests | Read and write |
+| Checks | Read-only |
+| Commit statuses | Read-only |
+| Actions | Read-only |
 | Metadata | Read-only |
 
 GitHub adds Metadata on its own. Contents and Pull requests need write so
-LBW can push commits, open a pull request, and merge it.
+LBW can push commits, open a pull request, and merge it. Checks, Commit
+statuses, and Actions read let a change's pull request list its CI checks
+and let an investigation read what a failed GitHub Actions job printed. An
+app installed before these were added asks the owner to accept the new
+permissions; until then the checks list says GitHub refused the request.
 
 Organization permissions:
 

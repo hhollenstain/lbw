@@ -1138,6 +1138,21 @@ def update_pull_request(
     return ToolResult(result.returncode == 0, output or "updated pull request")
 
 
+def comment_on_pull_request(
+    workspace: Workspace, body: str, *, token: str | None = None
+) -> ToolResult:
+    """Comment on the open pull request on the current branch. Its title and text stay."""
+    text = (body or "").strip()
+    if not text:
+        return ToolResult(False, "nothing to say")
+    try:
+        result = _gh(workspace, ["gh", "pr", "comment", "--body", text], token)
+    except FileNotFoundError:
+        return ToolResult(False, "gh not found")
+    output = (result.stdout or result.stderr).strip()
+    return ToolResult(result.returncode == 0, output or "commented on the pull request")
+
+
 def existing_pull_request(workspace: Workspace, *, token: str | None = None) -> str | None:
     """URL of the open PR for the current branch, if one already exists."""
     try:

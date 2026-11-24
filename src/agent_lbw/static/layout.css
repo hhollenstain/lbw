@@ -1958,6 +1958,85 @@ button.inbox-fold {
 .change-head-side .progress-pr { margin: 0; }
 .change-head-side .progress-pr:empty { display: none; }
 
+/* Pull request step: its CI checks, failed first, and the investigate action. */
+.ci-checks {
+  margin: 0.75rem 0 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.ci-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0 0.4rem;
+}
+
+.ci-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.ci-refresh {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.ci-list {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ci-check {
+  display: grid;
+  grid-template-columns: 1rem 4.5rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.ci-check input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
+
+.ci-state {
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.ci-failing .ci-state { color: var(--bad); }
+.ci-pending .ci-state { color: var(--muted); }
+.ci-passing .ci-state { color: var(--ok); }
+
+.ci-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ci-summary {
+  display: block;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.ci-actions {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: start;
+  margin: 0.6rem 0 0;
+}
+
+.ci-actions .hint { margin: 0; }
+
 /* Rerun dialog: where the next run stops for a person. */
 .rerun-checkpoints {
   display: grid;

@@ -5897,6 +5897,92 @@
       return (url && state.prStates[url]) || "";
     }
 
+    // A pull request's CI checks, read from GitHub. Failed ones can be investigated:
+    // the next run reads what they printed, writes a fix, and waits for approval.
+    const CI_CHECKS_TTL_MS = 60_000;
+    state.ciChecks = {};
+    state.ciSkipped = {};
+
+    function ciChecksHtml(item) {
+      const id = item.id;
+      const entry = state.ciChecks[id];
+      if (!entry || (!entry.loading && Date.now() - entry.at > CI_CHECKS_TTL_MS)) loadCiChecks(id, false);
+      const head = `<div class="ci-head"><p class="ci-title">CI checks</p><button type="button" class="secondary ci-refresh" data-ci-refresh="${escapeHtml(id)}">Refresh</button></div>`;
+      if (!entry || (entry.loading && !entry.data)) {
+        return `<section class="ci-checks">${head}<p class="step-copy">Reading checks…</p></section>`;
+      }
+      if (entry.error) {
+        return `<section class="ci-checks">${head}<p class="step-copy">${escapeHtml(entry.error)}</p></section>`;
+      }
+      const data = entry.data || {};
+      const checks = data.checks || [];
+      if (!checks.length) {
+        return `<section class="ci-checks">${head}<p class="step-copy">No checks have run on this pull request.</p></section>`;
+      }
+      const skipped = state.ciSkipped[id] || new Set();
+      const labels = { failing: "Failed", pending: "Running", passing: "Passed" };
+      const rows = checks.map((check) => {
+        const name = escapeHtml(check.name);
+        const link = check.url
+          ? `<a href="${escapeHtml(check.url)}" target="_blank" rel="noopener noreferrer">${name}</a>`
+          : name;
+        const pick = check.state === "failing"
+          ? `<input type="checkbox" data-ci-pick="${escapeHtml(id)}" value="${name}"${skipped.has(check.name) ? "" : " checked"} aria-label="Investigate ${name}">`
+          : `<span class="ci-pick-space" aria-hidden="true"></span>`;
+        const summary = check.summary ? `<span class="ci-summary">${escapeHtml(check.summary)}</span>` : "";
+        return `<li class="ci-check ci-${escapeHtml(check.state)}">${pick}<span class="ci-state">${labels[check.state] || "Unknown"}</span><span class="ci-name">${link}${summary}</span></li>`;
+      }).join("");
+      const failed = (data.failed || []).length;
+      const action = failed
+        ? `<div class="ci-actions"><button type="button" data-ci-investigate="${escapeHtml(id)}">Investigate failures</button><p class="hint">The next run reads what the ticked checks printed, writes a fix, and waits for you to approve it. Approving pushes the fix to this pull request.</p></div>`
+        : "";
+      return `<section class="ci-checks">${head}<ul class="ci-list">${rows}</ul>${action}</section>`;
+    }
+
+    async function loadCiChecks(taskId, refresh) {
+      const previous = state.ciChecks[taskId] || {};
+      state.ciChecks[taskId] = { ...previous, loading: true, at: previous.at || 0 };
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/checks${refresh ? "?refresh=true" : ""}`);
+        const body = await res.json();
+        state.ciChecks[taskId] = res.ok
+          ? { data: body, at: Date.now(), loading: false }
+          : { error: body.error || "Could not read the checks", at: Date.now(), loading: false };
+      } catch (err) {
+        state.ciChecks[taskId] = { error: err.message, at: Date.now(), loading: false };
+      }
+      render();
+    }
+
+    async function investigateCiChecks(taskId, button) {
+      const entry = state.ciChecks[taskId] || {};
+      const skipped = state.ciSkipped[taskId] || new Set();
+      const checks = ((entry.data || {}).failed || []).filter((name) => !skipped.has(name));
+      if (!checks.length) {
+        notify("error", "Tick at least one failed check.", { title: "Nothing to investigate" });
+        return;
+      }
+      if (button) button.disabled = true;
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/checks/investigate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ checks }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "Could not start the investigation");
+        state.selectedRunKey = `task:${body.id}`;
+        state.selected = body.id;
+        state.taskStatus[body.id] = body.status || "queued";
+        notify("queued", checks.join(", "), { title: "Investigating failed checks" });
+        await refresh();
+      } catch (err) {
+        notify("error", err.message, { title: "Could not investigate" });
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
     function prIsOpen(item) {
       const url = prUrl(item);
       return Boolean(url) && prStateOf(url) === "open";
@@ -7628,7 +7714,7 @@
         const blocked = githubCommitBlocked(item);
         const copy = blocked
           ? `<p class="callout-copy">Connect GitHub from your personal page before approving this commit. You can still send it back.</p>`
-          : `<p class="callout-copy">The reviews are in. Approve to ${item.create_pr === false ? "commit the change" : "open the pull request"}, or say what to change and send it back.</p>`;
+          : `<p class="callout-copy">The reviews are in. Approve to ${item.ci_pr_url ? "push the fix to the pull request" : (item.create_pr === false ? "commit the change" : "open the pull request")}, or say what to change and send it back.</p>`;
         const approve = blocked ? "" : `<button type="button" data-change-decision="approve"${taskAttr}>Approve</button>`;
         callout = calloutHtml("you", "Your turn", "Approve the change", `${copy}${summary}${verdictChips()}${changesLink ? `<p class="callout-row">${changesLink}</p>` : ""}<textarea class="reply-note" rows="2" spellcheck="false" placeholder="What should the builder change? (for Send back)"></textarea><div class="change-actions">${approve}<button type="button" class="secondary" data-change-decision="send_back"${taskAttr}>Send back</button></div>`);
       } else if (yourTurn.builder) {
@@ -7671,7 +7757,8 @@
           ? `<button type="button" data-merge-url="${escapeHtml(url)}" data-merge-workspace="${escapeHtml(item.workspace || "")}">Merge</button><button type="button" class="secondary" data-request-changes="${escapeHtml(state.selectedRunKey)}">Request changes</button>`
           : "";
         const link = url ? prLinkHtml(url) : "";
-        callout = calloutHtml("done", "Done", title, `${item.summary && !url ? `<p class="callout-copy">${escapeHtml(String(item.summary).trim())}</p>` : ""}${url ? "" : sha}${link || actions || changesLink ? `<div class="change-actions">${link}${actions}${changesLink}</div>` : ""}`);
+        const checks = url && item.id && !item.merged && !["merged", "closed"].includes(pull) ? ciChecksHtml(item) : "";
+        callout = calloutHtml("done", "Done", title, `${item.summary && !url ? `<p class="callout-copy">${escapeHtml(String(item.summary).trim())}</p>` : ""}${url ? "" : sha}${link || actions || changesLink ? `<div class="change-actions">${link}${actions}${changesLink}</div>` : ""}${checks}`);
       } else if (status === "skipped") {
         callout = calloutHtml("muted", "Skipped", "Nothing to change", `<p class="callout-copy">${escapeHtml(reason || item.summary || "The tree already met the goal.")}</p>`);
       }
@@ -9157,7 +9244,26 @@
       decideChange(taskId, button.dataset.changeDecision, button);
     });
 
+    runDetailEl.addEventListener("click", (event) => {
+      const refreshButton = event.target.closest("[data-ci-refresh]");
+      if (refreshButton) {
+        loadCiChecks(refreshButton.dataset.ciRefresh, true);
+        return;
+      }
+      const investigate = event.target.closest("[data-ci-investigate]");
+      if (investigate) investigateCiChecks(investigate.dataset.ciInvestigate, investigate);
+    });
+
     runDetailEl.addEventListener("change", (event) => {
+      const pick = event.target.closest("[data-ci-pick]");
+      if (pick) {
+        const id = pick.dataset.ciPick;
+        const skipped = state.ciSkipped[id] || new Set();
+        if (pick.checked) skipped.delete(pick.value);
+        else skipped.add(pick.value);
+        state.ciSkipped[id] = skipped;
+        return;
+      }
       const picker = event.target.closest("[data-run-attempt]");
       if (!picker || picker.value === state.selectedRunKey) return;
       state.selectedRunKey = picker.value;

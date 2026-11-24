@@ -205,6 +205,10 @@ class RerunPayload(BaseModel):
     spec: bool = False
 
 
+class InvestigateChecks(BaseModel):
+    checks: list[str] = Field(default_factory=list)
+
+
 class RunnerModelAnswer(BaseModel):
     status: int
     body: str = ""

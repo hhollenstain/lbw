@@ -39,6 +39,7 @@ from agent_lbw.openapi_models import (
     AgentTeamProjectWrite,
     AuditList,
     DecidePayload,
+    InvestigateChecks,
     ProjectModelList,
     ProjectModelWrite,
     ProjectSpecPolicy,
@@ -1308,6 +1309,76 @@ def create_app(
             return JSONResponse({"error": str(exc)}, status_code=400)
         if new_task is None:
             return JSONResponse({"error": "task not found or not rerunnable"}, status_code=404)
+        return JSONResponse(new_task.to_dict(), status_code=201)
+
+    @app.get("/api/tasks/{task_id}/checks")
+    def task_checks(task_id: str, request: Request, refresh: bool = False) -> Any:
+        from agent_lbw.runtime.ci_checks import ChecksError, pull_checks
+
+        ui: UiState = request.app.state.ui
+        task = ui.manager.load_job(task_id)
+        if task is None:
+            return JSONResponse({"error": "task not found"}, status_code=404)
+        if not task.pr_url:
+            return JSONResponse({"error": "this change has no pull request"}, status_code=404)
+        token = _ui_github_token(ui)
+        if not token:
+            return JSONResponse(
+                {"error": "Connect a GitHub App under Organization to read checks"},
+                status_code=409,
+            )
+        try:
+            return pull_checks(task.pr_url, token, force=refresh)
+        except ChecksError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+
+    @app.post("/api/tasks/{task_id}/checks/investigate")
+    def investigate_task_checks(
+        task_id: str, request: Request, payload: InvestigateChecks | None = None
+    ) -> Any:
+        from agent_lbw.runtime.ci_checks import ChecksError, investigation_goal, pull_checks
+
+        ui: UiState = request.app.state.ui
+        old_task = ui.manager.load_job(task_id)
+        if old_task is None:
+            return JSONResponse({"error": "task not found"}, status_code=404)
+        if not old_task.pr_url:
+            return JSONResponse({"error": "this change has no pull request"}, status_code=404)
+        blocked = _proposal_writer_block(ui, old_task.workspace)
+        if blocked:
+            return JSONResponse({"error": blocked}, status_code=403)
+        token = _ui_github_token(ui)
+        if not token:
+            return JSONResponse(
+                {"error": "Connect a GitHub App under Organization to read checks"},
+                status_code=409,
+            )
+        if lookup_pull_state(old_task.pr_url, force=True, token=token) in {"closed", "merged"}:
+            return JSONResponse({"error": "pull request is not open"}, status_code=409)
+        try:
+            failed = pull_checks(old_task.pr_url, token, force=True)["failed"]
+        except ChecksError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        asked = [name for name in (payload.checks if payload else []) if name.strip()]
+        names = [name for name in failed if not asked or name in asked]
+        if not names:
+            return JSONResponse({"error": "no check has failed"}, status_code=409)
+        credential_block, actor = _acting_credential(ui, old_task)
+        if credential_block is not None:
+            return credential_block
+        try:
+            new_task = ui.manager.rerun(
+                task_id,
+                goal=investigation_goal(old_task.pr_url, names),
+                actor_id=actor,
+                triage_gate="auto",
+                approval_gate="ask",
+                ci_checks=names,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if new_task is None:
+            return JSONResponse({"error": "this change cannot run again now"}, status_code=409)
         return JSONResponse(new_task.to_dict(), status_code=201)
 
     @app.post("/api/tasks/{task_id}/rework")
