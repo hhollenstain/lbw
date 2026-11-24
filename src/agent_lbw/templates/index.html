@@ -8050,6 +8050,10 @@
     const FOLLOW_PX = 80;
     let renderedProgressKey = { selected: null, historyKey: "" };
     let lastProgressHtml = "";
+    // The run picker as last drawn. The browser writes `selected` back as
+    // `selected=""`, so comparing against innerHTML would redraw it on every
+    // refresh and close an open dropdown before a run is picked.
+    let lastAttemptsHtml = "";
 
     function progressScroller() {
       if (state.taskPane === "changes") {
@@ -8609,7 +8613,11 @@
         const prEl = root.querySelector("[data-progress-pr]");
         if (prEl) prEl.innerHTML = prHtml;
         const attemptsEl = root.querySelector("[data-progress-attempts]");
-        if (attemptsEl && attemptsEl.innerHTML !== attemptsHtml) attemptsEl.innerHTML = attemptsHtml;
+        const picking = attemptsEl && attemptsEl.contains(document.activeElement);
+        if (attemptsEl && !picking && lastAttemptsHtml !== attemptsHtml) {
+          attemptsEl.innerHTML = attemptsHtml;
+          lastAttemptsHtml = attemptsHtml;
+        }
         const body = root.querySelector("[data-progress-body]");
         if (body && lastProgressHtml !== progressHtml) {
           body.innerHTML = progressHtml;
@@ -8637,6 +8645,7 @@
         `;
       }
       lastProgressHtml = progressHtml;
+      if (!sameItem) lastAttemptsHtml = attemptsHtml;
       restoreScroll(scroll, page, { running: live });
       requestAnimationFrame(() => restoreScroll(scroll, page, { running: live }));
     }
