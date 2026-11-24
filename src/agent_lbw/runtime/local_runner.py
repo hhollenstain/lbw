@@ -186,14 +186,19 @@ def run_on_runner(
     if decision == "approve":
         return _publish_approved(workspace, task, settings, store_root)
     facts = _git_facts(workspace)
-    base = _recorded_start(task)
-    if base:
-        facts["base_sha"] = base
-    elif facts["base_sha"]:
-        sha = facts["base_sha"]
-        record_event(kind="step", message=f"Starting from {sha[:8]}", start_sha=sha)
-    if not facts["base_sha"]:
-        return _failed(task, "a runner job needs a git checkout with at least one commit")
+    started = _start_event(task)
+    if started is not None:
+        base = str(started["start_sha"])
+        tip = str(started.get("tip_sha") or base)
+    else:
+        tip = facts["base_sha"]
+        if not tip:
+            return _failed(task, "a runner job needs a git checkout with at least one commit")
+        base = published_base(workspace, tip)
+        record_event(
+            kind="step", message=_start_message(workspace, base, tip), start_sha=base, tip_sha=tip
+        )
+    facts["base_sha"] = base
     triage, approval = resolve_human_gates(task.gate, task.triage_gate, task.approval_gate)
     goal = task.goal or ""
     spec_path = ""
@@ -253,12 +258,14 @@ def run_on_runner(
             plan=plan_text,
             criteria=[*criteria, *(item for item in checks if item not in criteria)],
         )
-    start_patch = ""
     held = task.branch or ""
     if decision == "send_back" and held.startswith(_BRANCH_PREFIX):
-        earlier = run_git(workspace, ["format-patch", "--stdout", f"{facts['base_sha']}..{held}"])
+        tip = held
+    start_patch = ""
+    if tip != base:
+        earlier = run_git(workspace, ["format-patch", "--stdout", f"{base}..{tip}"])
         if earlier.returncode != 0:
-            return _failed(task, f"could not read the work on {held}: {earlier.stderr.strip()}")
+            return _failed(task, f"could not read the work on {tip}: {earlier.stderr.strip()}")
         start_patch = earlier.stdout
     result = _dispatch(
         {
@@ -357,6 +364,50 @@ def _wants_pr(task, workspace: Workspace, settings: Settings) -> bool:
     if task.create_pr is not None:
         return bool(task.create_pr)
     return resolve_create_pr(settings, load_project(workspace.root), None)
+
+
+def published_base(workspace: Workspace, tip: str) -> str:
+    """The newest commit of `tip` that a remote branch already has.
+
+    The runner fetches its start from the remote, so it cannot start from a
+    commit only this checkout has, such as a failed job's applied commits. The
+    commits after this base go to the runner as its start patch instead. With
+    no remote branch to compare against, `tip` itself is the base.
+    """
+    unpublished = run_git(
+        workspace, ["rev-list", "--reverse", "--topo-order", tip, "--not", "--remotes"]
+    )
+    if unpublished.returncode != 0:
+        return tip
+    first = next(iter(unpublished.stdout.split()), "")
+    if not first:
+        return tip
+    parent = run_git(workspace, ["rev-parse", "--verify", "--quiet", f"{first}^"])
+    if parent.returncode != 0 or not parent.stdout.strip():
+        return tip
+    has_remote = run_git(workspace, ["branch", "-r", "--contains", parent.stdout.strip()])
+    if has_remote.returncode != 0 or not has_remote.stdout.strip():
+        return tip
+    return parent.stdout.strip()
+
+
+def _start_message(workspace: Workspace, base: str, tip: str) -> str:
+    if base == tip:
+        return f"Starting from {base[:8]}"
+    counted = run_git(workspace, ["rev-list", "--count", f"{base}..{tip}"])
+    count = counted.stdout.strip() if counted.returncode == 0 else "some"
+    return (
+        f"Starting from {base[:8]}, the newest commit on the remote, "
+        f"and sending the runner {count} commit(s) only this server has"
+    )
+
+
+def _start_event(task) -> dict | None:
+    """The step that recorded where this job starts, and what it continues from."""
+    for event in getattr(task, "events", None) or []:
+        if isinstance(event, dict) and event.get("start_sha"):
+            return event
+    return None
 
 
 def _recorded_start(task) -> str:

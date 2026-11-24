@@ -613,6 +613,63 @@ def test_a_stored_github_job_reruns_in_its_checkout(settings: Settings, tmp_path
         manager.shutdown(wait=True)
 
 
+def test_a_runner_starts_from_the_remote_and_carries_unpushed_commits(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """A failed job's applied commits were never pushed. A rerun must not need them pushed."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    pushed = _repo(workspace)
+    _git(workspace, "remote", "add", "origin", str(origin))
+    _git(workspace, "push", "-q", "-u", "origin", "main")
+    _git(workspace, "checkout", "-q", "-b", "lbw/runner-old")
+    (workspace / "first.txt").write_text("first try\n", encoding="utf-8")
+    _git(workspace, "add", "first.txt")
+    _git(workspace, "commit", "-q", "-m", "First try")
+    local_only = _git(workspace, "rev-parse", "HEAD").strip()
+    manager = TaskManager(settings)
+    client = TestClient(create_app(manager, default_workspace=workspace))
+    try:
+        client.get("/api/directory")
+        model_id = _runner_model(client, workspace, workspace)
+        token = _link(client)
+        _beat(client, token)
+        auth = {"Authorization": f"Bearer {token}"}
+        created = client.post(
+            "/api/tasks",
+            json={
+                "workspace": str(workspace),
+                "goal": "Finish it",
+                "model_id": model_id,
+                "create_pr": False,
+            },
+        )
+        assert created.status_code == 201, created.text
+        job = _lease(client, auth)
+        assert job["base_sha"] == pushed
+        assert job["base_sha"] != local_only
+        assert "+first try" in job["start_patch"]
+
+        clone = tmp_path / "runner-worktree"
+        subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True)
+        _git(clone, "am", "-q", "--3way", _mbox(clone, job["start_patch"]))
+        both = _commit_patch(clone, pushed, "second.txt", "second\n")
+        _finish(client, auth, job, "Finished", both)
+        _wait(client, created.json()["id"], "success")
+        assert (workspace / "first.txt").read_text(encoding="utf-8") == "first try\n"
+        assert (workspace / "second.txt").read_text(encoding="utf-8") == "second\n"
+    finally:
+        manager.shutdown(wait=True)
+
+
+def _mbox(root: Path, patch: str) -> str:
+    path = root.parent / "start.mbox"
+    path.write_text(patch, encoding="utf-8")
+    return str(path)
+
+
 def test_a_runner_failure_fails_the_job(settings: Settings, tmp_path: Path) -> None:
     workspace = tmp_path / "demo"
     workspace.mkdir()

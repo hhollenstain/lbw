@@ -172,6 +172,10 @@ A runner job stops at the same gates as a job in LBW (`runtime/local_runner.py`)
   in the checkout's .gitignore while the job runs. It then checks out the
   result as `lbw/runner-<job>`, keeping a person's edits in `git stash`, and
   commits the spec with it, so a spec alone never ships.
+- **Start.** The runner fetches its start commit from the remote, so LBW starts
+  it from the newest commit a remote branch already has. Commits only this
+  server has, such as a failed job's applied commits that a rerun continues
+  from, go to the runner as `start_patch`. Nothing has to be pushed first.
 - **Approval.** When the approval gate asks, the commits wait on that branch.
   Approving runs the tests and publishes without the runner. Sending it back
   gives the runner the earlier commits as `start_patch`, and it continues from
