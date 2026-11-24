@@ -297,6 +297,21 @@ def test_commit_rejects_env_file(tmp_path: Path) -> None:
     assert "secrets" in result.output
 
 
+def test_commit_keeps_an_env_template_and_refuses_a_real_env_file(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    workspace = Workspace(tmp_path)
+    (tmp_path / ".env.example").write_text("API_KEY=\n", encoding="utf-8")
+    result = commit_changes(workspace, "document the settings")
+    assert result.ok, result.output
+    tracked = run_git(workspace, ["ls-files"]).stdout.split()
+    assert ".env.example" in tracked
+    (tmp_path / ".env.production").write_text("API_KEY=real\n", encoding="utf-8")
+    refused = commit_changes(workspace, "add production env")
+    assert not refused.ok
+    assert ".env.production" in refused.output
+
+
 def test_commit_skips_run_logs(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
     init_git_repo(tmp_path)

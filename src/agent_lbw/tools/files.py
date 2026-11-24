@@ -547,10 +547,15 @@ def _nearby_hint(before: str, needle: str) -> str:
     return f" File starts with:\n{preview}" if preview else ""
 
 
+# A template beside .env lists the variable names with placeholder values and
+# belongs in the repository, so a project can say what to set.
+ENV_TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist", ".defaults")
+
+
 def is_probably_secret_path(path: Path) -> bool:
     name = path.name.lower()
     if name in {".env", "credentials.json", "secrets.yaml", "secrets.yml", "id_rsa", "id_ed25519"}:
         return True
     if name.startswith(".env."):
-        return True
+        return not name.endswith(ENV_TEMPLATE_SUFFIXES)
     return path.suffix.lower() in {".pem", ".p12", ".key"}
