@@ -523,11 +523,16 @@ class TaskManager:
         goal: str | None = None,
         actor_id: str | None = None,
         model: dict | None = None,
+        triage_gate: str = "",
+        approval_gate: str = "",
+        spec: bool = False,
     ) -> Task | None:
         """Queue a new cycle on the task's branch, with an optional revised goal.
 
         `model` is another model the person picked, as `use_model` returns it with
-        its `model_id`. Without it the run keeps the job's model.
+        its `model_id`. Without it the run keeps the job's model. A gate left empty
+        keeps the job's own. `spec` adds a spec to a job that had none; a job that
+        has one keeps it.
         """
         with self._lock:
             old_task = self._tasks.get(task_id)
@@ -587,14 +592,14 @@ class TaskManager:
             continuous=old_task.continuous,
             context_window=context_window,
             gate=old_task.gate,
-            triage_gate=old_task.triage_gate,
-            approval_gate=old_task.approval_gate,
+            triage_gate=(triage_gate or "").strip() or old_task.triage_gate,
+            approval_gate=(approval_gate or "").strip() or old_task.approval_gate,
             agent_id=old_task.agent_id,
             agent_kind=agent_kind,
             cursor_key=old_task.cursor_key,
             model_id=model_id,
             requester_id=actor_id or old_task.actor_id or old_task.requester_id,
-            spec=old_task.spec,
+            spec=old_task.spec or spec,
             spec_path=old_task.spec_path,
             spec_text=old_task.spec_text,
             spec_accepted=old_task.spec_accepted,

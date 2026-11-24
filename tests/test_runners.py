@@ -670,6 +670,52 @@ def _mbox(root: Path, patch: str) -> str:
     return str(path)
 
 
+def test_a_rerun_can_turn_on_checkpoints_the_first_run_skipped(
+    settings: Settings, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    _repo(workspace)
+    manager = TaskManager(settings)
+    client = TestClient(create_app(manager, default_workspace=workspace))
+    try:
+        client.get("/api/directory")
+        model_id = _runner_model(client, workspace, workspace)
+        token = _link(client)
+        _beat(client, token)
+        auth = {"Authorization": f"Bearer {token}"}
+        created = client.post(
+            "/api/tasks",
+            json={
+                "workspace": str(workspace),
+                "goal": "Add a hello file",
+                "model_id": model_id,
+                "create_pr": False,
+                "triage_gate": "auto",
+                "approval_gate": "auto",
+            },
+        )
+        first = created.json()["id"]
+        _finish_failed(client, auth, _lease(client, auth))
+        _wait(client, first, "failed")
+
+        bad = client.post(f"/api/tasks/{first}/rerun", json={"triage_gate": "sometimes"})
+        assert bad.status_code == 400
+        rerun = client.post(
+            f"/api/tasks/{first}/rerun",
+            json={"triage_gate": "ask", "approval_gate": "ask", "spec": True},
+        )
+        assert rerun.status_code == 201, rerun.text
+        body = rerun.json()
+        assert (body["triage_gate"], body["approval_gate"], body["spec"]) == ("ask", "ask", True)
+        spec_job = _lease(client, auth)
+        assert spec_job["phase"] == "spec"
+        _finish(client, auth, spec_job, "# Hello\n\n## Acceptance criteria\n\n- hello.txt\n")
+        _wait_stage(client, body["id"], "spec")
+    finally:
+        manager.shutdown(wait=True)
+
+
 def test_a_runner_failure_fails_the_job(settings: Settings, tmp_path: Path) -> None:
     workspace = tmp_path / "demo"
     workspace.mkdir()

@@ -1555,6 +1555,7 @@ def publish_runner_change(
             store_root=store_root,
             pr_base=pr_base,
             rewind_sha=base_sha,
+            title=request_title(goal),
         )
         sha = current_sha(workspace) or sha
         if failed is not None:
@@ -1908,12 +1909,16 @@ def _publish_pull_request(
     store_root: Path | None = None,
     pr_base: str | None = None,
     rewind_sha: str | None = None,
+    title: str = "",
 ) -> tuple[bool, str | None, CycleResult | None, bool]:
     """Commit project changes, push that branch, then open or update the pull request.
 
     The pull request is not opened until the push succeeds. ``.lbw/`` and
     ``history.json`` stay out of the commit. A protected branch is not pushed.
+    ``title`` names the commit and the pull request instead of the summary's
+    first line.
     """
+    message = title or _commit_message(goal, summary)
     branch = current_branch(workspace)
     if is_protected_branch(branch):
         if committed:
@@ -1936,7 +1941,7 @@ def _publish_pull_request(
         log_progress("Committing changes before the push...")
         commit = commit_changes(
             workspace,
-            _commit_message(goal, summary),
+            message,
             env=_git_env(settings),
             store_root=store_root,
             database_url=settings.database_url,
@@ -1989,7 +1994,7 @@ def _publish_pull_request(
     folded = fold_unpublished_commits(
         workspace,
         base,
-        _commit_message(goal, summary),
+        message,
         env=_git_env(settings) if settings is not None else None,
         store_root=store_root,
         database_url=settings.database_url if settings is not None else "",
@@ -2034,7 +2039,7 @@ def _publish_pull_request(
         log_progress(f"Updating pull request {existing}")
         updated = update_pull_request(
             workspace,
-            _commit_message(goal, summary),
+            message,
             _pr_body(
                 goal,
                 summary,
@@ -2061,7 +2066,7 @@ def _publish_pull_request(
     log_progress("Opening pull request...")
     pr = create_pull_request(
         workspace,
-        _commit_message(goal, summary),
+        message,
         _pr_body(
             goal,
             summary,
@@ -3346,6 +3351,23 @@ def _clip_title(text: str, limit: int = 72) -> str:
         return clean
     cut = clean[:limit].rsplit(" ", 1)[0].rstrip(".,;:-")
     return cut or clean[:limit].rstrip()
+
+
+_LIST_MARK = re.compile(r"^(?:[-*•]|\d+[.)])\s+")
+
+
+def request_title(goal: str) -> str:
+    """A title from the person's request, for work whose summary is a report.
+
+    A request written as a list joins its items, so the title names the whole change.
+    """
+    text = (goal or "").strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [line for line in lines if not _is_prompt_line(line)]
+    items = [_LIST_MARK.sub("", line) for line in lines if _LIST_MARK.match(line)]
+    if items and len(items) == len(lines):
+        return _clip_title("; ".join(item.rstrip(".;") for item in items)) or "Update the project"
+    return _clip_title(_user_request(goal)) or "Update the project"
 
 
 def _commit_message(goal: str, summary: str) -> str:

@@ -200,6 +200,9 @@ class RerunPayload(BaseModel):
     sha: str = ""
     goal: str = ""
     model_id: str = ""
+    triage_gate: str = ""
+    approval_gate: str = ""
+    spec: bool = False
 
 
 class RunnerModelAnswer(BaseModel):

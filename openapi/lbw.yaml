@@ -1049,6 +1049,18 @@ components:
           type: string
           nullable: true
           description: A model from the job form's list. Empty keeps the job's model.
+        triage_gate:
+          type: string
+          default: ""
+          description: ask or auto. Empty keeps the job's own plan review.
+        approval_gate:
+          type: string
+          default: ""
+          description: ask or auto. Empty keeps the job's own approval.
+        spec:
+          type: boolean
+          default: false
+          description: Write a spec first. A job that already has a spec keeps it.
     RunnerModelAnswer:
       type: object
       required: [status]

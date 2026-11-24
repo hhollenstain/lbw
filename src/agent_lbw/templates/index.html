@@ -3024,6 +3024,12 @@
           <label for="rerun-model">Model</label>
           <select id="rerun-model"></select>
         </div>
+        <fieldset class="rerun-checkpoints" id="rerun-checkpoints" hidden>
+          <legend>Checkpoints</legend>
+          <label><input id="rerun-spec" type="checkbox"> Write a spec first</label>
+          <label><input id="rerun-gate-triage" type="checkbox"> Review the plan before code</label>
+          <label><input id="rerun-gate-approval" type="checkbox"> Review before the pull request</label>
+        </fieldset>
         <label for="rerun-new-goal">Goal</label>
         <textarea id="rerun-new-goal" spellcheck="false"></textarea>
         <div class="modal-actions">
@@ -8799,11 +8805,40 @@
       }
       if (submit) submit.textContent = asking ? "Send feedback" : (rerunning ? "Rerun" : "Update run");
       if (modelRow) modelRow.hidden = !rerunning;
-      if (rerunning) fillRerunModels(pending.entry);
+      const checkpoints = document.getElementById("rerun-checkpoints");
+      if (checkpoints) checkpoints.hidden = !rerunning;
+      if (rerunning) {
+        fillRerunModels(pending.entry);
+        fillRerunCheckpoints(pending.entry);
+      }
       rerunNewGoalInput.value = asking ? "" : (pending.entry.goal || "");
       rerunGoalPickerEl.hidden = false;
       rerunGoalPickerEl.classList.add("open");
       rerunNewGoalInput.focus();
+    }
+
+    // A rerun stops where the job form would: its checkpoints start from the form's.
+    function fillRerunCheckpoints(entry) {
+      const gates = humanGates();
+      const triage = document.getElementById("rerun-gate-triage");
+      const approval = document.getElementById("rerun-gate-approval");
+      const spec = document.getElementById("rerun-spec");
+      if (triage) triage.checked = gates.triage_gate === "ask";
+      if (approval) approval.checked = gates.approval_gate === "ask";
+      if (spec) {
+        const hasSpec = Boolean(entry.spec);
+        spec.checked = hasSpec || document.getElementById("spec-first").checked;
+        spec.disabled = hasSpec;
+      }
+    }
+
+    function rerunCheckpoints() {
+      const checked = (id) => Boolean((document.getElementById(id) || {}).checked);
+      return {
+        triage_gate: checked("rerun-gate-triage") ? "ask" : "auto",
+        approval_gate: checked("rerun-gate-approval") ? "ask" : "auto",
+        spec: checked("rerun-spec"),
+      };
     }
 
     function modelOptionLabel(model) {
@@ -8884,8 +8919,9 @@
         }
         const goal = note && note !== (pending.entry.goal || "") ? note : "";
         hideRerunGoalPicker();
-        if (pending.kind === "task") await rerunFailedTask(pending.entry.id, goal, modelId);
-        else await rerunHistoryEntry(pending.entry, goal, modelId);
+        const checkpoints = rerunCheckpoints();
+        if (pending.kind === "task") await rerunFailedTask(pending.entry.id, goal, modelId, checkpoints);
+        else await rerunHistoryEntry(pending.entry, goal, modelId, checkpoints);
         return;
       }
       const revised = pending.purpose === "changes"
@@ -8960,10 +8996,10 @@
       }
     }
 
-    async function rerunFailedTask(taskId, newGoal, modelId) {
+    async function rerunFailedTask(taskId, newGoal, modelId, checkpoints) {
       try {
         const revised = (newGoal || "").trim();
-        const payload = revised ? { goal: revised } : {};
+        const payload = { ...(checkpoints || {}), ...(revised ? { goal: revised } : {}) };
         if (modelId) payload.model_id = modelId;
         const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/rerun`, {
           method: "POST",
@@ -8984,11 +9020,11 @@
       }
     }
 
-    async function rerunHistoryEntry(entry, newGoal, modelId) {
-      // A stored run reruns as the next run of the same proposal, with its gates and spec.
+    async function rerunHistoryEntry(entry, newGoal, modelId, checkpoints) {
+      // A stored run reruns as the next run of the same proposal.
       if (entry.id) {
         const changed = (newGoal || "").trim();
-        await rerunFailedTask(entry.id, changed && changed !== entry.goal ? changed : "", modelId);
+        await rerunFailedTask(entry.id, changed && changed !== entry.goal ? changed : "", modelId, checkpoints);
         return;
       }
       const revised = (newGoal || "").trim() || entry.goal || "";

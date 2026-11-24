@@ -1288,6 +1288,11 @@ def create_app(
             if refused is not None:
                 return refused
             model = {**(creds or {}), "model_id": picked}
+        spec_blocked, write_spec = _spec_for_job(
+            ui, Path(old_task.workspace), bool(payload and payload.spec)
+        )
+        if spec_blocked is not None:
+            return spec_blocked
         try:
             new_task = ui.manager.rerun(
                 task_id,
@@ -1295,6 +1300,9 @@ def create_app(
                 goal=goal_to_use,
                 actor_id=actor,
                 model=model,
+                triage_gate=payload.triage_gate if payload else "",
+                approval_gate=payload.approval_gate if payload else "",
+                spec=write_spec,
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
