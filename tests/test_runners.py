@@ -557,6 +557,82 @@ def test_a_run_that_failed_publishing_restarts_at_the_pull_request(
         manager.shutdown(wait=False)
 
 
+def test_a_restart_puts_back_approved_commits_the_runner_branch_lost(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_lbw.runtime import local_runner
+
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    base = _repo(workspace)
+    real_publish = local_runner.publish_runner_change
+    published: list[str] = []
+
+    def publish_once_failing(root, *args, **kwargs):
+        published.append(_git(Path(root), "rev-parse", "HEAD").strip())
+        if len(published) > 1:
+            return real_publish(root, *args, **kwargs)
+        return CycleResult(
+            status="failed",
+            goal="Add a hello file",
+            summary="push failed",
+            tests_passed=None,
+            committed=False,
+            published=False,
+            commit_sha=None,
+            reason="push failed",
+        )
+
+    monkeypatch.setattr(local_runner, "publish_runner_change", publish_once_failing)
+    real_switch = local_runner._switch
+
+    def switch_then_lbw_edits_gitignore(workspace, target):
+        moved = real_switch(workspace, target)
+        # LBW adds its own line to .gitignore again while the job runs.
+        ignore = workspace.root / ".gitignore"
+        current = ignore.read_text(encoding="utf-8") if ignore.exists() else ""
+        ignore.write_text(current + ".lbw/\n", encoding="utf-8")
+        return moved
+
+    monkeypatch.setattr(local_runner, "_switch", switch_then_lbw_edits_gitignore)
+    manager = TaskManager(settings)
+    client = TestClient(create_app(manager, default_workspace=workspace))
+    try:
+        client.get("/api/directory")
+        model_id = _runner_model(client, workspace, workspace)
+        token = _link(client)
+        _beat(client, token)
+        auth = {"Authorization": f"Bearer {token}"}
+        task_id = _gated_runner_job(client, workspace, auth, model_id)
+        build_job = _lease(client, auth)
+        clone = tmp_path / "runner-worktree"
+        subprocess.run(["git", "clone", "-q", str(workspace), str(clone)], check=True)
+        (clone / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+        _git(clone, "add", ".gitignore")
+        patch = _commit_patch(clone, base, "hello.txt", "hello\n")
+        _finish(client, auth, build_job, "Added hello.txt", patch)
+        waiting = _wait_stage(client, task_id, "approval")
+        held = waiting["branch"]
+        approved = _git(workspace, "rev-parse", held).strip()
+        recorded = [event.get("approved_sha") for event in waiting["events"]]
+        assert approved in recorded
+        client.post(f"/api/tasks/{task_id}/decide", json={"decision": "approve"})
+        _wait(client, task_id, "failed")
+        # Something moves the runner branch back to where the job started.
+        _git(workspace, "checkout", "-q", "-f", "main")
+        _git(workspace, "branch", "-f", held, base)
+
+        rerun = client.post(f"/api/tasks/{task_id}/rerun", json={"from_phase": "publish"})
+        assert rerun.status_code == 201, rerun.text
+        done = _wait(client, rerun.json()["id"], "success")
+        assert published == [approved, approved]
+        messages = [event.get("message") or "" for event in done["events"]]
+        assert f"Put the approved commits back on {held} at {approved[:8]}" in messages
+        assert (workspace / "hello.txt").read_text(encoding="utf-8") == "hello\n"
+    finally:
+        manager.shutdown(wait=False)
+
+
 def test_a_runner_build_that_failed_restarts_at_build_with_the_approved_plan(
     settings: Settings, tmp_path: Path
 ) -> None:

@@ -237,7 +237,10 @@ scheduler call.
   applies them on `lbw/runner-<id>`, runs the tests, and publishes. A runner
   job stops at the spec, plan, and approval gates like any job: the runner
   writes the spec and the plan without editing files, and approved commits are
-  published without the runner. A build may run the project's own commands,
+  published without the runner. The approval step records the approved commit.
+  Publishing puts the runner branch back on it when the branch no longer holds
+  it, reading the branch's reflog when no step recorded it. A person never
+  repairs a runner branch by hand. A build may run the project's own commands,
   and the runner runs Claude Code's shell commands in its sandbox, which a
   command can never leave. The goal,
   events, and patch pass through `runtime/runner_hub.py` in memory, not the

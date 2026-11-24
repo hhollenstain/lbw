@@ -313,7 +313,11 @@ def run_on_runner(
             return _failed(task, saved, summary=summary)
     _record_file_changes(workspace, base)
     if approval == "ask" and not task.continuous:
-        record_event(kind="step", message="Waiting for you to approve the change")
+        record_event(
+            kind="step",
+            message="Waiting for you to approve the change",
+            approved_sha=current_sha(workspace) or "",
+        )
         held_result = _waiting(
             task,
             current_sha(workspace),
@@ -482,7 +486,27 @@ def _publish_approved(workspace: Workspace, task, settings: Settings, store_root
     moved = _switch(workspace, [held])
     if moved:
         return _failed(task, f"could not check out {held}: {moved}")
-    record_event(kind="step", message=f"Publishing the approved change on {held}")
+    start = _recorded_start(task)
+    approved = _approved_tip(workspace, task, held, start)
+    if not approved:
+        return _failed(
+            task,
+            f"the approved commits are not on {held} or anywhere in this checkout. "
+            "Rerun all to build the change again.",
+        )
+    if _tree(workspace, "HEAD") != _tree(workspace, approved):
+        # Forced, like any switch: LBW's own .gitignore line can be back by now.
+        restored = _switch(workspace, ["-B", held, approved])
+        if restored:
+            return _failed(task, f"could not put the approved commits back on {held}: {restored}")
+        record_event(
+            kind="step",
+            message=f"Put the approved commits back on {held} at {approved[:8]}",
+            approved_sha=approved,
+        )
+    record_event(
+        kind="step", message=f"Publishing the approved change on {held}", approved_sha=approved
+    )
     return publish_runner_change(
         workspace.root,
         settings,
@@ -494,6 +518,41 @@ def _publish_approved(workspace: Workspace, task, settings: Settings, store_root
         pr_base=task.base_branch,
         keep_pull_request=bool(getattr(task, "ci_pr_url", "")),
     )
+
+
+def _approved_tip(workspace: Workspace, task, held: str, start: str) -> str:
+    """The commit a person approved for this change.
+
+    The approval step records it. A run that restarts publishing has not
+    recorded one yet, so the runner branch's own history is read instead: the
+    newest commit it held that has work past the job's start. LBW owns that
+    branch, so nothing else moves it after approval.
+    """
+    recorded = [
+        str(event.get("approved_sha") or "")
+        for event in reversed(getattr(task, "events", None) or [])
+        if isinstance(event, dict)
+    ]
+    history = run_git(workspace, ["reflog", "show", "--format=%H", held, "--"])
+    held_before = history.stdout.split() if history.returncode == 0 else []
+    for sha in [*recorded, *held_before]:
+        if sha and _has_work(workspace, start, sha):
+            return sha
+    return ""
+
+
+def _has_work(workspace: Workspace, start: str, sha: str) -> bool:
+    if run_git(workspace, ["cat-file", "-e", f"{sha}^{{commit}}"]).returncode != 0:
+        return False
+    if not start:
+        return True
+    ahead = run_git(workspace, ["rev-list", "--count", f"{start}..{sha}"])
+    return ahead.returncode == 0 and ahead.stdout.strip() not in {"", "0"}
+
+
+def _tree(workspace: Workspace, ref: str) -> str:
+    found = run_git(workspace, ["rev-parse", f"{ref}^{{tree}}"])
+    return found.stdout.strip() if found.returncode == 0 else ""
 
 
 def _record_file_changes(workspace: Workspace, base: str) -> None:

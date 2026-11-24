@@ -970,6 +970,9 @@ def fold_unpublished_commits(
         base_sha = run_git(workspace, ["rev-parse", ref])
         if base_sha.returncode != 0 or remote.stdout.strip() != base_sha.stdout.strip():
             return ToolResult(True, f"left {ahead} commits; {branch} is already on the remote")
+    tip = current_sha(workspace)
+    if not tip:
+        return ToolResult(False, f"could not read the tip of {branch}")
     reset = run_git(workspace, ["reset", "--soft", ref])
     if reset.returncode != 0:
         return ToolResult(False, _output(reset))
@@ -981,6 +984,13 @@ def fold_unpublished_commits(
         database_url=database_url,
     )
     if not committed.ok:
+        # Put the branch back on its commits. Left on the base, the change
+        # would only be uncommitted files that the next checkout sets aside.
+        restored = run_git(workspace, ["reset", "-q", tip])
+        if restored.returncode != 0:
+            return ToolResult(
+                False, f"{committed.output}; {branch} was left at {ref}: {_output(restored)}"
+            )
         return committed
     return ToolResult(True, f"folded {ahead} commits into one on {branch}")
 

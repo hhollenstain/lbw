@@ -510,6 +510,29 @@ def test_fold_unpublished_commits_keeps_one_commit_for_a_long_run(tmp_path: Path
     assert (tmp_path / "app.py").read_text(encoding="utf-8") == "step 5\n"
 
 
+def test_a_fold_that_cannot_commit_keeps_the_branch_on_its_commits(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("one\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    workspace = Workspace(tmp_path)
+    base = current_branch(workspace) or "main"
+    run_git(workspace, ["checkout", "-b", "lbw/runner-abc"])
+    for number in range(1, 5):
+        _commit_file(workspace, tmp_path, f"step {number}\n", f"step {number}")
+    # A runner's commits arrive with git am, past the guard commit_changes applies.
+    (tmp_path / ".env.local").write_text("TOKEN=real\n", encoding="utf-8")
+    run_git(workspace, ["add", ".env.local"])
+    run_git(workspace, ["commit", "-q", "-m", "add local env"])
+    tip = current_sha(workspace)
+
+    folded = fold_unpublished_commits(workspace, base, "Add the change")
+
+    assert not folded.ok
+    assert ".env.local" in folded.output
+    assert current_branch(workspace) == "lbw/runner-abc"
+    assert current_sha(workspace) == tip
+    assert run_git(workspace, ["status", "--porcelain"]).stdout.strip() == ""
+
+
 def test_fold_unpublished_commits_leaves_a_branch_already_on_the_remote(
     tmp_path: Path,
 ) -> None:
