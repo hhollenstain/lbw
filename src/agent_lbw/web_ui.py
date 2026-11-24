@@ -1271,6 +1271,7 @@ def create_app(
     def rerun_task(task_id: str, request: Request, payload: RerunPayload | None = None) -> Any:
         ui: UiState = request.app.state.ui
         run_from_sha = (payload.sha if payload else "") or None
+        phase = (payload.from_phase if payload else "").strip()
         new_goal = (payload.goal if payload else "") or None
         picked = (payload.model_id if payload else "").strip()
         old_task = ui.manager.load_job(task_id)
@@ -1308,11 +1309,18 @@ def create_app(
                 triage_gate=payload.triage_gate if payload else "",
                 approval_gate=payload.approval_gate if payload else "",
                 spec=write_spec,
+                from_phase=phase,
             )
         except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
+            status = 409 if phase and str(exc).startswith("this run cannot restart") else 400
+            return JSONResponse({"error": str(exc)}, status_code=status)
         if new_task is None:
             return JSONResponse({"error": "task not found or not rerunnable"}, status_code=404)
+        if phase:
+            request.state.audit_action = "task.rerun"
+            request.state.audit_summary = f"Restarted a failed run from {phase}"
+            request.state.audit_target_type = "task"
+            request.state.audit_target_id = new_task.id
         return JSONResponse(new_task.to_dict(), status_code=201)
 
     @app.get("/api/tasks/{task_id}/checks")

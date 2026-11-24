@@ -465,6 +465,131 @@ def test_a_runner_job_stops_at_the_spec_plan_and_approval_gates(
         manager.shutdown(wait=False)
 
 
+def _gated_runner_job(client: TestClient, workspace: Path, auth: dict, model_id: str) -> str:
+    created = client.post(
+        "/api/tasks",
+        json={
+            "workspace": str(workspace),
+            "goal": "Add a hello file",
+            "model_id": model_id,
+            "create_pr": False,
+            "triage_gate": "ask",
+            "approval_gate": "ask",
+        },
+    )
+    assert created.status_code == 201, created.text
+    task_id = created.json()["id"]
+    _finish(
+        client,
+        auth,
+        _lease(client, auth),
+        '{"cause": "No file", "steps": [{"do": "Write hello.txt", "file": "hello.txt"}]}',
+    )
+    _wait_stage(client, task_id, "triage")
+    built = client.post(f"/api/tasks/{task_id}/decide", json={"decision": "build"})
+    assert built.status_code == 200, built.text
+    return task_id
+
+
+def test_a_run_that_failed_publishing_restarts_at_the_pull_request(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_lbw.runtime import local_runner
+
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    base = _repo(workspace)
+    real_publish = local_runner.publish_runner_change
+    calls: list[str] = []
+
+    def publish_once_failing(root, *args, **kwargs):
+        calls.append(_git(Path(root), "rev-parse", "--abbrev-ref", "HEAD").strip())
+        if len(calls) == 1:
+            return CycleResult(
+                status="failed",
+                goal="Add a hello file",
+                summary="refusing to commit likely secrets: .env.example",
+                tests_passed=None,
+                committed=False,
+                published=False,
+                commit_sha=None,
+                reason="refusing to commit likely secrets: .env.example",
+            )
+        return real_publish(root, *args, **kwargs)
+
+    monkeypatch.setattr(local_runner, "publish_runner_change", publish_once_failing)
+    manager = TaskManager(settings)
+    client = TestClient(create_app(manager, default_workspace=workspace))
+    try:
+        client.get("/api/directory")
+        model_id = _runner_model(client, workspace, workspace)
+        save_project_commands(workspace, test_command="true", lint_command="true")
+        token = _link(client)
+        _beat(client, token)
+        auth = {"Authorization": f"Bearer {token}"}
+        task_id = _gated_runner_job(client, workspace, auth, model_id)
+        build_job = _lease(client, auth)
+        clone = tmp_path / "runner-worktree"
+        subprocess.run(["git", "clone", "-q", str(workspace), str(clone)], check=True)
+        patch = _commit_patch(clone, base, "hello.txt", "hello\n")
+        _finish(client, auth, build_job, "Added hello.txt", patch)
+        held = _wait_stage(client, task_id, "approval")["branch"]
+        approved = client.post(f"/api/tasks/{task_id}/decide", json={"decision": "approve"})
+        assert approved.status_code == 200, approved.text
+        failed = _wait(client, task_id, "failed")
+        assert failed["restart_from"] == "publish"
+        assert "likely secrets" in failed["reason"]
+
+        wrong = client.post(f"/api/tasks/{task_id}/rerun", json={"from_phase": "build"})
+        assert wrong.status_code == 409
+        assert wrong.json() == {"error": "this run cannot restart from build"}
+
+        rerun = client.post(f"/api/tasks/{task_id}/rerun", json={"from_phase": "publish"})
+        assert rerun.status_code == 201, rerun.text
+        second = rerun.json()
+        assert (second["attempt_of"], second["attempt"]) == (task_id, 2)
+        done = _wait(client, second["id"], "success")
+        assert done["restart_from"] == ""
+        assert calls == [held, held]
+        assert (workspace / "hello.txt").read_text(encoding="utf-8") == "hello\n"
+        assert client.get("/api/runner/jobs/next", headers=auth).status_code == 204
+    finally:
+        manager.shutdown(wait=False)
+
+
+def test_a_runner_build_that_failed_restarts_at_build_with_the_approved_plan(
+    settings: Settings, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    _repo(workspace)
+    manager = TaskManager(settings)
+    client = TestClient(create_app(manager, default_workspace=workspace))
+    try:
+        client.get("/api/directory")
+        model_id = _runner_model(client, workspace, workspace)
+        token = _link(client)
+        _beat(client, token)
+        auth = {"Authorization": f"Bearer {token}"}
+        task_id = _gated_runner_job(client, workspace, auth, model_id)
+        _finish_failed(client, auth, _lease(client, auth))
+        failed = _wait(client, task_id, "failed")
+        assert failed["restart_from"] == "build"
+
+        everything = client.post(f"/api/tasks/{task_id}/rerun", json={"from_phase": "publish"})
+        assert everything.status_code == 409
+
+        rerun = client.post(f"/api/tasks/{task_id}/rerun", json={"from_phase": "build"})
+        assert rerun.status_code == 201, rerun.text
+        again = _lease(client, auth)
+        assert again["phase"] == "build"
+        assert "Write hello.txt" in again["plan"]
+        _finish_failed(client, auth, again)
+        _wait(client, rerun.json()["id"], "failed")
+    finally:
+        manager.shutdown(wait=False)
+
+
 def test_runner_commits_apply_over_lbws_own_gitignore_edit(
     settings: Settings, tmp_path: Path
 ) -> None:

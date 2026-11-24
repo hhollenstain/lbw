@@ -1145,6 +1145,13 @@ components:
           type: boolean
           default: false
           description: Write a spec first. A job that already has a spec keeps it.
+        from_phase:
+          type: string
+          default: ""
+          description: >
+            Empty runs every phase again. build or publish starts the next run
+            at that phase and carries the earlier phases' work. It must be the
+            phase the failed run names in restart_from.
     InvestigateChecks:
       type: object
       properties:

@@ -212,6 +212,7 @@ class RerunPayload(BaseModel):
     triage_gate: str = ""
     approval_gate: str = ""
     spec: bool = False
+    from_phase: str = ""
 
 
 class InvestigateChecks(BaseModel):

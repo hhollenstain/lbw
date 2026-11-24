@@ -33,6 +33,7 @@ from agent_lbw.progress import (
 )
 from agent_lbw.runtime.improve import CycleResult, SpecRequest, resolve_human_gates, run_cycle
 from agent_lbw.runtime.llm_relay import LlmRelay, relay_client, relay_route
+from agent_lbw.runtime.restart import RESTART_PHASES, restart_phase
 from agent_lbw.runtime.runner_hub import RunnerHub
 from agent_lbw.runtime.store.local_models import is_local_model
 
@@ -308,6 +309,13 @@ class Task:
             "attempt": self.attempt,
             "ci_pr_url": self.ci_pr_url,
             "ci_checks": list(self.ci_checks),
+            "restart_from": restart_phase(
+                status=self.status,
+                decision=self.decision or "",
+                plan=self.plan,
+                branch=self.branch or "",
+                agent_kind=self.agent_kind,
+            ),
         }
         if include_logs:
             payload["logs"] = list(self.logs)
@@ -400,7 +408,13 @@ class TaskManager:
         attempt: int = 1,
         ci_pr_url: str = "",
         ci_checks: list[str] | None = None,
+        resume: dict | None = None,
     ) -> Task:
+        """Queue a job. `resume` starts it past phases an earlier run finished.
+
+        It carries that run's `decision`, `stage`, `plan`, `criteria`, and
+        `summary`, and is applied before the worker can pick the job up.
+        """
         workspace = workspace.expanduser().resolve()
         if not workspace.is_dir():
             raise ValueError(f"workspace is not a directory: {workspace}")
@@ -466,6 +480,12 @@ class TaskManager:
             ci_pr_url=(ci_pr_url or "").strip(),
             ci_checks=list(ci_checks or []),
         )
+        if resume:
+            task.decision = str(resume.get("decision") or "") or None
+            task.stage = str(resume.get("stage") or "")
+            task.plan = str(resume.get("plan") or "")
+            task.criteria = list(resume.get("criteria") or [])
+            task.summary = str(resume.get("summary") or "") or None
         with self._lock:
             self._tasks[task.id] = task
         self._stamp_committer(task)
@@ -538,13 +558,15 @@ class TaskManager:
         approval_gate: str = "",
         spec: bool = False,
         ci_checks: list[str] | None = None,
+        from_phase: str = "",
     ) -> Task | None:
         """Queue a new cycle on the task's branch, with an optional revised goal.
 
         `model` is another model the person picked, as `use_model` returns it with
         its `model_id`. Without it the run keeps the job's model. A gate left empty
         keeps the job's own. `spec` adds a spec to a job that had none; a job that
-        has one keeps it.
+        has one keeps it. `from_phase` starts the run at the phase the failed run
+        names in `restart_from` instead of running every phase again.
         """
         with self._lock:
             old_task = self._tasks.get(task_id)
@@ -552,8 +574,35 @@ class TaskManager:
             return None
         if old_task.status not in ("failed", "error", "success"):
             return None
+        phase = (from_phase or "").strip()
+        resume = None
+        if phase:
+            allowed = restart_phase(
+                status=old_task.status,
+                decision=old_task.decision or "",
+                plan=old_task.plan,
+                branch=old_task.branch or "",
+                agent_kind=old_task.agent_kind,
+            )
+            if phase not in RESTART_PHASES or phase != allowed:
+                raise ValueError(f"this run cannot restart from {phase}")
+            if phase == "publish" and self._approval_needs_github(old_task):
+                from agent_lbw.tools.git import APPROVE_GITHUB
+
+                raise ValueError(APPROVE_GITHUB)
+            resume = {
+                "decision": "approve" if phase == "publish" else "build",
+                "stage": "approval" if phase == "publish" else "triage",
+                "plan": old_task.plan,
+                "criteria": list(old_task.criteria),
+                "summary": old_task.summary or "",
+            }
         resume_branch = old_task.branch
         resume_sha = (from_sha or old_task.commit_sha or old_task.sha_before or "").strip() or None
+        if phase == "publish":
+            # The approved change is on this branch, committed by a runner or
+            # still in the checkout. Publish it as it is.
+            resume_sha = None
         base_branch = old_task.base_branch
         if (resume_branch or "").strip() in PROTECTED_BRANCHES and not from_sha:
             base_branch = base_branch or resume_branch
@@ -562,7 +611,11 @@ class TaskManager:
         revised = (goal or "").strip()
         create_pr = True if old_task.pr_url else old_task.create_pr
         change_base = None
-        if resume_branch and old_task.pr_url and not from_sha:
+        if phase == "publish":
+            from agent_lbw.runtime.store.recording import job_start
+
+            change_base = job_start(old_task) or None
+        elif resume_branch and old_task.pr_url and not from_sha:
             from agent_lbw.runtime.store.recording import job_start
 
             change_base = job_start(old_task) or None
@@ -617,6 +670,7 @@ class TaskManager:
             spec_path=old_task.spec_path,
             spec_text=old_task.spec_text,
             spec_accepted=old_task.spec_accepted,
+            resume=resume,
         )
 
     def rework(self, task_id: str, note: str, *, actor_id: str | None = None) -> Task | None:

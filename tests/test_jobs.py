@@ -313,6 +313,65 @@ def test_a_rerun_on_an_open_pull_request_keeps_the_whole_change(
         manager.shutdown(wait=False)
 
 
+def test_a_change_that_failed_publishing_restarts_at_publishing(
+    settings: Settings, tmp_path: Path
+) -> None:
+    seen: list[tuple[str | None, str, str | None, str | None]] = []
+
+    def runner(task: Task) -> CycleResult:
+        seen.append((task.decision, task.stage, task.resume_sha, task.summary))
+        return _ok(task)
+
+    manager = TaskManager(settings, runner=runner)
+    try:
+        failed = _job(
+            tmp_path,
+            "job-publish",
+            status="failed",
+            decision="approve",
+            stage="approval",
+            branch="lbw/note",
+            commit_sha="b" * 40,
+            plan="Plan:\n1. Write the note",
+            criteria=["the note exists"],
+            summary="added the note",
+            reason="refusing to commit likely secrets: .env.local",
+            events=[{"kind": "step", "message": "Starting from main", "start_sha": "a" * 40}],
+        )
+        with manager._lock:
+            manager._tasks[failed.id] = failed
+        assert failed.to_dict()["restart_from"] == "publish"
+        with pytest.raises(ValueError, match="cannot restart from build"):
+            manager.rerun(failed.id, from_phase="build")
+        again = manager.rerun(failed.id, from_phase="publish")
+        assert again is not None
+        assert (again.attempt_of, again.attempt) == (failed.id, 2)
+        assert (again.plan, again.criteria) == (failed.plan, failed.criteria)
+        assert again.change_base == "a" * 40
+        assert again.resume_branch == "lbw/note"
+        for _ in range(50):
+            if seen:
+                break
+            time.sleep(0.05)
+        assert seen == [("approve", "approval", None, "added the note")]
+    finally:
+        manager.shutdown(wait=False)
+
+
+def test_only_a_failed_run_offers_a_phase_to_restart_from(tmp_path: Path) -> None:
+    runner_plan = {"plan": "Plan:\n1. Write the note", "agent_kind": "claude_code"}
+    cases = [
+        ({"status": "failed", "decision": "build", **runner_plan}, "build"),
+        ({"status": "failed", "decision": "build", "plan": "Plan:\n1. Write it"}, ""),
+        ({"status": "failed", "decision": "build", "agent_kind": "claude_code"}, ""),
+        ({"status": "failed", "decision": "approve", "branch": "lbw/note"}, "publish"),
+        ({"status": "success", "decision": "approve", "branch": "lbw/note"}, ""),
+        ({"status": "failed"}, ""),
+    ]
+    for fields, phase in cases:
+        assert _job(tmp_path, "job-case", **fields).to_dict()["restart_from"] == phase, fields
+
+
 def _wait_for(client: TestClient, task_id: str, status: str) -> dict:
     for _ in range(50):
         response = client.get(f"/api/tasks/{task_id}")

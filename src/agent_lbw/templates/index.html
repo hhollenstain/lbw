@@ -7974,7 +7974,12 @@
         callout = calloutHtml("now", "Working", `${workingLabel(focus)}${elapsed}`, `${lastLine}<p class="callout-copy">Nothing is needed from you right now.${!triageAuto && rank < 2 ? " You review the plan next." : ""}${!approvalAuto && rank >= 2 && rank < 5 ? " You approve the change next." : ""}</p>`);
       } else if (failed) {
         const stuck = String(item.fault || "").trim();
-        const rerun = !stuck && item.id ? `<button type="button" class="secondary" data-rerun-id="${escapeHtml(item.id)}">Rerun</button>` : "";
+        const phase = !stuck && item.id ? restartPhaseLabel(item.restart_from) : "";
+        const restart = phase
+          ? `<button type="button" data-restart-phase="${escapeHtml(item.restart_from)}" data-task-id="${escapeHtml(item.id)}" title="Start the next run at ${escapeHtml(phase)}. The earlier phases' work carries over.">Rerun from ${escapeHtml(phase)}</button>`
+          : "";
+        const rerunAll = !stuck && item.id ? `<button type="button" class="secondary" data-rerun-id="${escapeHtml(item.id)}" title="Run every phase again on the same branch">${phase ? "Rerun all" : "Rerun"}</button>` : "";
+        const rerun = restart + rerunAll;
         if (canReply) calloutStep = "review";
         const why = canReply ? sentBackText(item, sentBackEntry) : (stuck || reason || "The change stopped.");
         const next = canReply
@@ -8788,6 +8793,13 @@
         }
         return true;
       }
+      const restart = event.target.closest("[data-restart-phase]");
+      if (restart) {
+        event.preventDefault();
+        event.stopPropagation();
+        restartFromPhase(restart);
+        return true;
+      }
       const rerun = event.target.closest("[data-rerun-id]");
       if (rerun) {
         event.preventDefault();
@@ -9120,6 +9132,37 @@
     const rerunGoalPickerEl = document.getElementById("rerun-goal-picker");
     const rerunNewGoalInput = document.getElementById("rerun-new-goal");
     let pendingUpdate = null;
+
+    // The step a failed run can start the next run at, as the step track names it.
+    function restartPhaseLabel(phase) {
+      if (phase === "publish") return "Pull request";
+      if (phase === "build") return "Build";
+      return "";
+    }
+
+    async function restartFromPhase(button) {
+      const taskId = button.dataset.taskId;
+      const phase = button.dataset.restartPhase;
+      button.disabled = true;
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/rerun`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ from_phase: phase }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "Could not rerun this phase");
+        state.selectedRunKey = `task:${body.id}`;
+        state.selected = body.id;
+        state.selectedHistoryKey = "";
+        state.taskStatus[body.id] = body.status || "queued";
+        notify("queued", goalHeadline(body), { title: `Rerun from ${restartPhaseLabel(phase)} queued` });
+        await refresh();
+      } catch (err) {
+        button.disabled = false;
+        notify("error", err.message, { title: "Could not rerun this phase" });
+      }
+    }
 
     function showRerunGoalPicker(pending) {
       if (!rerunGoalPickerEl || !rerunNewGoalInput || !pending) return;

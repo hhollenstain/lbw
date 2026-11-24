@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 from agent_lbw.runtime.account import load_account
 from agent_lbw.runtime.db import Database, database, database_configured
+from agent_lbw.runtime.restart import restart_phase
 from agent_lbw.runtime.store.audit import record_audit
 from agent_lbw.runtime.store.crypto import open_secret
 from agent_lbw.runtime.store.install import read_account
@@ -537,6 +538,7 @@ def _project_tasks(root: Path, database_url: str, workspace: Path) -> list[dict]
                 SELECT tasks.id, tasks.status, tasks.branch, tasks.pr_url,
                        tasks.goal_ciphertext, tasks.result_ciphertext, tasks.created,
                        tasks.tenant_id, tasks.requester_id, tasks.attempt_of, tasks.attempt,
+                       tasks.agent_kind,
                        projects.locator
                 FROM tasks
                 JOIN projects ON projects.id = tasks.project_id
@@ -589,11 +591,19 @@ def _history_item(root: Path, database_url: str, row: dict) -> dict:
     created = int(row["created"] or 0)
     stage = str(result.get("stage") or "")
     decision = _decision(result.get("decision"))
+    status = _shown_status(str(row["status"] or ""), stage, decision)
     return {
         "id": row["id"],
         "workspace": row["locator"],
         "goal": goal,
-        "status": _shown_status(str(row["status"] or ""), stage, decision),
+        "status": status,
+        "restart_from": restart_phase(
+            status=status,
+            decision=decision,
+            plan=str(result.get("plan") or ""),
+            branch=str(row["branch"] or ""),
+            agent_kind=str(row.get("agent_kind") or ""),
+        ),
         "summary": str(result.get("summary") or ""),
         "reason": str(result.get("reason") or ""),
         "plan": str(result.get("plan") or ""),

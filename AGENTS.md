@@ -139,7 +139,12 @@ scheduler call.
   tenant, project, requester, status, branch, pull request, `run_ref`,
   `goal_ciphertext`, and `result_ciphertext`. A rerun is another run of the
   same proposal: `attempt_of` is the first run's id and `attempt` its number.
-  The change list shows the latest run, and the change view picks among them. The result seals the plan, the
+  The change list shows the latest run, and the change view picks among them.
+  A failed run can rerun every phase, or start the next run at the phase that
+  failed (`from_phase`, rules in `runtime/restart.py`). A run that failed
+  publishing an approved change starts at publishing. A runner job that failed
+  after its plan was approved starts at building from that plan. The job names
+  the phase in `restart_from`, and no other phase is accepted. The result seals the plan, the
   steps, the outcome, and the final diff so history can show the file changes
   after the checkout is gone. Logs are not part of it.
 - An audit row notes who changed the organization or a job: the person, the
