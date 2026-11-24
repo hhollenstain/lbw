@@ -432,6 +432,11 @@ def test_a_runner_job_stops_at_the_spec_plan_and_approval_gates(
         body = _wait_stage(client, task_id, "approval")
         assert body["published"] is False
         assert body["branch"].startswith("lbw/runner-")
+        changed = {
+            event["path"]: event["diff"] for event in body["events"] if event.get("kind") == "file"
+        }
+        assert "+hello" in changed["hello.txt"]
+        assert any(path.startswith("specs/") for path in changed)
         files = _git(workspace, "ls-tree", "-r", "--name-only", "HEAD").split()
         assert "hello.txt" in files
         assert any(name.startswith("specs/") for name in files)

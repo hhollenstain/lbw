@@ -38,7 +38,7 @@ from agent_lbw.runtime.spec import (
     spec_request,
 )
 from agent_lbw.runtime.store.audit import record_audit
-from agent_lbw.runtime.store.recording import job_start
+from agent_lbw.runtime.store.recording import file_events_from_diff, job_start
 from agent_lbw.runtime.store.runners import (
     RunnerRequired,
     create_job,
@@ -311,6 +311,7 @@ def run_on_runner(
         saved = _commit_spec(workspace, task, settings, spec_path, spec_text)
         if saved:
             return _failed(task, saved, summary=summary)
+    _record_file_changes(workspace, base)
     if approval == "ask" and not task.continuous:
         record_event(kind="step", message="Waiting for you to approve the change")
         held_result = _waiting(
@@ -493,6 +494,16 @@ def _publish_approved(workspace: Workspace, task, settings: Settings, store_root
         pr_base=task.base_branch,
         keep_pull_request=bool(getattr(task, "ci_pr_url", "")),
     )
+
+
+def _record_file_changes(workspace: Workspace, base: str) -> None:
+    """Show the runner's change file by file, as a change built in LBW shows it."""
+    diff = run_git(workspace, ["diff", "--no-color", "--no-ext-diff", f"{base}..HEAD"])
+    if diff.returncode != 0:
+        return
+    for event in file_events_from_diff(diff.stdout):
+        fields = {key: value for key, value in event.items() if key != "kind"}
+        record_event(kind="file", **fields)
 
 
 def _commit_spec(workspace: Workspace, task, settings: Settings, path: str, text: str) -> str:

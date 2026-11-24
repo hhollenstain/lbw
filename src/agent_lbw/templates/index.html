@@ -5907,7 +5907,7 @@
       const id = item.id;
       const entry = state.ciChecks[id];
       if (!entry || (!entry.loading && Date.now() - entry.at > CI_CHECKS_TTL_MS)) loadCiChecks(id, false);
-      const head = `<div class="ci-head"><p class="ci-title">CI checks</p><button type="button" class="secondary ci-refresh" data-ci-refresh="${escapeHtml(id)}">Refresh</button></div>`;
+      let head = `<div class="ci-head"><div class="ci-heading"><p class="ci-title">CI checks</p></div><button type="button" class="secondary ci-refresh" data-ci-refresh="${escapeHtml(id)}">Refresh</button></div>`;
       if (!entry || (entry.loading && !entry.data)) {
         return `<section class="ci-checks">${head}<p class="step-copy">Reading checks…</p></section>`;
       }
@@ -5921,17 +5921,30 @@
       }
       const skipped = state.ciSkipped[id] || new Set();
       const labels = { failing: "Failed", pending: "Running", passing: "Passed" };
+      const glyphs = {
+        failing: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6"/></svg>`,
+        passing: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.5l2.5 2.5L12 5.5"/></svg>`,
+        pending: "",
+      };
       const rows = checks.map((check) => {
         const name = escapeHtml(check.name);
-        const link = check.url
-          ? `<a href="${escapeHtml(check.url)}" target="_blank" rel="noopener noreferrer">${name}</a>`
-          : name;
+        const label = labels[check.state] || "Unknown";
         const pick = check.state === "failing"
           ? `<input type="checkbox" data-ci-pick="${escapeHtml(id)}" value="${name}"${skipped.has(check.name) ? "" : " checked"} aria-label="Investigate ${name}">`
           : `<span class="ci-pick-space" aria-hidden="true"></span>`;
+        const icon = `<span class="ci-icon ci-icon-${escapeHtml(check.state)}" role="img" aria-label="${label}" title="${label}">${glyphs[check.state] || ""}</span>`;
         const summary = check.summary ? `<span class="ci-summary">${escapeHtml(check.summary)}</span>` : "";
-        return `<li class="ci-check ci-${escapeHtml(check.state)}">${pick}<span class="ci-state">${labels[check.state] || "Unknown"}</span><span class="ci-name">${link}${summary}</span></li>`;
+        const details = check.url
+          ? `<a class="ci-details" href="${escapeHtml(check.url)}" target="_blank" rel="noopener noreferrer" aria-label="Details for ${name}">Details<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4h6v6M12 4l-7 7"/></svg></a>`
+          : "";
+        return `<li class="ci-check ci-${escapeHtml(check.state)}">${pick}${icon}<span class="ci-name"><span class="ci-label">${name}</span>${summary}</span>${details}</li>`;
       }).join("");
+      const counts = ["failing", "pending", "passing"]
+        .map((state) => [state, checks.filter((check) => check.state === state).length])
+        .filter(([, count]) => count)
+        .map(([state, count]) => `${count} ${labels[state].toLowerCase()}`)
+        .join(" · ");
+      head = `<div class="ci-head"><div class="ci-heading"><p class="ci-title">CI checks</p><p class="ci-counts">${escapeHtml(counts)}</p></div><button type="button" class="secondary ci-refresh" data-ci-refresh="${escapeHtml(id)}">Refresh</button></div>`;
       const failed = (data.failed || []).length;
       const action = failed
         ? `<div class="ci-actions"><button type="button" data-ci-investigate="${escapeHtml(id)}">Investigate failures</button><p class="hint">The next run reads what the ticked checks printed, writes a fix, and waits for you to approve it. Approving pushes the fix to this pull request.</p></div>`

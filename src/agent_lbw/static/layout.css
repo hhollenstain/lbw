@@ -1994,13 +1994,31 @@ button.inbox-fold {
   list-style: none;
 }
 
+.ci-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.6rem;
+  min-width: 0;
+}
+
+.ci-counts {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 .ci-check {
   display: grid;
-  grid-template-columns: 1rem 4.5rem minmax(0, 1fr);
-  align-items: baseline;
-  gap: 0.5rem;
-  font-size: 0.85rem;
+  grid-template-columns: 1rem 1.1rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.88rem;
 }
+
+.ci-check:first-child { border-top: 0; }
 
 .ci-check input {
   width: 1rem;
@@ -2008,24 +2026,83 @@ button.inbox-fold {
   margin: 0;
 }
 
-.ci-state {
-  font-size: 0.75rem;
-  font-weight: 650;
+/* The same language as the step track: filled dots for done and failed, a pulsing ring while it runs. */
+.ci-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
 }
 
-.ci-failing .ci-state { color: var(--bad); }
-.ci-pending .ci-state { color: var(--muted); }
-.ci-passing .ci-state { color: var(--ok); }
+.ci-icon svg {
+  width: 0.72rem;
+  height: 0.72rem;
+  fill: none;
+  stroke: var(--on-accent);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ci-icon-passing { background: var(--ok); }
+.ci-icon-failing { background: var(--bad); }
+
+.ci-icon-pending {
+  border: 2px solid var(--warn);
+  animation: ci-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ci-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 45%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 0%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ci-icon-pending { animation: none; }
+}
 
 .ci-name {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
+.ci-label {
+  display: block;
+  color: var(--ink);
+  font-weight: 600;
+}
+
 .ci-summary {
   display: block;
   color: var(--muted);
   font-size: 0.8rem;
+}
+
+.ci-details {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.ci-details svg {
+  width: 0.7rem;
+  height: 0.7rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ci-details:hover,
+.ci-details:focus-visible {
+  color: var(--navy);
+  text-decoration: underline;
 }
 
 .ci-actions {
