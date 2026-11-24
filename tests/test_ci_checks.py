@@ -187,6 +187,80 @@ def test_a_person_investigates_failed_checks_and_the_fix_waits_for_approval(
     assert "FAILED tests/test_app.py" not in str(stored)
 
 
+def test_a_merge_conflict_shows_in_the_checks_and_starts_a_merge_run(
+    settings: Settings, tmp_path: Path, monkeypatch
+) -> None:
+    pull = {"head": {"sha": "abc123def4567890"}, "base": {"ref": "main"}, "mergeable": True}
+
+    def github(method: str, path: str, *, token: str) -> object:
+        if path == "/repos/acme/demo/pulls/7":
+            return pull
+        return fake_github(method, path, token=token)
+
+    seen: list[tuple[str, list[str], str]] = []
+
+    def runner(task: Task) -> CycleResult:
+        if not task.merge_base:
+            return _done(task)
+        seen.append((task.merge_base, task.ci_checks, task.ci_context))
+        return CycleResult(
+            status="waiting",
+            goal=task.goal,
+            summary="Merged main and resolved app.py.",
+            tests_passed=None,
+            committed=True,
+            published=False,
+            commit_sha=None,
+            reason="waiting for approval",
+            stage="approval",
+        )
+
+    monkeypatch.setattr(ci_checks, "github_api", github)
+    monkeypatch.setattr(ci_checks, "github_download", fake_log)
+    monkeypatch.setattr("agent_lbw.web_ui._ui_github_token", lambda ui: "tok")
+    monkeypatch.setattr("agent_lbw.web_ui.lookup_pull_state", lambda *a, **k: "open")
+    (tmp_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    manager = TaskManager(settings, runner=runner)
+    client = TestClient(create_app(manager, default_workspace=tmp_path))
+    try:
+        client.get("/api/directory")
+        first = client.post(
+            "/api/tasks", json={"workspace": str(tmp_path), "goal": "Add the page"}
+        ).json()["id"]
+        for _ in range(100):
+            if client.get(f"/api/tasks/{first}").json()["status"] == "success":
+                break
+            time.sleep(0.05)
+        clean = client.get(f"/api/tasks/{first}/checks").json()
+        assert clean["merge"] == {"state": "clean", "base": "main"}
+        refused = client.post(f"/api/tasks/{first}/checks/merge")
+        assert refused.status_code == 409
+        assert refused.json() == {"error": "GitHub reports no merge conflict on this pull request"}
+
+        pull.update(mergeable=False, mergeable_state="dirty")
+        conflict = client.get(f"/api/tasks/{first}/checks?refresh=true").json()
+        assert conflict["merge"] == {"state": "conflict", "base": "main"}
+        started = client.post(f"/api/tasks/{first}/checks/merge")
+        assert started.status_code == 201, started.text
+        run = started.json()
+        assert (run["attempt_of"], run["attempt"]) == (first, 2)
+        assert (run["merge_base"], run["ci_pr_url"]) == ("main", PR)
+        assert (run["triage_gate"], run["approval_gate"]) == ("auto", "ask")
+        assert run["goal"].startswith(f"Merge main into the branch of {PR}")
+        for _ in range(100):
+            body = client.get(f"/api/tasks/{run['id']}").json()
+            if body["status"] == "waiting":
+                break
+            time.sleep(0.05)
+        assert body["stage"] == "approval"
+        assert seen == [("main", [], "")]
+    finally:
+        manager.shutdown(wait=True)
+    stored = stored_job(tmp_path, "", run["id"])
+    assert stored["ci"] == {"pr_url": PR, "checks": [], "merge_base": "main"}
+
+
 def test_a_change_without_a_pull_request_has_no_checks(settings: Settings, tmp_path: Path) -> None:
     def runner(task: Task) -> CycleResult:
         return CycleResult(

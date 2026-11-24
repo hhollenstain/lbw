@@ -330,12 +330,16 @@ def _job_payload(task) -> dict:
 
 
 def _ci_record(task: object) -> dict:
-    """Which failed checks a run investigates. Their output is not stored."""
+    """Which failed checks a run investigates, or the base it merges. Output is not stored."""
     pr_url = str(getattr(task, "ci_pr_url", "") or "")
     if not pr_url:
         return {}
     names = [str(name)[:200] for name in getattr(task, "ci_checks", None) or []][:30]
-    return {"pr_url": pr_url, "checks": names}
+    record = {"pr_url": pr_url, "checks": names}
+    merge_base = str(getattr(task, "merge_base", "") or "")
+    if merge_base:
+        record["merge_base"] = merge_base[:200]
+    return record
 
 
 def _spec_record(task: object) -> dict:

@@ -33,6 +33,7 @@ from agent_lbw.progress import (
 )
 from agent_lbw.runtime.improve import CycleResult, SpecRequest, resolve_human_gates, run_cycle
 from agent_lbw.runtime.llm_relay import LlmRelay, relay_client, relay_route
+from agent_lbw.runtime.merge_fix import agent_runner, fix_merge_conflict, resolve_with_agent
 from agent_lbw.runtime.restart import RESTART_PHASES, restart_phase
 from agent_lbw.runtime.runner_hub import RunnerHub
 from agent_lbw.runtime.store.local_models import is_local_model
@@ -253,6 +254,8 @@ class Task:
     ci_pr_url: str = ""
     ci_checks: list[str] = field(default_factory=list)
     ci_context: str = field(default="", repr=False)
+    # A run that merges this base branch into the open pull request to clear a conflict.
+    merge_base: str = ""
 
     def to_dict(self, *, include_logs: bool = True) -> dict:
         payload = {
@@ -309,6 +312,7 @@ class Task:
             "attempt": self.attempt,
             "ci_pr_url": self.ci_pr_url,
             "ci_checks": list(self.ci_checks),
+            "merge_base": self.merge_base,
             "restart_from": restart_phase(
                 status=self.status,
                 decision=self.decision or "",
@@ -409,6 +413,7 @@ class TaskManager:
         ci_pr_url: str = "",
         ci_checks: list[str] | None = None,
         resume: dict | None = None,
+        merge_base: str = "",
     ) -> Task:
         """Queue a job. `resume` starts it past phases an earlier run finished.
 
@@ -479,6 +484,7 @@ class TaskManager:
             attempt=max(1, int(attempt or 1)),
             ci_pr_url=(ci_pr_url or "").strip(),
             ci_checks=list(ci_checks or []),
+            merge_base=(merge_base or "").strip(),
         )
         if resume:
             task.decision = str(resume.get("decision") or "") or None
@@ -559,6 +565,7 @@ class TaskManager:
         spec: bool = False,
         ci_checks: list[str] | None = None,
         from_phase: str = "",
+        merge_base: str = "",
     ) -> Task | None:
         """Queue a new cycle on the task's branch, with an optional revised goal.
 
@@ -599,9 +606,9 @@ class TaskManager:
             }
         resume_branch = old_task.branch
         resume_sha = (from_sha or old_task.commit_sha or old_task.sha_before or "").strip() or None
-        if phase == "publish":
+        if phase == "publish" or merge_base:
             # The approved change is on this branch, committed by a runner or
-            # still in the checkout. Publish it as it is.
+            # still in the checkout, and a merge starts from the branch's tip.
             resume_sha = None
         base_branch = old_task.base_branch
         if (resume_branch or "").strip() in PROTECTED_BRANCHES and not from_sha:
@@ -665,12 +672,18 @@ class TaskManager:
             model_id=model_id,
             requester_id=actor_id or old_task.actor_id or old_task.requester_id,
             spec=old_task.spec or spec,
-            ci_pr_url=(old_task.pr_url or "") if ci_checks is not None else "",
+            ci_pr_url=(
+                (old_task.pr_url or "")
+                if ci_checks is not None or (phase == "publish" and old_task.merge_base)
+                else ""
+            ),
             ci_checks=list(ci_checks or []),
             spec_path=old_task.spec_path,
             spec_text=old_task.spec_text,
             spec_accepted=old_task.spec_accepted,
             resume=resume,
+            # Publishing a merge again still pushes that merge to the pull request.
+            merge_base=merge_base or (old_task.merge_base if phase == "publish" else ""),
         )
 
     def rework(self, task_id: str, note: str, *, actor_id: str | None = None) -> Task | None:
@@ -988,6 +1001,7 @@ class TaskManager:
             attempt=int(record.get("attempt") or 1),
             ci_pr_url=str(ci.get("pr_url") or ""),
             ci_checks=[str(name) for name in ci.get("checks") or [] if str(name).strip()],
+            merge_base=str(ci.get("merge_base") or ""),
         )
 
     def _checkout_for(self, workspace: str) -> str:
@@ -1091,7 +1105,7 @@ class TaskManager:
     def _read_ci_failures(self, task: Task) -> None:
         """Read what the failed checks printed, for this run only."""
         task.ci_context = ""
-        if not task.ci_pr_url or task.decision in {"approve", "hand_off"}:
+        if not task.ci_pr_url or task.merge_base or task.decision in {"approve", "hand_off"}:
             return
         from agent_lbw.runtime.ci_checks import ChecksError, failure_context
         from agent_lbw.runtime.store.github import GitHubAppError, current_token
@@ -1119,10 +1133,24 @@ class TaskManager:
         if self._runner is not None:
             return self._runner(task)
         if _on_runner(task):
-            from agent_lbw.runtime.local_runner import run_on_runner
+            from agent_lbw.runtime.local_runner import resolve_on_runner, run_on_runner
 
             if self.store_root is None:
                 raise ValueError("a runner job needs the directory database")
+            if task.merge_base:
+                store_root = self.store_root
+                return fix_merge_conflict(
+                    task,
+                    settings=self.settings,
+                    store_root=store_root,
+                    resolve=lambda conflict: resolve_on_runner(
+                        task,
+                        conflict,
+                        settings=self.settings,
+                        store_root=store_root,
+                        hub=self.runner_hub,
+                    ),
+                )
             return run_on_runner(
                 task, settings=self.settings, store_root=self.store_root, hub=self.runner_hub
             )
@@ -1152,6 +1180,16 @@ class TaskManager:
 
         committer = use_committer(task.committer_name, task.committer_email)
         try:
+            if task.merge_base:
+                return fix_merge_conflict(
+                    task,
+                    settings=settings,
+                    store_root=self.store_root,
+                    resolve=lambda conflict: resolve_with_agent(
+                        conflict,
+                        agent_runner(conflict.workspace, llm, settings, self.store_root),
+                    ),
+                )
             return run_cycle(
                 Path(task.workspace),
                 settings,

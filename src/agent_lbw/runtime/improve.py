@@ -1522,6 +1522,7 @@ def publish_runner_change(
     store_root: Path | None = None,
     pr_base: str | None = None,
     keep_pull_request: bool = False,
+    reason: str = "built on the person's runner",
 ) -> CycleResult:
     """Check and publish commits a person's runner built, already applied on a branch.
 
@@ -1582,7 +1583,7 @@ def publish_runner_change(
         committed=True,
         published=published,
         commit_sha=sha,
-        reason="built on the person's runner",
+        reason=reason,
         pr_url=pr_url,
         branch=current_branch(workspace),
         stage="done",
