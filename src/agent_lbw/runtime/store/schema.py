@@ -581,7 +581,9 @@ TASK_COLUMNS = frozenset(
 )
 
 
-SCHEMA_VERSION = 14
+# Raise this with every change below, or a database already at the old
+# version never runs it: ensure_schema only migrates when this goes up.
+SCHEMA_VERSION = 15
 
 
 def read_schema_version(db: Database) -> int:
