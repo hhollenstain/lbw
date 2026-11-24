@@ -834,6 +834,26 @@ def _matches(locator: str, keys: set[str], remote: str = "") -> bool:
     return False
 
 
+def local_checkout(store_root: Path, locator: str) -> Path | None:
+    """The checkout on this machine for a project's locator, such as `owner/repo`.
+
+    A stored job keeps the project's locator, not a folder. This finds the known
+    checkout whose GitHub remote or path matches it.
+    """
+    from agent_lbw.runtime.workspaces import load_workspaces
+
+    wanted = (locator or "").strip()
+    if not wanted:
+        return None
+    for entry in load_workspaces(Path(store_root)):
+        path = Path(str(entry.get("path") or ""))
+        if not path.is_dir():
+            continue
+        if _matches(wanted, _path_keys(path), _github_remote(path)):
+            return path
+    return None
+
+
 def _github_remote(workspace: Path) -> str:
     if not (workspace / ".git").exists():
         return ""

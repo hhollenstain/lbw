@@ -871,7 +871,7 @@ class TaskManager:
         attempt_of = str(record.get("attempt_of") or "")
         return Task(
             id=str(record["id"]),
-            workspace=str(record.get("workspace") or ""),
+            workspace=self._checkout_for(str(record.get("workspace") or "")),
             goal=goal,
             auto_commit=self.settings.auto_commit,
             create_pr=None,
@@ -913,6 +913,15 @@ class TaskManager:
             attempt_of=attempt_of if attempt_of != str(record["id"]) else "",
             attempt=int(record.get("attempt") or 1),
         )
+
+    def _checkout_for(self, workspace: str) -> str:
+        """A stored job's folder. Its project's `owner/repo` becomes the checkout here."""
+        if not workspace or Path(workspace).is_dir() or self.store_root is None:
+            return workspace
+        from agent_lbw.runtime.store.recording import local_checkout
+
+        found = local_checkout(self.store_root, workspace)
+        return str(found) if found is not None else workspace
 
     def _run(self, task: Task) -> None:
         task.status = "running"

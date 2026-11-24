@@ -12,11 +12,14 @@ from fastapi.testclient import TestClient
 
 from agent_lbw.config import Settings
 from agent_lbw.runtime.db import database
+from agent_lbw.runtime.improve import CycleResult
 from agent_lbw.runtime.local_runner import clean_remote, runner_event
 from agent_lbw.runtime.project import save_project_commands
+from agent_lbw.runtime.store.recording import stored_job
 from agent_lbw.runtime.store.rules import ensure_workspace_project
 from agent_lbw.runtime.store.schema import apply_schema
 from agent_lbw.runtime.tasks import TaskManager
+from agent_lbw.runtime.workspaces import remember_workspace
 from agent_lbw.web_ui import create_app
 
 _ENV = {
@@ -562,6 +565,52 @@ def test_a_rerun_after_a_restart_keeps_the_gates_and_numbers_the_runs(
             assert (shown["attempt_of"], shown["attempt"]) == (first, number)
     finally:
         manager.shutdown(wait=False)
+
+
+def _fails(task) -> CycleResult:
+    return CycleResult(
+        status="failed",
+        goal=task.goal,
+        summary="failed on purpose",
+        tests_passed=None,
+        committed=False,
+        published=False,
+        commit_sha=None,
+        reason="failed on purpose",
+    )
+
+
+def test_a_stored_github_job_reruns_in_its_checkout(settings: Settings, tmp_path: Path) -> None:
+    """A stored job keeps `owner/repo`. A rerun after a restart runs in the checkout."""
+    checkout = tmp_path / "autochannel-ui"
+    checkout.mkdir()
+    _repo(checkout)
+    _git(checkout, "remote", "add", "origin", "https://github.com/acme/autochannel-ui.git")
+    manager = TaskManager(settings, runner=_fails)
+    client = TestClient(create_app(manager, default_workspace=tmp_path))
+    try:
+        client.get("/api/directory")
+        remember_workspace(tmp_path, checkout)
+        created = client.post(
+            "/api/tasks",
+            json={"workspace": str(checkout), "goal": "Fix the page", "create_pr": False},
+        )
+        assert created.status_code == 201, created.text
+        first = created.json()["id"]
+        _wait(client, first, "failed")
+    finally:
+        manager.shutdown(wait=True)
+    assert stored_job(tmp_path, "", first)["workspace"] == "acme/autochannel-ui"
+
+    manager = TaskManager(settings, runner=_fails)
+    client = TestClient(create_app(manager, default_workspace=tmp_path))
+    try:
+        rerun = client.post(f"/api/tasks/{first}/rerun", json={})
+        assert rerun.status_code == 201, rerun.text
+        assert rerun.json()["workspace"] == str(checkout.resolve())
+        _wait(client, rerun.json()["id"], "failed")
+    finally:
+        manager.shutdown(wait=True)
 
 
 def test_a_runner_failure_fails_the_job(settings: Settings, tmp_path: Path) -> None:
