@@ -41,6 +41,14 @@ def test_missing_pytest_is_not_a_failed_suite() -> None:
     assert runner_unavailable("go: command not found\n")
 
 
+def test_a_missing_build_tool_is_not_a_failed_suite() -> None:
+    """LBW may run where the project's tools are missing, such as `make` in its image."""
+    assert runner_unavailable("/bin/bash: line 1: make: command not found\n")
+    assert runner_unavailable("sh: 1: npm: not found\n")
+    assert runner_unavailable("bash: uv: command not found\n")
+    assert not runner_unavailable("make: *** [test] Error 1\nFAILED tests/test_x.py::test_y\n")
+
+
 def _pyproject(root: Path, dev: str) -> None:
     (root / "pyproject.toml").write_text(
         "[project]\n"

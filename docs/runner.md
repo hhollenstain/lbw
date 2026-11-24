@@ -129,13 +129,59 @@ Linux Secret Service, or, when neither exists, a file only the user can read.
   checkout the person mapped in `repos`, or from a cached clone made with the
   machine's own git credentials. It runs Claude Code there with a limited tool
   allowlist and `--permission-mode acceptEdits`.
+- Claude Code runs headless, so nobody can approve a command. Two things let a
+  build run the project's tools anyway:
+  - **Project commands.** A build job carries the project's setup, test, lint,
+    and preview commands (`commands`), and the runner allows exactly those as
+    `Bash(<command>:*)`. LBW runs the same commands on the result.
+  - **Sandbox.** The runner turns on Claude Code's sandbox with `--settings`:
+    any shell command is approved inside it, writes stay in the worktree, the
+    network reaches only `sandbox_domains` (by default the common package
+    registries and GitHub), a command can never leave the sandbox
+    (`allowUnsandboxedCommands: false`), and Claude Code stops instead of
+    running unsandboxed when the sandbox cannot start (`failIfUnavailable`).
+    It is on by default except on Windows. Linux needs `bubblewrap` and
+    `socat`, which `lbw-runner doctor` checks. `"sandbox": false` in
+    `config.json`, or `LBW_RUNNER_SANDBOX=off`, turns it off. The Docker image
+    sets that, because the container is the boundary. Docker itself does not
+    run inside the sandbox.
 - When Claude Code finishes, the runner commits any leftover changes as the
   person's git identity and sends every commit since the base as one
   `git format-patch` mailbox (5 MB at most). It never pushes.
 - LBW applies the commits on `lbw/runner-<job>` with `git am`, keeping the
   person as author and LBW's committer. It then runs the project's tests and, if
   the job asked for one, pushes and opens the pull request with the
-  organization's GitHub App. The pull request is the review in the prototype.
+  organization's GitHub App. The gates below can hold it first.
+
+### Gates
+
+A runner job stops at the same gates as a job in LBW (`runtime/local_runner.py`).
+
+- **Spec.** When the job writes a spec first, LBW sends the runner a job with
+  `phase: "spec"` and the bundled `sdd` skill as its `instructions`. The runner
+  runs Claude Code with only Read, Glob, and Grep: no editing tools, no shell,
+  no subagents, and no sandbox. Nothing can be written before a person accepts
+  the spec. The runner throws the worktree away and sends the spec back as the
+  summary. The job waits at `spec`. Sending it
+  back asks the runner to rewrite it from the note.
+- **Plan.** When the triage gate asks, the runner writes the plan the same way
+  (`phase: "plan"`), and the job waits at `triage` until a person builds it or
+  hands it off.
+- **Build.** The build job carries the accepted spec and plan. LBW applies the
+  runner's commits in a worktree of their own, because LBW itself keeps `.lbw/`
+  in the checkout's .gitignore while the job runs. It then checks out the
+  result as `lbw/runner-<job>`, keeping a person's edits in `git stash`, and
+  commits the spec with it, so a spec alone never ships.
+- **Start.** The runner fetches its start commit from the remote, so LBW starts
+  it from the newest commit a remote branch already has. Commits only this
+  server has, such as a failed job's applied commits that a rerun continues
+  from, go to the runner as `start_patch`. Nothing has to be pushed first.
+- **Approval.** When the approval gate asks, the commits wait on that branch.
+  Approving runs the tests and publishes without the runner. Sending it back
+  gives the runner the earlier commits as `start_patch`, and it continues from
+  them.
+- A runner too old to know `phase` answers a spec or plan job with a change.
+  LBW refuses that answer and asks the person to update `lbw-runner`.
 
 ### Local models
 
@@ -244,7 +290,6 @@ Runner (`runner/`, Go 1.24, standard library only):
 
 Known limits of the prototype, each tracked as an issue:
 
-- Runner jobs skip the plan and approval gates. The pull request is the review.
 - The hub is in memory: one LBW process, and a restart fails running runner jobs.
 - No signed releases or self-update yet.
 - No organization policy for who may use runners or which tools they allow.

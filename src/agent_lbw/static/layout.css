@@ -452,48 +452,175 @@ textarea {
   font-weight: 600;
 }
 
-.project-finder {
-  position: relative;
-}
-
 .project-search {
   width: 100%;
   font-weight: 600;
 }
 
-.project-menu {
-  position: absolute;
-  z-index: 40;
-  left: 0;
-  right: 0;
-  top: calc(100% + 0.25rem);
+.project-list {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
   max-height: 16rem;
-  overflow: auto;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  box-shadow: var(--card-lift);
+  overflow-y: auto;
 }
 
-.project-menu-item {
-  display: block;
-  width: 100%;
-  text-align: left;
+.project-list:empty {
+  display: none;
+}
+
+.project-list-group {
+  margin: 0.45rem 0 0.15rem;
+  padding: 0 0.55rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.project-list-group:first-child {
+  margin-top: 0.1rem;
+}
+
+.project-list-empty {
+  padding: 0.35rem 0.55rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.project-row {
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+}
+
+.project-row:hover,
+.project-row.is-active {
+  background: var(--panel);
+}
+
+button.project-row-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.35rem 0.55rem;
   background: transparent;
   border: 0;
-  padding: 0.45rem 0.7rem;
-  font-weight: 600;
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 500;
+  line-height: 1.3;
+  text-align: left;
+}
+
+button.project-row-pick[aria-current="true"] {
+  color: var(--navy);
+  font-weight: 680;
+}
+
+button.project-row-pick[aria-current="true"]::before {
+  content: "";
+  flex: 0 0 auto;
+  align-self: center;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-left: -0.15rem;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.project-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-row-name mark {
+  background: transparent;
   color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
-.project-menu-item[aria-selected="true"],
-.project-menu-item:hover {
-  background: var(--bg-subtle);
-}
-
-.project-menu-empty {
-  padding: 0.45rem 0.7rem;
+.project-row-note {
+  flex: 0 0 auto;
   color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+
+button.project-row-star {
+  flex: 0 0 auto;
+  width: 1.75rem;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  opacity: 0;
+}
+
+.project-row:hover button.project-row-star,
+.project-row.is-active button.project-row-star,
+button.project-row-star:focus-visible,
+button.project-row-star[aria-pressed="true"] {
+  opacity: 1;
+}
+
+button.project-row-star:hover {
+  color: var(--ink);
+}
+
+button.project-row-star svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+
+button.project-row-star[aria-pressed="true"] {
+  color: var(--warn);
+}
+
+button.project-row-star[aria-pressed="true"] svg {
+  fill: currentColor;
+}
+
+button.project-list-more {
+  margin: 0.2rem 0 0;
+  padding: 0.3rem 0.55rem;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+button.project-list-more:hover {
+  color: var(--navy);
+}
+
+button.project-list-more[hidden] {
+  display: none;
+}
+
+@media (hover: none) {
+  button.project-row-star {
+    opacity: 1;
+  }
 }
 
 /* Form elements */
@@ -1864,6 +1991,21 @@ button.inbox-fold {
 .change-callout .change-actions { align-items: center; margin-top: 0.7rem; }
 .callout-row { margin: 0.5rem 0 0; }
 
+.callout-estimate {
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  white-space: normal;
+}
+
+.callout-estimate-note {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .verdict-chips {
   display: flex;
   flex-wrap: wrap;
@@ -1942,6 +2084,218 @@ button.inbox-fold {
 
 .change-head-side .progress-pr { margin: 0; }
 .change-head-side .progress-pr:empty { display: none; }
+
+/* Pull request step: its CI checks, failed first, and the investigate action. */
+.ci-checks {
+  margin: 0.75rem 0 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.ci-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0 0.4rem;
+}
+
+.ci-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.ci-refresh {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.ci-list {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ci-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.6rem;
+  min-width: 0;
+}
+
+.ci-counts {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.ci-check {
+  display: grid;
+  grid-template-columns: 1rem 1.1rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.88rem;
+}
+
+.ci-check:first-child { border-top: 0; }
+
+.ci-check input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
+
+/* The same language as the step track: filled dots for done and failed, a pulsing ring while it runs. */
+.ci-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+}
+
+.ci-icon svg {
+  width: 0.72rem;
+  height: 0.72rem;
+  fill: none;
+  stroke: var(--on-accent);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ci-icon-passing { background: var(--ok); }
+.ci-icon-failing { background: var(--bad); }
+
+.ci-icon-pending {
+  border: 2px solid var(--warn);
+  animation: ci-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ci-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 45%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 0%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ci-icon-pending { animation: none; }
+}
+
+.ci-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ci-label {
+  display: block;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.ci-summary {
+  display: block;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.ci-details {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.ci-details svg {
+  width: 0.7rem;
+  height: 0.7rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ci-details:hover,
+.ci-details:focus-visible {
+  color: var(--navy);
+  text-decoration: underline;
+}
+
+.ci-actions {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: start;
+  margin: 0.6rem 0 0;
+}
+
+.ci-actions .hint { margin: 0; }
+
+/* Rerun dialog: where the next run stops for a person. */
+.rerun-checkpoints {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0 0 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.rerun-checkpoints legend {
+  padding: 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.rerun-checkpoints label {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.9rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.rerun-checkpoints label:has(input:disabled) {
+  color: var(--muted);
+}
+
+/* A proposal that ran more than once: pick a run, latest first. */
+.run-attempts:empty { display: none; }
+
+.run-attempt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.run-attempt select {
+  max-width: 16rem;
+  font-size: 0.8rem;
+}
+
+.run-number {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
 
 /* Proposal form: the path a change takes, drawn from the checkpoints. */
 .flow-setup {
@@ -3209,6 +3563,30 @@ a.usage-export {
 .usage-price-form .team-step-field input {
   padding: 0.45rem 0.55rem;
   font-size: 0.86rem;
+}
+
+.usage-price-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.usage-price-source {
+  display: block;
+  margin-top: 0.25rem;
+}
+
+.usage-price-actions {
+  width: 1%;
+}
+
+.usage-price-actions button {
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+}
+
+.usage-price-actions button + button {
+  margin-top: 0.3rem;
 }
 
 /* Integrations on the profile. */

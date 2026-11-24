@@ -102,6 +102,20 @@ type Job struct {
 	Project     string `json:"project"`
 	Model       string `json:"model"`
 	MaxSeconds  int    `json:"max_seconds"`
+	// Phase is "spec" or "plan" for a job that only reads the repository and
+	// answers with that document, or "build" (or empty) for a change.
+	Phase string `json:"phase"`
+	// Instructions say how to write a spec or a plan. LBW sends them for those phases.
+	Instructions string `json:"instructions"`
+	// Spec and Plan are what a person accepted. A build follows them.
+	SpecPath string `json:"spec_path"`
+	Spec     string `json:"spec"`
+	Plan     string `json:"plan"`
+	// StartPatch is work a person sent back. The build applies it first and continues.
+	StartPatch string `json:"start_patch"`
+	// Commands are the project's setup, test, lint, and preview commands. A build
+	// may run them, because LBW runs the same commands on the result.
+	Commands []string `json:"commands"`
 }
 
 // Event is one line of progress shown on the job in LBW.

@@ -87,11 +87,30 @@ Audit stay as tabs under that. The log tab is labeled Log. A second strip
 of Init, tests, lint, review, and publish squares is not shown. Pulsing
 and blinking stop under `prefers-reduced-motion`.
 
+An open pull request's card lists its CI checks in a bordered panel, with
+a muted count line beside the title (2 failed · 1 running · 1 passed). Each
+check is a row divided by a `1px` `--line` rule: a round `1.1rem` state icon,
+the check name in `--ink` weight 600 with its summary muted under it, and a
+muted Details link with an arrow at the right that turns `--navy` and
+underlines on hover. Passed is a filled `--ok` dot with a check, failed a
+filled `--bad` dot with an ×, and running a `--warn` ring that pulses. A
+failed check has a checkbox before its icon for Investigate failures.
+
 The proposal form draws the path a change will take with the same flow
 track, in a `Path` panel above its checkboxes. A checkpoint a person stops
 at shows the person glyph. A skipped checkpoint is dashed and reads
 Automatic. The checkboxes sit in Checkpoints and Result groups with
 sentence-case `--ink` labels, not uppercase field labels.
+
+The sidebar project list has no border of its own. A row is the project
+name at `0.88rem` in `--ink`, with an `8px` radius and a `--panel` fill on
+hover or while the keyboard is on it. The current project is `--navy`
+weight 680 with a small `--accent` dot before it. Matched letters in a
+search are bold and underlined, not tinted. A group label (Favorites,
+Current, All projects) is uppercase `--muted` at `0.7rem`. The star is an
+outline in `--muted` that shows on hover. A favorite is a filled `--warn`
+star and always shows. All projects and Show fewer are a plain `--muted`
+text button that turns `--navy` on hover. The list scrolls past `16rem`.
 
 ## Type
 

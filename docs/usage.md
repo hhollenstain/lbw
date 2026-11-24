@@ -35,11 +35,43 @@ Prompts, responses, and logs are not stored here. Only counts.
   (`gen_ai.usage.cache_read.input_tokens`,
   `gen_ai.usage.cache_creation.input_tokens`). `/api/usage/meta` lists the
   OpenTelemetry name next to each breakdown and number that has one.
-- Cost is an estimate from the organization's price table (dollars per
-  million tokens, by provider and model). It is fixed when the run is recorded,
-  like a bill line; a later price change does not rewrite history.
+- Cost is an estimate in dollars per million tokens. It is fixed when the run
+  is recorded, like a bill line; a later price change does not rewrite history.
+  See [Prices](#prices).
 - `GET /api/usage?format=csv` exports the same report for a spreadsheet or a
   FinOps tool.
+
+## Prices
+
+A run's model is priced from the first of these that knows it
+(`runtime/list_prices.py`, `usage.load_pricing`):
+
+1. The organization's own price, set on the Prices panel (`model_prices`).
+   An owner or admin sets one when a contract differs from the list price.
+2. The provider's own page, copied into LBW: Anthropic's models, and
+   Cursor's Composer models.
+3. The public catalog (LiteLLM's price list), which an owner or admin
+   refreshes from the Prices panel (`POST /api/org/prices/refresh`). The
+   organization's copy is `model_list_prices`.
+4. The copy of that catalog shipped with LBW, so a new or offline install
+   still prices OpenAI, Google, and xAI models.
+
+Names are matched after folding the spellings gateways, Cursor, Bedrock,
+Vertex, and Claude Code use (`anthropic/claude-sonnet-4-5-20250929`,
+`claude-4.5-sonnet`, `sonnet`) onto one name, so a model behind a gateway or
+Cursor gets its list price. A self-hosted model has no list price and costs
+$0 until someone sets one. `GET /api/org/prices` lists every model the
+organization runs with the price its runs use and where that came from.
+
+## Estimate before building
+
+When a change stops at plan review, the card shows what building it should
+cost (`GET /api/tasks/{id}/estimate`, `usage.estimate_build`). The change's
+own planning tokens are scaled by the tokens builds, reviews, and checks
+used per planning token over the last 90 days in this project, or in the
+organization when the project has none, and priced on the change's model.
+With no history at all it uses a rough ratio of 15 and says so. It reads
+only `usage_daily`.
 
 ## Keeping the database calm
 

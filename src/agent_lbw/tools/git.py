@@ -601,6 +601,22 @@ def list_branches(workspace: Workspace) -> tuple[str, list[str]]:
     return default, names
 
 
+def stash_local_edits(workspace: Workspace, message: str) -> ToolResult:
+    """Set aside uncommitted edits to tracked files, so a checkout starts clean.
+
+    The checkout is scratch for a job. The edits stay in `git stash` under `message`.
+    """
+    dirty = run_git(workspace, ["status", "--porcelain", "--untracked-files=no"])
+    if dirty.returncode != 0:
+        return ToolResult(False, _output(dirty))
+    if not (dirty.stdout or "").strip():
+        return ToolResult(True, "clean")
+    stashed = run_git(workspace, ["stash", "push", "-m", message])
+    if stashed.returncode != 0:
+        return ToolResult(False, _output(stashed))
+    return ToolResult(True, "stashed")
+
+
 def prepare_clean_base(
     workspace: Workspace,
     branch: str,
@@ -612,16 +628,9 @@ def prepare_clean_base(
     target = (branch or "").strip()
     if not valid_branch_name(target):
         return ToolResult(False, f"invalid branch name: {target or '(empty)'}")
-    dirty = run_git(workspace, ["status", "--porcelain"])
-    if dirty.returncode != 0:
-        return ToolResult(False, _output(dirty))
-    if (dirty.stdout or "").strip():
-        stashed = run_git(
-            workspace,
-            ["stash", "push", "-m", "lbw: stashed before a clean start"],
-        )
-        if stashed.returncode != 0:
-            return ToolResult(False, _output(stashed))
+    stashed = stash_local_edits(workspace, "lbw: stashed before a clean start")
+    if not stashed.ok:
+        return stashed
     _fetch_branch(workspace, remote or "origin", target)
     remote_name = remote or "origin"
     remote_ref = f"{remote_name}/{target}"
@@ -1127,6 +1136,21 @@ def update_pull_request(
         return ToolResult(False, "gh not found")
     output = (result.stdout or result.stderr).strip()
     return ToolResult(result.returncode == 0, output or "updated pull request")
+
+
+def comment_on_pull_request(
+    workspace: Workspace, body: str, *, token: str | None = None
+) -> ToolResult:
+    """Comment on the open pull request on the current branch. Its title and text stay."""
+    text = (body or "").strip()
+    if not text:
+        return ToolResult(False, "nothing to say")
+    try:
+        result = _gh(workspace, ["gh", "pr", "comment", "--body", text], token)
+    except FileNotFoundError:
+        return ToolResult(False, "gh not found")
+    output = (result.stdout or result.stderr).strip()
+    return ToolResult(result.returncode == 0, output or "commented on the pull request")
 
 
 def existing_pull_request(workspace: Workspace, *, token: str | None = None) -> str | None:

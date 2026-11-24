@@ -238,12 +238,30 @@ func doctor(ctx context.Context, out io.Writer) error {
 	} else {
 		check("Claude Code", err, "")
 	}
+	if cfg != nil && cfg.SandboxOn() {
+		check("sandbox", sandboxReady(), "on: shell commands run in Claude Code's sandbox")
+	} else if cfg != nil {
+		fmt.Fprintln(out, "  sandbox off: Claude Code may run only allowed_tools and the project's commands")
+	}
 	if api != nil {
 		_, herr := api.Heartbeat(ctx, client.Facts{Version: version, Platform: runtime.GOOS + "/" + runtime.GOARCH})
 		check("LBW "+cfg.Server, herr, "reachable, runner linked")
 	}
 	if problems > 0 {
 		return fmt.Errorf("%d problem(s)", problems)
+	}
+	return nil
+}
+
+// sandboxReady checks what Claude Code's sandbox needs on this platform.
+func sandboxReady() error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	for _, name := range []string{"bwrap", "socat"} {
+		if _, err := exec.LookPath(name); err != nil {
+			return fmt.Errorf("%s is not installed: install bubblewrap and socat, or set \"sandbox\": false", name)
+		}
 	}
 	return nil
 }

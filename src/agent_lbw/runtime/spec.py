@@ -48,19 +48,12 @@ def write_spec(
     note: str = "",
 ) -> str:
     """Ask the model for the spec. A note from a reviewer revises the previous spec."""
-    parts = [f"Request:\n{goal.strip()}"]
-    if context.strip():
-        parts.append(f"Project:\n{context.strip()[:_CONTEXT_LIMIT]}")
-    if files.strip():
-        parts.append(f"Files named in the request:\n{files.strip()[:_CONTEXT_LIMIT]}")
-    if previous.strip() and note.strip():
-        parts.append(f"Your previous spec:\n{previous.strip()[:SPEC_LIMIT]}")
-        parts.append(f"The reviewer sent it back with this note:\n{note.strip()[:4000]}")
+    request = spec_request(goal, context=context, files=files, previous=previous, note=note)
     turn = timed_complete(
         llm,
         [
             {"role": "system", "content": spec_instructions()},
-            {"role": "user", "content": "\n\n".join(parts)},
+            {"role": "user", "content": request},
         ],
         [],
         purpose="spec",
@@ -69,6 +62,26 @@ def write_spec(
     if not text:
         raise SpecError("the model did not write a spec")
     return text
+
+
+def spec_request(
+    goal: str,
+    *,
+    context: str = "",
+    files: str = "",
+    previous: str = "",
+    note: str = "",
+) -> str:
+    """What the spec is written from. A note from a reviewer revises the previous spec."""
+    parts = [f"Request:\n{goal.strip()}"]
+    if context.strip():
+        parts.append(f"Project:\n{context.strip()[:_CONTEXT_LIMIT]}")
+    if files.strip():
+        parts.append(f"Files named in the request:\n{files.strip()[:_CONTEXT_LIMIT]}")
+    if previous.strip() and note.strip():
+        parts.append(f"Your previous spec:\n{previous.strip()[:SPEC_LIMIT]}")
+        parts.append(f"The reviewer sent it back with this note:\n{note.strip()[:4000]}")
+    return "\n\n".join(parts)
 
 
 def clean_spec(text: str) -> str:

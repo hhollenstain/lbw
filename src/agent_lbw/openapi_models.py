@@ -133,6 +133,15 @@ class AgentTeamProjectWrite(BaseModel):
     path: str = ""
 
 
+class ProjectFavoriteWrite(BaseModel):
+    project_id: str
+    favorite: bool
+
+
+class ProjectFavoriteList(BaseModel):
+    favorites: list[str] = Field(default_factory=list)
+
+
 class ProjectModelWrite(BaseModel):
     model_id: str
     enabled: bool
@@ -200,6 +209,13 @@ class RerunPayload(BaseModel):
     sha: str = ""
     goal: str = ""
     model_id: str = ""
+    triage_gate: str = ""
+    approval_gate: str = ""
+    spec: bool = False
+
+
+class InvestigateChecks(BaseModel):
+    checks: list[str] = Field(default_factory=list)
 
 
 class RunnerModelAnswer(BaseModel):

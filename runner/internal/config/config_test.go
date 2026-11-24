@@ -1,8 +1,11 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -64,5 +67,38 @@ func TestATokenFileIsPrivate(t *testing.T) {
 	cfg.ForgetToken()
 	if cfg.Token() != "" {
 		t.Fatal("token was not forgotten")
+	}
+}
+
+func TestTheSandboxIsOnAndCannotBeLeft(t *testing.T) {
+	t.Setenv("LBW_RUNNER_SANDBOX", "")
+	cfg := &Config{}
+	if runtime.GOOS != "windows" && !cfg.SandboxOn() {
+		t.Fatal("the sandbox is off by default")
+	}
+	var got map[string]map[string]any
+	if err := json.Unmarshal([]byte(cfg.SandboxSettings()), &got); err != nil {
+		t.Fatal(err)
+	}
+	box := got["sandbox"]
+	if box["enabled"] != true || box["autoAllowBashIfSandboxed"] != true || box["allowUnsandboxedCommands"] != false || box["failIfUnavailable"] != true {
+		t.Fatalf("sandbox = %v", box)
+	}
+	domains := box["network"].(map[string]any)["allowedDomains"].([]any)
+	if len(domains) != len(DefaultSandboxDomains) || domains[0] != "pypi.org" {
+		t.Fatalf("domains = %v", domains)
+	}
+	off := false
+	cfg = &Config{Sandbox: &off, SandboxDomains: []string{"example.com"}}
+	if cfg.SandboxOn() || !strings.Contains(cfg.SandboxSettings(), `"example.com"`) {
+		t.Fatalf("config = %+v", cfg)
+	}
+}
+
+func TestAContainerTurnsTheSandboxOff(t *testing.T) {
+	on := true
+	t.Setenv("LBW_RUNNER_SANDBOX", "off")
+	if (&Config{Sandbox: &on}).SandboxOn() {
+		t.Fatal("LBW_RUNNER_SANDBOX=off did not win")
 	}
 }

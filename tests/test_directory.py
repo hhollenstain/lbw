@@ -18,7 +18,7 @@ from agent_lbw.runtime.schedules import delete_schedule, upsert_schedule
 from agent_lbw.runtime.store.crypto import open_secret, seal
 from agent_lbw.runtime.store.install import read_account, save_account
 from agent_lbw.runtime.store.projects import can_access
-from agent_lbw.runtime.store.schema import TASK_COLUMNS, table_columns
+from agent_lbw.runtime.store.schema import SCHEMA_VERSION, TASK_COLUMNS, table_columns
 from agent_lbw.runtime.store.tasks import read_task
 from agent_lbw.runtime.tasks import TaskManager
 from agent_lbw.web_ui import create_app
@@ -317,3 +317,16 @@ def _keys(value: object) -> set[str]:
         for item in value:
             found.update(_keys(item))
     return found
+
+
+def test_a_database_from_before_run_numbers_gains_them(tmp_path: Path) -> None:
+    """A database already at the previous version must still get the new task columns."""
+    with database(tmp_path) as db:
+        db.execute("ALTER TABLE tasks DROP COLUMN attempt_of")
+        db.execute("ALTER TABLE tasks DROP COLUMN attempt")
+        # 14 is the last version without them. Adding them without raising the
+        # version left existing databases unable to read any job.
+        db.execute("UPDATE schema_meta SET version = 14 WHERE id = 1")
+    with database(tmp_path) as db:
+        assert SCHEMA_VERSION > 14
+        assert table_columns(db, "tasks") == TASK_COLUMNS

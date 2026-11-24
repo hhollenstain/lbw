@@ -2379,10 +2379,9 @@
       <div class="sidebar-stack" id="sidebar-stack">
       <div class="project-switch">
         <label class="project-switch-label" for="project-search">Project</label>
-        <div class="project-finder">
-          <input id="project-search" class="project-search" type="search" placeholder="Find a project" aria-label="Find a project" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="project-menu">
-          <div id="project-menu" class="project-menu" role="listbox" hidden></div>
-        </div>
+        <input id="project-search" class="project-search" type="search" placeholder="Find a project" aria-label="Find a project" autocomplete="off" aria-controls="project-list">
+        <ul id="project-list" class="project-list" aria-label="Projects"></ul>
+        <button type="button" id="project-list-more" class="project-list-more" aria-expanded="false" aria-controls="project-list" hidden>All projects</button>
         <select id="project-select" aria-label="Project" hidden>
           {% for ws in known_workspaces %}
           <option value="{{ ws.path }}" {% if ws.path == default_workspace %}selected{% endif %}>{{ ws.name }}{% if ws.missing %} (no checkout){% endif %}</option>
@@ -3024,6 +3023,12 @@
           <label for="rerun-model">Model</label>
           <select id="rerun-model"></select>
         </div>
+        <fieldset class="rerun-checkpoints" id="rerun-checkpoints" hidden>
+          <legend>Checkpoints</legend>
+          <label><input id="rerun-spec" type="checkbox"> Write a spec first</label>
+          <label><input id="rerun-gate-triage" type="checkbox"> Review the plan before code</label>
+          <label><input id="rerun-gate-approval" type="checkbox"> Review before the pull request</label>
+        </fieldset>
         <label for="rerun-new-goal">Goal</label>
         <textarea id="rerun-new-goal" spellcheck="false"></textarea>
         <div class="modal-actions">
@@ -4154,6 +4159,7 @@
           search.value = "";
           search.placeholder = "No projects yet";
         }
+        renderProjectList();
         paintWorkspaceSummary({});
         if (archiveProjectEl) archiveProjectEl.hidden = true;
         return;
@@ -4171,12 +4177,8 @@
         projectSelectEl.value = picked;
       }
       const search = document.getElementById("project-search");
-      const chosen = workspaces.find((item) => item.path === (projectSelectEl.value || picked));
-      if (search && document.activeElement !== search) {
-        search.disabled = false;
-        search.placeholder = "Find a project";
-        search.value = chosen ? finderLabel(chosen) : "";
-      }
+      if (search) search.placeholder = "Find a project";
+      renderProjectList();
       if (archiveProjectEl) archiveProjectEl.hidden = workspaces.length < 2;
     }
 
@@ -4391,42 +4393,79 @@
       });
     }
     const projectSearchEl = document.getElementById("project-search");
-    const projectMenuEl = document.getElementById("project-menu");
-    let projectQuery = "";
+    const projectMoreEl = document.getElementById("project-list-more");
+    state.projectQuery = "";
+    state.projectActive = 0;
+    state.projectListOpen = readProjectListOpen();
+
+    function readProjectListOpen() {
+      try {
+        return localStorage.getItem("lbw-project-list-open") === "1";
+      } catch (err) {
+        return false;
+      }
+    }
+
+    function saveProjectListOpen(open) {
+      try {
+        localStorage.setItem("lbw-project-list-open", open ? "1" : "0");
+      } catch (err) {
+        // A blocked store only forgets the expanded list.
+      }
+    }
+
     if (projectSearchEl) {
-      projectSearchEl.addEventListener("focus", () => {
-        projectQuery = "";
-        openProjectMenu();
-        projectSearchEl.select();
-      });
       projectSearchEl.addEventListener("input", () => {
-        projectQuery = projectSearchEl.value;
-        openProjectMenu();
-      });
-      projectSearchEl.addEventListener("blur", () => {
-        closeProjectMenu();
-        const current = (state.workspaceCatalog || []).find((item) => item.path === workspaceEl.value);
-        projectSearchEl.value = current ? finderLabel(current) : "";
+        state.projectQuery = projectSearchEl.value;
+        state.projectActive = 0;
+        renderProjectList();
       });
       projectSearchEl.addEventListener("keydown", (event) => {
+        const rows = projectRowsShown();
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          if (!rows.length) return;
+          const step = event.key === "ArrowDown" ? 1 : -1;
+          state.projectActive = (state.projectActive + step + rows.length) % rows.length;
+          renderProjectList();
+          return;
+        }
         if (event.key === "Escape") {
-          projectSearchEl.blur();
+          if (!projectSearchEl.value) {
+            projectSearchEl.blur();
+            return;
+          }
+          event.preventDefault();
+          clearProjectQuery();
           return;
         }
         if (event.key !== "Enter") return;
         event.preventDefault();
-        const first = projectMenuEl && projectMenuEl.querySelector(".project-menu-item");
-        if (first) first.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        const picked = rows[state.projectActive] || rows[0];
+        if (picked) chooseProject(picked.item);
+      });
+    }
+    if (projectMoreEl) {
+      projectMoreEl.addEventListener("click", () => {
+        state.projectListOpen = !state.projectListOpen;
+        saveProjectListOpen(state.projectListOpen);
+        renderProjectList();
       });
     }
 
-    function finderLabel(item) {
+    function clearProjectQuery() {
+      state.projectQuery = "";
+      state.projectActive = 0;
+      if (projectSearchEl) projectSearchEl.value = "";
+      renderProjectList();
+    }
+
+    function projectTitle(item) {
       const locator = String((item && item.locator) || "");
       if (locator && locator.indexOf("/") > 0 && !locator.startsWith("/") && locator.indexOf("\\") < 0) {
-        return item.missing ? locator + " (no checkout)" : locator;
+        return locator;
       }
-      const name = (item && (item.name || item.path)) || "";
-      return item && item.missing ? name + " (no checkout)" : name;
+      return String((item && (item.name || item.path)) || "");
     }
 
     function projectLink(item) {
@@ -4437,62 +4476,253 @@
       return String((item && item.path) || "");
     }
 
-    function openProjectMenu() {
-      if (!projectMenuEl) return;
-      projectMenuEl.hidden = false;
-      if (projectSearchEl) projectSearchEl.setAttribute("aria-expanded", "true");
-      renderProjectMenu();
+    function isWordStart(text, index) {
+      if (index === 0) return true;
+      return /[\/\-_.\s]/.test(text[index - 1]);
     }
 
-    function closeProjectMenu() {
-      if (projectMenuEl) projectMenuEl.hidden = true;
-      if (projectSearchEl) projectSearchEl.setAttribute("aria-expanded", "false");
-    }
-
-    function projectMatches(item, query) {
-      const name = String((item && item.name) || "");
-      const locator = String((item && item.locator) || "");
-      const remote = String((item && item.git_remote) || "");
-      const path = String((item && item.path) || "");
-      if (repoMatches(name, query) || repoMatches(remote, query)) return true;
-      const repo = locator.indexOf("/") > 0 && !locator.startsWith("/") && locator.indexOf("\\") < 0;
-      if (repo && repoMatches(locator, query)) return true;
-      const folded = String(query || "").toLowerCase();
-      if (!folded) return true;
-      return path.toLowerCase().includes(folded) || locator.toLowerCase().includes(folded);
-    }
-
-    function renderProjectMenu() {
-      if (!projectMenuEl) return;
-      const rows = (state.workspaceCatalog || []).filter((item) => projectMatches(item, projectQuery));
-      projectMenuEl.replaceChildren();
-      if (!rows.length) {
-        const empty = document.createElement("div");
-        empty.className = "project-menu-empty";
-        empty.textContent = (state.workspaceCatalog || []).length
-          ? "No project matches."
-          : "No projects yet";
-        projectMenuEl.append(empty);
-        return;
+    // Score how well a query matches text, or return null. A run of letters
+    // beats scattered ones, and a match at the start of a word beats one
+    // inside it. hits are the matched character positions, for highlighting.
+    function fuzzyMatch(text, query) {
+      const hay = String(text || "").toLowerCase();
+      const needle = String(query || "").toLowerCase().replace(/\s+/g, "");
+      if (!needle) return { score: 0, hits: [] };
+      const at = hay.indexOf(needle);
+      if (at >= 0) {
+        const hits = [];
+        for (let index = at; index < at + needle.length; index += 1) hits.push(index);
+        const start = isWordStart(hay, at) ? 300 : 0;
+        return { score: 1000 + start - at - hay.length / 10, hits: hits };
       }
-      for (const item of rows) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "project-menu-item";
-        button.setAttribute("role", "option");
-        button.textContent = finderLabel(item);
-        if (item.path === workspaceEl.value) button.setAttribute("aria-selected", "true");
-        button.addEventListener("mousedown", (event) => {
-          event.preventDefault();
-          chooseProject(item);
+      return scatteredMatch(hay, needle, true) || scatteredMatch(hay, needle, false);
+    }
+
+    // Match the query's letters in order. With wordStarts, a letter jumps
+    // ahead to the start of a word when it is not next to the last one.
+    function scatteredMatch(hay, needle, wordStarts) {
+      const hits = [];
+      let score = 500;
+      let from = 0;
+      for (const ch of needle) {
+        let found = -1;
+        for (let index = from; index < hay.length; index += 1) {
+          if (hay[index] !== ch) continue;
+          if (found < 0) found = index;
+          if (!wordStarts || (hits.length && index === hits[hits.length - 1] + 1)) break;
+          if (isWordStart(hay, index)) {
+            found = index;
+            break;
+          }
+        }
+        if (found < 0) return null;
+        if (isWordStart(hay, found)) score += 15;
+        if (hits.length && found === hits[hits.length - 1] + 1) score += 10;
+        if (hits.length) score -= found - hits[hits.length - 1] - 1;
+        hits.push(found);
+        from = found + 1;
+      }
+      return { score: score - hits[0] - hay.length / 10, hits: hits };
+    }
+
+    // The title and name match letters in order. A remote or a folder path is
+    // long enough that scattered letters match almost anything, so those
+    // only match the query as written.
+    function matchProject(item, query) {
+      const title = fuzzyMatch(projectTitle(item), query);
+      let best = title ? { score: title.score, hits: title.hits } : null;
+      const name = fuzzyMatch(item && item.name, query);
+      if (name && (!best || name.score - 100 > best.score)) {
+        best = { score: name.score - 100, hits: [] };
+      }
+      const needle = String(query || "").toLowerCase().trim();
+      for (const value of [item && item.git_remote, item && item.path]) {
+        if (!String(value || "").toLowerCase().includes(needle)) continue;
+        if (!best) best = { score: 0, hits: [] };
+      }
+      return best;
+    }
+
+    function byTitle(left, right) {
+      return projectTitle(left).localeCompare(projectTitle(right), undefined, { sensitivity: "base" });
+    }
+
+    // The rows the list draws, in order. Each row is { item, hits, group }.
+    function projectRowsShown() {
+      const catalog = (state.workspaceCatalog || []).slice().sort(byTitle);
+      const current = workspaceEl ? workspaceEl.value : "";
+      const query = state.projectQuery.trim();
+      if (query) {
+        const ranked = [];
+        for (const item of catalog) {
+          const found = matchProject(item, query);
+          if (!found) continue;
+          const lift = item.favorite ? 50 : 0;
+          ranked.push({ item: item, hits: found.hits, group: "", score: found.score + lift });
+        }
+        ranked.sort((left, right) => right.score - left.score);
+        return ranked;
+      }
+      const favorites = catalog.filter((item) => item.favorite);
+      const rows = favorites.map((item) => ({ item: item, hits: [], group: "Favorites" }));
+      if (state.projectListOpen) {
+        for (const item of catalog) {
+          if (!item.favorite) rows.push({ item: item, hits: [], group: "All projects" });
+        }
+        return rows;
+      }
+      const chosen = catalog.find((item) => item.path === current && !item.favorite);
+      if (chosen) rows.push({ item: chosen, hits: [], group: favorites.length ? "Current" : "" });
+      return rows;
+    }
+
+    function highlightedTitle(item, hits) {
+      const title = projectTitle(item);
+      const span = document.createElement("span");
+      span.className = "project-row-name";
+      if (!hits.length) {
+        span.textContent = title;
+        return span;
+      }
+      const marked = new Set(hits);
+      let run = "";
+      let inMark = false;
+      function flush() {
+        if (!run) return;
+        if (inMark) {
+          const mark = document.createElement("mark");
+          mark.textContent = run;
+          span.append(mark);
+        } else {
+          span.append(document.createTextNode(run));
+        }
+        run = "";
+      }
+      for (let index = 0; index < title.length; index += 1) {
+        const hit = marked.has(index);
+        if (hit !== inMark) {
+          flush();
+          inMark = hit;
+        }
+        run += title[index];
+      }
+      flush();
+      return span;
+    }
+
+    function starIcon() {
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", "0 0 24 24");
+      svg.setAttribute("aria-hidden", "true");
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", "M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z");
+      path.setAttribute("stroke-linejoin", "round");
+      svg.append(path);
+      return svg;
+    }
+
+    function projectRow(row, index) {
+      const item = row.item;
+      const current = workspaceEl ? workspaceEl.value : "";
+      const li = document.createElement("li");
+      li.className = "project-row";
+      if (index === state.projectActive && state.projectQuery.trim()) li.classList.add("is-active");
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "project-row-pick";
+      pick.dataset.projectPath = item.path;
+      pick.title = item.path;
+      if (item.path === current) pick.setAttribute("aria-current", "true");
+      pick.append(highlightedTitle(item, row.hits));
+      if (item.missing) {
+        const note = document.createElement("span");
+        note.className = "project-row-note";
+        note.textContent = "no checkout";
+        pick.append(note);
+      }
+      pick.addEventListener("click", () => chooseProject(item));
+      li.append(pick);
+      if (item.project_id) {
+        const star = document.createElement("button");
+        star.type = "button";
+        star.className = "project-row-star";
+        star.dataset.projectFavorite = item.project_id;
+        star.setAttribute("aria-pressed", item.favorite ? "true" : "false");
+        const verb = item.favorite ? "Remove " + projectTitle(item) + " from favorites" : "Favorite " + projectTitle(item);
+        star.setAttribute("aria-label", verb);
+        star.title = item.favorite ? "Remove from favorites" : "Add to favorites";
+        star.append(starIcon());
+        star.addEventListener("click", () => toggleFavorite(item));
+        li.append(star);
+      }
+      return li;
+    }
+
+    function renderProjectList() {
+      const listEl = document.getElementById("project-list");
+      const moreEl = document.getElementById("project-list-more");
+      if (!listEl) return;
+      const catalog = state.workspaceCatalog || [];
+      const rows = projectRowsShown();
+      const query = state.projectQuery.trim();
+      if (state.projectActive >= rows.length) state.projectActive = 0;
+      listEl.replaceChildren();
+      listEl.classList.toggle("is-searching", Boolean(query));
+      let group = null;
+      for (const [index, row] of rows.entries()) {
+        if (row.group && row.group !== group) {
+          const heading = document.createElement("li");
+          heading.className = "project-list-group";
+          heading.textContent = row.group;
+          listEl.append(heading);
+        }
+        group = row.group;
+        listEl.append(projectRow(row, index));
+      }
+      if (query && !rows.length) {
+        const empty = document.createElement("li");
+        empty.className = "project-list-empty";
+        empty.textContent = "No project matches.";
+        listEl.append(empty);
+      } else if (!query && catalog.length > 1 && !catalog.some((item) => item.favorite)) {
+        const tip = document.createElement("li");
+        tip.className = "project-list-empty";
+        tip.textContent = "Star a project to keep it here.";
+        listEl.append(tip);
+      }
+      if (!moreEl) return;
+      const hidden = catalog.length - rows.length;
+      moreEl.hidden = Boolean(query) || (!state.projectListOpen && hidden <= 0);
+      moreEl.setAttribute("aria-expanded", state.projectListOpen ? "true" : "false");
+      moreEl.textContent = state.projectListOpen ? "Show fewer" : "All projects (" + catalog.length + ")";
+    }
+
+    async function toggleFavorite(item) {
+      const next = !item.favorite;
+      item.favorite = next;
+      renderProjectList();
+      try {
+        const res = await fetch("/api/workspaces/favorites", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ project_id: item.project_id, favorite: next }),
         });
-        projectMenuEl.append(button);
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || "could not save that favorite");
+        const kept = new Set(body.favorites || []);
+        for (const entry of state.workspaceCatalog || []) {
+          if (entry.project_id) entry.favorite = kept.has(entry.project_id);
+        }
+      } catch (err) {
+        item.favorite = !next;
+        notify("error", err.message, { title: "Could not save that favorite" });
       }
+      renderProjectList();
     }
 
     function chooseProject(item) {
-      closeProjectMenu();
-      if (projectSearchEl) projectSearchEl.value = finderLabel(item);
+      if (state.projectQuery) clearProjectQuery();
+      if (projectSearchEl) projectSearchEl.blur();
       if (!item.path || item.path === workspaceEl.value) return;
       selectWorkspace(item.path, { close: false }).catch((err) => {
         notify("error", err.message, { title: "Could not switch project" });
@@ -5766,6 +5996,7 @@
         });
       });
       const runs = tasks.concat(history);
+      markAttempts(runs);
       const rank = (status) => (
         status === "running" || status === "waiting" ? 0 : status === "queued" ? 1 : 2
       );
@@ -5775,6 +6006,47 @@
         return runTime(right.item) - runTime(left.item);
       });
       return runs;
+    }
+
+    // A rerun is another run of the same proposal. The list shows the latest run of
+    // each proposal, and the change view picks among its runs.
+    function markAttempts(runs) {
+      const groups = new Map();
+      for (const run of runs) {
+        run.latest = true;
+        run.attempts = [run];
+        const id = String(run.item.attempt_of || run.item.id || "");
+        if (!id) continue;
+        if (!groups.has(id)) groups.set(id, []);
+        groups.get(id).push(run);
+      }
+      for (const group of groups.values()) {
+        group.sort((left, right) => attemptNumber(left.item) - attemptNumber(right.item));
+        const latest = group[group.length - 1];
+        for (const run of group) {
+          run.attempts = group;
+          run.latest = run === latest;
+        }
+      }
+    }
+
+    function attemptNumber(item) {
+      return Number(item && item.attempt) || 1;
+    }
+
+    function holdsSelection(run) {
+      return (run.attempts || [run]).some((attempt) => attempt.key === state.selectedRunKey);
+    }
+
+    function attemptPickerHtml(run) {
+      if (!run || !run.attempts || run.attempts.length < 2) return "";
+      const options = run.attempts.slice().reverse().map((attempt) => {
+        const number = attemptNumber(attempt.item);
+        const latest = attempt.latest ? " (latest)" : "";
+        const picked = attempt.key === run.key ? " selected" : "";
+        return `<option value="${escapeHtml(attempt.key)}"${picked}>Run #${number}${latest} · ${escapeHtml(attempt.status || "unknown")}</option>`;
+      }).join("");
+      return `<label class="run-attempt"><span class="run-attempt-label">Run</span><select data-run-attempt aria-label="Run of this proposal">${options}</select></label>`;
     }
 
     function statusMatches(status, filter) {
@@ -5798,13 +6070,13 @@
     }
 
     function visibleRuns(runs) {
-      return runs.filter((run) => statusMatches(run.status, state.statusFilter) && runMatchesSearch(run, state.search));
+      return runs.filter((run) => run.latest !== false && statusMatches(run.status, state.statusFilter) && runMatchesSearch(run, state.search));
     }
 
     function ensureRunSelection(runs) {
       const visible = visibleRuns(runs);
       const pool = visible.length ? visible : runs;
-      if (pool.some((run) => run.key === state.selectedRunKey)) return;
+      if (pool.some((run) => holdsSelection(run))) return;
       const pick = pool.find((run) => run.status === "running") || pool[0] || null;
       state.selectedRunKey = pick ? pick.key : "";
       state.pinnedStage = "";
@@ -5847,6 +6119,105 @@
 
     function prStateOf(url) {
       return (url && state.prStates[url]) || "";
+    }
+
+    // A pull request's CI checks, read from GitHub. Failed ones can be investigated:
+    // the next run reads what they printed, writes a fix, and waits for approval.
+    const CI_CHECKS_TTL_MS = 60_000;
+    state.ciChecks = {};
+    state.ciSkipped = {};
+
+    function ciChecksHtml(item) {
+      const id = item.id;
+      const entry = state.ciChecks[id];
+      if (!entry || (!entry.loading && Date.now() - entry.at > CI_CHECKS_TTL_MS)) loadCiChecks(id, false);
+      let head = `<div class="ci-head"><div class="ci-heading"><p class="ci-title">CI checks</p></div><button type="button" class="secondary ci-refresh" data-ci-refresh="${escapeHtml(id)}">Refresh</button></div>`;
+      if (!entry || (entry.loading && !entry.data)) {
+        return `<section class="ci-checks">${head}<p class="step-copy">Reading checks…</p></section>`;
+      }
+      if (entry.error) {
+        return `<section class="ci-checks">${head}<p class="step-copy">${escapeHtml(entry.error)}</p></section>`;
+      }
+      const data = entry.data || {};
+      const checks = data.checks || [];
+      if (!checks.length) {
+        return `<section class="ci-checks">${head}<p class="step-copy">No checks have run on this pull request.</p></section>`;
+      }
+      const skipped = state.ciSkipped[id] || new Set();
+      const labels = { failing: "Failed", pending: "Running", passing: "Passed" };
+      const glyphs = {
+        failing: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6"/></svg>`,
+        passing: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.5l2.5 2.5L12 5.5"/></svg>`,
+        pending: "",
+      };
+      const rows = checks.map((check) => {
+        const name = escapeHtml(check.name);
+        const label = labels[check.state] || "Unknown";
+        const pick = check.state === "failing"
+          ? `<input type="checkbox" data-ci-pick="${escapeHtml(id)}" value="${name}"${skipped.has(check.name) ? "" : " checked"} aria-label="Investigate ${name}">`
+          : `<span class="ci-pick-space" aria-hidden="true"></span>`;
+        const icon = `<span class="ci-icon ci-icon-${escapeHtml(check.state)}" role="img" aria-label="${label}" title="${label}">${glyphs[check.state] || ""}</span>`;
+        const summary = check.summary ? `<span class="ci-summary">${escapeHtml(check.summary)}</span>` : "";
+        const details = check.url
+          ? `<a class="ci-details" href="${escapeHtml(check.url)}" target="_blank" rel="noopener noreferrer" aria-label="Details for ${name}">Details<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4h6v6M12 4l-7 7"/></svg></a>`
+          : "";
+        return `<li class="ci-check ci-${escapeHtml(check.state)}">${pick}${icon}<span class="ci-name"><span class="ci-label">${name}</span>${summary}</span>${details}</li>`;
+      }).join("");
+      const counts = ["failing", "pending", "passing"]
+        .map((state) => [state, checks.filter((check) => check.state === state).length])
+        .filter(([, count]) => count)
+        .map(([state, count]) => `${count} ${labels[state].toLowerCase()}`)
+        .join(" · ");
+      head = `<div class="ci-head"><div class="ci-heading"><p class="ci-title">CI checks</p><p class="ci-counts">${escapeHtml(counts)}</p></div><button type="button" class="secondary ci-refresh" data-ci-refresh="${escapeHtml(id)}">Refresh</button></div>`;
+      const failed = (data.failed || []).length;
+      const action = failed
+        ? `<div class="ci-actions"><button type="button" data-ci-investigate="${escapeHtml(id)}">Investigate failures</button><p class="hint">The next run reads what the ticked checks printed, writes a fix, and waits for you to approve it. Approving pushes the fix to this pull request.</p></div>`
+        : "";
+      return `<section class="ci-checks">${head}<ul class="ci-list">${rows}</ul>${action}</section>`;
+    }
+
+    async function loadCiChecks(taskId, refresh) {
+      const previous = state.ciChecks[taskId] || {};
+      state.ciChecks[taskId] = { ...previous, loading: true, at: previous.at || 0 };
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/checks${refresh ? "?refresh=true" : ""}`);
+        const body = await res.json();
+        state.ciChecks[taskId] = res.ok
+          ? { data: body, at: Date.now(), loading: false }
+          : { error: body.error || "Could not read the checks", at: Date.now(), loading: false };
+      } catch (err) {
+        state.ciChecks[taskId] = { error: err.message, at: Date.now(), loading: false };
+      }
+      render();
+    }
+
+    async function investigateCiChecks(taskId, button) {
+      const entry = state.ciChecks[taskId] || {};
+      const skipped = state.ciSkipped[taskId] || new Set();
+      const checks = ((entry.data || {}).failed || []).filter((name) => !skipped.has(name));
+      if (!checks.length) {
+        notify("error", "Tick at least one failed check.", { title: "Nothing to investigate" });
+        return;
+      }
+      if (button) button.disabled = true;
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/checks/investigate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ checks }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "Could not start the investigation");
+        state.selectedRunKey = `task:${body.id}`;
+        state.selected = body.id;
+        state.taskStatus[body.id] = body.status || "queued";
+        notify("queued", checks.join(", "), { title: "Investigating failed checks" });
+        await refresh();
+      } catch (err) {
+        notify("error", err.message, { title: "Could not investigate" });
+      } finally {
+        if (button) button.disabled = false;
+      }
     }
 
     function prIsOpen(item) {
@@ -5924,7 +6295,7 @@
 
     function runCardHtml(run) {
       const entry = run.item;
-      const selected = run.key === state.selectedRunKey ? " selected" : "";
+      const selected = holdsSelection(run) ? " selected" : "";
       const failed = entry.status === "failed" || entry.status === "error";
       const succeeded = entry.status === "success";
       const canUpdate = succeeded && prIsOpen(entry);
@@ -5974,6 +6345,7 @@
             <div class="row">
               <span class="status ${escapeHtml(entry.status || "")}">${escapeHtml(entry.status || "unknown")}</span>
               ${entry.status === "waiting" ? `<span class="inbox-step">${escapeHtml(stageStepLabel(entry.stage))}</span>` : ""}
+              ${(run.attempts || []).length > 1 ? `<span class="run-number">Run #${attemptNumber(entry)}</span>` : ""}
               <span class="meta duration">${escapeHtml(when || "")}</span>
             </div>
             <p class="goal">${escapeHtml(goal)}</p>
@@ -7272,6 +7644,50 @@
       return `<ol class="step-rail flow"${role} aria-label="${escapeHtml(label)}">${rows}</ol>`;
     }
 
+    const buildEstimates = {};
+
+    function formatMicros(micros) {
+      const dollars = Number(micros || 0) / 1000000;
+      if (dollars > 0 && dollars < 0.01) return "under $0.01";
+      return `$${dollars.toFixed(2)}`;
+    }
+
+    function buildEstimateBody(estimate) {
+      if (estimate === undefined || estimate === null) return `<span class="callout-estimate-note">Estimating what building this will cost…</span>`;
+      if (estimate.error) return `<span class="callout-estimate-note">No cost estimate: ${escapeHtml(estimate.error)}</span>`;
+      if (!estimate.available) return `<span class="callout-estimate-note">${escapeHtml(estimate.note || "No cost estimate for this change.")}</span>`;
+      const tokens = `${formatTokenCount(estimate.tokens)} tokens`;
+      const model = escapeHtml(estimate.model || "this model");
+      const head = estimate.cost_micros == null
+        ? `<strong>About ${tokens}</strong> to build on ${model}.`
+        : `<strong>About ${formatMicros(estimate.cost_micros)}</strong> to build on ${model} · ${tokens}.`;
+      const planned = `Planning used ${formatTokenCount(estimate.planning_tokens)} tokens${estimate.priced ? ` (${formatMicros(estimate.planning_cost_micros)})` : ""}.`;
+      return `${head}<span class="callout-estimate-note">${escapeHtml(estimate.note || "")} ${planned}</span>`;
+    }
+
+    async function loadBuildEstimate(key, taskId) {
+      buildEstimates[key] = null;
+      let estimate;
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/estimate`);
+        const body = await res.json().catch(() => ({}));
+        estimate = res.ok ? body : { error: body.error || `HTTP ${res.status}` };
+      } catch (err) {
+        estimate = { error: "LBW could not be reached" };
+      }
+      buildEstimates[key] = estimate;
+      for (const el of document.querySelectorAll("[data-build-estimate]")) {
+        if (el.dataset.buildEstimate === key) el.innerHTML = buildEstimateBody(estimate);
+      }
+    }
+
+    function buildEstimateHtml(item) {
+      const calls = (item.events || []).filter((event) => event && event.kind === "llm").length;
+      const key = `${item.id}:${calls}`;
+      if (!(key in buildEstimates)) loadBuildEstimate(key, item.id);
+      return `<p class="callout-copy callout-estimate" data-build-estimate="${escapeHtml(key)}">${buildEstimateBody(buildEstimates[key])}</p>`;
+    }
+
     function calloutHtml(tone, badge, title, body) {
       return `<section class="change-callout callout-${tone}" data-decision-scope aria-live="polite"><div class="callout-head"><span class="callout-badge">${escapeHtml(badge)}</span><p class="callout-title">${escapeHtml(title)}</p></div>${body}</section>`;
     }
@@ -7528,14 +7944,14 @@
       } else if (yourTurn.triage && item.id) {
         calloutStep = "triage";
         const planHtml = plan ? `<pre class="change-plan">${escapeHtml(plan)}</pre>` : `<p class="callout-copy">The architect did not write a plan.</p>`;
-        callout = calloutHtml("you", "Your turn", "Review the plan", `<p class="callout-copy">Nothing has been built yet. Build it as planned, or hand it to a person.</p>${planHtml}${criteriaList(criteria, "")}<div class="change-actions"><button type="button" data-change-decision="build"${taskAttr}>Build it</button><button type="button" class="secondary" data-change-decision="hand_off"${taskAttr}>Hand off</button></div>`);
+        callout = calloutHtml("you", "Your turn", "Review the plan", `<p class="callout-copy">Nothing has been built yet. Build it as planned, or hand it to a person.</p>${planHtml}${criteriaList(criteria, "")}${buildEstimateHtml(item)}<div class="change-actions"><button type="button" data-change-decision="build"${taskAttr}>Build it</button><button type="button" class="secondary" data-change-decision="hand_off"${taskAttr}>Hand off</button></div>`);
       } else if (yourTurn.approval && item.id) {
         calloutStep = "approval";
         const summary = item.summary ? `<p class="callout-copy">${escapeHtml(String(item.summary).trim())}</p>` : "";
         const blocked = githubCommitBlocked(item);
         const copy = blocked
           ? `<p class="callout-copy">Connect GitHub from your personal page before approving this commit. You can still send it back.</p>`
-          : `<p class="callout-copy">The reviews are in. Approve to ${item.create_pr === false ? "commit the change" : "open the pull request"}, or say what to change and send it back.</p>`;
+          : `<p class="callout-copy">The reviews are in. Approve to ${item.ci_pr_url ? "push the fix to the pull request" : (item.create_pr === false ? "commit the change" : "open the pull request")}, or say what to change and send it back.</p>`;
         const approve = blocked ? "" : `<button type="button" data-change-decision="approve"${taskAttr}>Approve</button>`;
         callout = calloutHtml("you", "Your turn", "Approve the change", `${copy}${summary}${verdictChips()}${changesLink ? `<p class="callout-row">${changesLink}</p>` : ""}<textarea class="reply-note" rows="2" spellcheck="false" placeholder="What should the builder change? (for Send back)"></textarea><div class="change-actions">${approve}<button type="button" class="secondary" data-change-decision="send_back"${taskAttr}>Send back</button></div>`);
       } else if (yourTurn.builder) {
@@ -7578,7 +7994,8 @@
           ? `<button type="button" data-merge-url="${escapeHtml(url)}" data-merge-workspace="${escapeHtml(item.workspace || "")}">Merge</button><button type="button" class="secondary" data-request-changes="${escapeHtml(state.selectedRunKey)}">Request changes</button>`
           : "";
         const link = url ? prLinkHtml(url) : "";
-        callout = calloutHtml("done", "Done", title, `${item.summary && !url ? `<p class="callout-copy">${escapeHtml(String(item.summary).trim())}</p>` : ""}${url ? "" : sha}${link || actions || changesLink ? `<div class="change-actions">${link}${actions}${changesLink}</div>` : ""}`);
+        const checks = url && item.id && !item.merged && !["merged", "closed"].includes(pull) ? ciChecksHtml(item) : "";
+        callout = calloutHtml("done", "Done", title, `${item.summary && !url ? `<p class="callout-copy">${escapeHtml(String(item.summary).trim())}</p>` : ""}${url ? "" : sha}${link || actions || changesLink ? `<div class="change-actions">${link}${actions}${changesLink}</div>` : ""}${checks}`);
       } else if (status === "skipped") {
         callout = calloutHtml("muted", "Skipped", "Nothing to change", `<p class="callout-copy">${escapeHtml(reason || item.summary || "The tree already met the goal.")}</p>`);
       }
@@ -7633,6 +8050,10 @@
     const FOLLOW_PX = 80;
     let renderedProgressKey = { selected: null, historyKey: "" };
     let lastProgressHtml = "";
+    // The run picker as last drawn. The browser writes `selected` back as
+    // `selected=""`, so comparing against innerHTML would redraw it on every
+    // refresh and close an open dropdown before a run is picked.
+    let lastAttemptsHtml = "";
 
     function progressScroller() {
       if (state.taskPane === "changes") {
@@ -7771,7 +8192,9 @@
           workspace: workspaceEl.value || "",
         });
       });
-      return oneJobPerPull(tasks.concat(history));
+      const entries = tasks.concat(history);
+      markAttempts(entries);
+      return oneJobPerPull(entries.filter((entry) => entry.latest));
     }
 
     function inboxStepLabel(entry, section) {
@@ -7909,9 +8332,7 @@
 
     function inboxRowHtml(entry, items, section) {
       const task = entry.item;
-      const selected = entry.kind === "task"
-        ? (state.selected === task.id ? " selected" : "")
-        : (entry.key === state.selectedRunKey ? " selected" : "");
+      const selected = holdsSelection(entry) ? " selected" : "";
       const step = inboxStepLabel(entry, section);
       const project = projectLabel(entry.workspace || task.workspace, items);
       const title = escapeHtml(
@@ -7919,7 +8340,7 @@
           .filter(Boolean)
           .join(" — ")
       );
-      const body = `<span class="inbox-goal">${escapeHtml(goalHeadline(task))}</span><span class="inbox-meta"><span class="inbox-dot${entry.status === "running" ? " is-running" : ""}" aria-hidden="true"></span><span class="inbox-step">${escapeHtml(step)}</span><span class="inbox-project">${escapeHtml(project)}</span></span>`;
+      const body = `<span class="inbox-goal">${escapeHtml(goalHeadline(task))}</span><span class="inbox-meta"><span class="inbox-dot${entry.status === "running" ? " is-running" : ""}" aria-hidden="true"></span><span class="inbox-step">${escapeHtml(step)}</span>${(entry.attempts || []).length > 1 ? `<span class="run-number">Run #${attemptNumber(task)}</span>` : ""}<span class="inbox-project">${escapeHtml(project)}</span></span>`;
       const button = entry.kind === "history"
         ? `<button type="button" class="inbox-item${selected}" data-run-key="${escapeHtml(entry.key)}" title="${title}">${body}</button>`
         : `<button type="button" class="inbox-item${selected}" data-inbox-id="${escapeHtml(task.id)}" data-inbox-workspace="${escapeHtml(task.workspace || "")}" title="${title}">${body}</button>`;
@@ -8178,6 +8599,7 @@
       const titleText = titleItem ? goalHeadline(titleItem) : "";
       const metaHover = selected ? [selected.workspace || "", selected.base_url || ""].filter(Boolean).join(" · ") : "";
       const prHtml = prLinkHtml(prUrl(selected || selectedHistory));
+      const attemptsHtml = attemptPickerHtml(selectedRun);
       const target = runDetailEl;
       const root = target.querySelector("[data-progress-root]");
       const sameItem = Boolean(root && itemKey && root.dataset.itemKey === itemKey);
@@ -8190,6 +8612,12 @@
         if (titleEl) titleEl.textContent = titleText;
         const prEl = root.querySelector("[data-progress-pr]");
         if (prEl) prEl.innerHTML = prHtml;
+        const attemptsEl = root.querySelector("[data-progress-attempts]");
+        const picking = attemptsEl && attemptsEl.contains(document.activeElement);
+        if (attemptsEl && !picking && lastAttemptsHtml !== attemptsHtml) {
+          attemptsEl.innerHTML = attemptsHtml;
+          lastAttemptsHtml = attemptsHtml;
+        }
         const body = root.querySelector("[data-progress-body]");
         if (body && lastProgressHtml !== progressHtml) {
           body.innerHTML = progressHtml;
@@ -8207,6 +8635,7 @@
                 <p class="meta" data-progress-meta title="${escapeHtml(metaHover)}">${escapeHtml(metaText)}</p>
               </div>
               <div class="change-head-side">
+                <div class="run-attempts" data-progress-attempts>${attemptsHtml}</div>
                 <div class="progress-pr" data-progress-pr>${prHtml}</div>
                 <p class="task-tokens" id="task-tokens" data-task-tokens title="${escapeHtml(tokenHover)}" aria-label="${escapeHtml(tokenHover)}">${renderTokenBar(tokenUsage.used, tokenUsage.window)}</p>
               </div>
@@ -8216,6 +8645,7 @@
         `;
       }
       lastProgressHtml = progressHtml;
+      if (!sameItem) lastAttemptsHtml = attemptsHtml;
       restoreScroll(scroll, page, { running: live });
       requestAnimationFrame(() => restoreScroll(scroll, page, { running: live }));
     }
@@ -8708,11 +9138,40 @@
       }
       if (submit) submit.textContent = asking ? "Send feedback" : (rerunning ? "Rerun" : "Update run");
       if (modelRow) modelRow.hidden = !rerunning;
-      if (rerunning) fillRerunModels(pending.entry);
+      const checkpoints = document.getElementById("rerun-checkpoints");
+      if (checkpoints) checkpoints.hidden = !rerunning;
+      if (rerunning) {
+        fillRerunModels(pending.entry);
+        fillRerunCheckpoints(pending.entry);
+      }
       rerunNewGoalInput.value = asking ? "" : (pending.entry.goal || "");
       rerunGoalPickerEl.hidden = false;
       rerunGoalPickerEl.classList.add("open");
       rerunNewGoalInput.focus();
+    }
+
+    // A rerun stops where the job form would: its checkpoints start from the form's.
+    function fillRerunCheckpoints(entry) {
+      const gates = humanGates();
+      const triage = document.getElementById("rerun-gate-triage");
+      const approval = document.getElementById("rerun-gate-approval");
+      const spec = document.getElementById("rerun-spec");
+      if (triage) triage.checked = gates.triage_gate === "ask";
+      if (approval) approval.checked = gates.approval_gate === "ask";
+      if (spec) {
+        const hasSpec = Boolean(entry.spec);
+        spec.checked = hasSpec || document.getElementById("spec-first").checked;
+        spec.disabled = hasSpec;
+      }
+    }
+
+    function rerunCheckpoints() {
+      const checked = (id) => Boolean((document.getElementById(id) || {}).checked);
+      return {
+        triage_gate: checked("rerun-gate-triage") ? "ask" : "auto",
+        approval_gate: checked("rerun-gate-approval") ? "ask" : "auto",
+        spec: checked("rerun-spec"),
+      };
     }
 
     function modelOptionLabel(model) {
@@ -8793,8 +9252,9 @@
         }
         const goal = note && note !== (pending.entry.goal || "") ? note : "";
         hideRerunGoalPicker();
-        if (pending.kind === "task") await rerunFailedTask(pending.entry.id, goal, modelId);
-        else await rerunHistoryEntry(pending.entry, goal, modelId);
+        const checkpoints = rerunCheckpoints();
+        if (pending.kind === "task") await rerunFailedTask(pending.entry.id, goal, modelId, checkpoints);
+        else await rerunHistoryEntry(pending.entry, goal, modelId, checkpoints);
         return;
       }
       const revised = pending.purpose === "changes"
@@ -8869,10 +9329,10 @@
       }
     }
 
-    async function rerunFailedTask(taskId, newGoal, modelId) {
+    async function rerunFailedTask(taskId, newGoal, modelId, checkpoints) {
       try {
         const revised = (newGoal || "").trim();
-        const payload = revised ? { goal: revised } : {};
+        const payload = { ...(checkpoints || {}), ...(revised ? { goal: revised } : {}) };
         if (modelId) payload.model_id = modelId;
         const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/rerun`, {
           method: "POST",
@@ -8893,9 +9353,16 @@
       }
     }
 
-    async function rerunHistoryEntry(entry, newGoal, modelId) {
+    async function rerunHistoryEntry(entry, newGoal, modelId, checkpoints) {
+      // A stored run reruns as the next run of the same proposal.
+      if (entry.id) {
+        const changed = (newGoal || "").trim();
+        await rerunFailedTask(entry.id, changed && changed !== entry.goal ? changed : "", modelId, checkpoints);
+        return;
+      }
       const revised = (newGoal || "").trim() || entry.goal || "";
       const hasPr = Boolean(prUrl(entry));
+      const gates = humanGates();
       try {
         // The model the person picked, else the one this change ran on.
         const picked = modelId || entry.model_id;
@@ -8910,6 +9377,10 @@
             resume_branch: entry.branch || undefined,
             resume_sha: entry.commit_sha || undefined,
             pr_url: entry.status === "success" ? (prUrl(entry) || undefined) : undefined,
+            gate: gates.triage_gate === "ask" || gates.approval_gate === "ask" ? "ask" : "auto",
+            triage_gate: gates.triage_gate,
+            approval_gate: gates.approval_gate,
+            spec: document.getElementById("spec-first").checked,
           },
           entry.status === "success" ? "Update queued" : "Rerun queued",
         );
@@ -8934,12 +9405,12 @@
       const keepOn = keepEl.checked;
       const mine = runsOnMyRunner();
       const bypassEl = document.getElementById("bypass-gates");
-      const locked = mine || keepOn || Boolean(bypassEl && bypassEl.checked);
+      const locked = keepOn || Boolean(bypassEl && bypassEl.checked);
       const triageEl = document.getElementById("gate-triage");
       const approvalEl = document.getElementById("gate-approval");
       if (triageEl) triageEl.disabled = locked;
       if (approvalEl) approvalEl.disabled = locked;
-      if (bypassEl) bypassEl.disabled = mine || keepOn;
+      if (bypassEl) bypassEl.disabled = keepOn;
       keepEl.disabled = mine;
       renderFlowPreview();
     }
@@ -9017,6 +9488,36 @@
       const taskId = button ? (button.dataset.taskId || state.selected) : "";
       if (!button || !taskId) return;
       decideChange(taskId, button.dataset.changeDecision, button);
+    });
+
+    runDetailEl.addEventListener("click", (event) => {
+      const refreshButton = event.target.closest("[data-ci-refresh]");
+      if (refreshButton) {
+        loadCiChecks(refreshButton.dataset.ciRefresh, true);
+        return;
+      }
+      const investigate = event.target.closest("[data-ci-investigate]");
+      if (investigate) investigateCiChecks(investigate.dataset.ciInvestigate, investigate);
+    });
+
+    runDetailEl.addEventListener("change", (event) => {
+      const pick = event.target.closest("[data-ci-pick]");
+      if (pick) {
+        const id = pick.dataset.ciPick;
+        const skipped = state.ciSkipped[id] || new Set();
+        if (pick.checked) skipped.delete(pick.value);
+        else skipped.add(pick.value);
+        state.ciSkipped[id] = skipped;
+        return;
+      }
+      const picker = event.target.closest("[data-run-attempt]");
+      if (!picker || picker.value === state.selectedRunKey) return;
+      state.selectedRunKey = picker.value;
+      state.pinnedStage = "";
+      state.taskPane = "progress";
+      state.selectedChange = "";
+      state.closedChangeDirs = new Set();
+      render();
     });
 
     runDetailEl.addEventListener("toggle", (event) => {

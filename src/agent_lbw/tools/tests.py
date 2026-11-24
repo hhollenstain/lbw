@@ -41,7 +41,8 @@ _SUITE_STARTED = re.compile(
 _RUNNER_MISSING = re.compile(
     r"(?im)(?:"
     r"No module named ['\"]?(?:pytest|nose|tox|nose2)['\"]?"
-    r"|(?:pytest|py\.test|jest|vitest|mocha|phpunit|rspec|cargo|gradle|mvn|go|bundle|composer)"
+    r"|(?:pytest|py\.test|jest|vitest|mocha|phpunit|rspec|cargo|gradle|mvn|go|bundle|composer"
+    r"|make|just|npm|npx|node|yarn|pnpm|bun|deno|uv|tox|poetry|python3?)"
     r"[^\n]{0,60}(?:not found|command not found)"
     r"|make: \*\*\* No rule to make target\b[^\n]*\b(?:test|check)\b"
     r"|npm ERR! Missing script"

@@ -89,6 +89,15 @@ _STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS project_favorites (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        identity_id TEXT NOT NULL REFERENCES identities (id),
+        project_id TEXT NOT NULL REFERENCES projects (id),
+        created INTEGER NOT NULL,
+        PRIMARY KEY (identity_id, project_id)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS rules (
         id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES tenants (id),
@@ -372,6 +381,19 @@ _STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS model_list_prices (
+        tenant_id TEXT NOT NULL REFERENCES tenants (id),
+        model TEXT NOT NULL,
+        provider TEXT NOT NULL DEFAULT '',
+        input_micros BIGINT NOT NULL DEFAULT 0,
+        output_micros BIGINT NOT NULL DEFAULT 0,
+        cache_read_micros BIGINT NOT NULL DEFAULT 0,
+        cache_write_micros BIGINT NOT NULL DEFAULT 0,
+        fetched BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (tenant_id, model)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS runners (
         id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES tenants (id),
@@ -509,6 +531,7 @@ CLEAR_ORDER = (
     "usage_skills_daily",
     "usage_runs_daily",
     "model_prices",
+    "model_list_prices",
     "agent_grants",
     "model_project_settings",
     "model_grants",
@@ -530,6 +553,7 @@ CLEAR_ORDER = (
     "schedules",
     "tasks",
     "project_grants",
+    "project_favorites",
     "projects",
     "duty_grants",
     "team_memberships",
@@ -560,12 +584,16 @@ TASK_COLUMNS = frozenset(
         "fault",
         "result_ciphertext",
         "agent_kind",
+        "attempt_of",
+        "attempt",
         "created",
     }
 )
 
 
-SCHEMA_VERSION = 13
+# Raise this with every change below, or a database already at the old
+# version never runs it: ensure_schema only migrates when this goes up.
+SCHEMA_VERSION = 16
 
 
 def read_schema_version(db: Database) -> int:
@@ -621,6 +649,9 @@ def apply_schema(db: Database) -> None:
     _add_column(db, "tasks", "fault", "TEXT")
     _add_column(db, "tasks", "result_ciphertext", "TEXT")
     _add_column(db, "tasks", "agent_kind", "TEXT")
+    # A rerun is another run of the same proposal: the first run's id, and its number.
+    _add_column(db, "tasks", "attempt_of", "TEXT")
+    _add_column(db, "tasks", "attempt", "INTEGER NOT NULL DEFAULT 1")
     _add_column(db, "sessions", "tenant_id", "TEXT")
     _add_column(db, "models", "endpoint_id", "TEXT")
     _add_column(db, "models", "enabled", "INTEGER NOT NULL DEFAULT 0")

@@ -1941,3 +1941,35 @@ def test_publish_commits_the_change_before_it_pushes(
     assert committed is True
     assert published is True
     assert pr_url == "https://github.com/acme/repo/pull/3"
+
+
+def test_a_runner_pull_request_is_titled_from_the_request(tmp_path: Path, monkeypatch) -> None:
+    """A runner's summary is Claude Code's report, so it must not become the title."""
+    from agent_lbw.runtime import improve
+
+    assert improve.request_title("- upgrade python \n- rewrite the frontend in React") == (
+        "upgrade python; rewrite the frontend in React"
+    )
+    assert improve.request_title("Fix the login page\n\nIt 500s on submit.") == (
+        "Fix the login page"
+    )
+    seen: dict = {}
+
+    def capture(workspace, project, goal, summary, **kwargs):
+        seen.update(kwargs, summary=summary)
+        return True, "https://github.com/acme/demo/pull/1", None, True
+
+    monkeypatch.setattr(improve, "_publish_pull_request", capture)
+    monkeypatch.setattr(improve, "_maybe_test", lambda *args, **kwargs: None)
+    (tmp_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    init_git_repo(tmp_path)
+    improve.publish_runner_change(
+        tmp_path,
+        Settings(model_name="m", model_base_url="http://127.0.0.1:9/v1", create_pr=True),
+        "- upgrade python\n- rewrite the frontend in React",
+        "I couldn't run any tests this session. Neither uv sync nor npm ci worked.",
+        base_sha=None,
+        create_pr=True,
+    )
+    assert seen["title"] == "upgrade python; rewrite the frontend in React"
+    assert seen["summary"].startswith("I couldn't run any tests")

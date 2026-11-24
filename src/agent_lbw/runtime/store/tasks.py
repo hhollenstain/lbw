@@ -59,8 +59,13 @@ def save_task_request(
     agent_id: str | None = None,
     model_id: str | None = None,
     agent_kind: str | None = None,
+    attempt_of: str | None = None,
+    attempt: int = 1,
 ) -> None:
-    """Insert a request. A person who cannot use the project is refused."""
+    """Insert a request. A person who cannot use the project is refused.
+
+    A rerun names the proposal's first run in `attempt_of` and carries its run number.
+    """
     if not can_access(db, requester_id, project_id, need="use"):
         raise PermissionError("that project is closed to this person")
     ciphertext = None if goal is None else seal(tenant_dek(db, root, tenant_id), goal)
@@ -68,8 +73,9 @@ def save_task_request(
         """
         INSERT INTO tasks (
             id, tenant_id, project_id, requester_id, status, branch, pr_url,
-            run_ref, goal_ciphertext, created, agent_id, model_id, agent_kind
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            run_ref, goal_ciphertext, created, agent_id, model_id, agent_kind,
+            attempt_of, attempt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO NOTHING
         """,
         (
@@ -86,8 +92,23 @@ def save_task_request(
             agent_id or None,
             model_id or None,
             agent_kind or None,
+            attempt_of or None,
+            max(1, int(attempt or 1)),
         ),
     )
+
+
+def next_attempt(db: Database, tenant_id: str, first_id: str) -> int:
+    """The next run number of the proposal whose first run is `first_id`."""
+    row = db.fetchone(
+        """
+        SELECT MAX(attempt) AS last FROM tasks
+        WHERE tenant_id = ? AND (id = ? OR attempt_of = ?)
+        """,
+        (tenant_id, first_id, first_id),
+    )
+    last = row["last"] if row is not None else None
+    return int(last or 1) + 1
 
 
 def fault_for(*, status: str, reason: str = "", error: str = "") -> str:

@@ -82,7 +82,8 @@ itself is also in `skills/agent-lbw/SKILL.md`.
 
 Shared rows live in `runtime/store/`. Each file owns one concern: `schema` creates
 the tables, `crypto` seals secrets, `install` is the local account, `teams`,
-`duties`, and `projects` are access, `tasks` stores a request, `schedules`
+`duties`, and `projects` are access, `favorites` is the projects a person
+stars, `tasks` stores a request, `schedules`
 indexes when one should run, and `recording` is what the task queue and the
 scheduler call.
 
@@ -136,7 +137,9 @@ scheduler call.
 - Do not store model context, prompts, tool traces, or logs in the database.
   Those stay in the run directory. A task row is the request and its outcome:
   tenant, project, requester, status, branch, pull request, `run_ref`,
-  `goal_ciphertext`, and `result_ciphertext`. The result seals the plan, the
+  `goal_ciphertext`, and `result_ciphertext`. A rerun is another run of the
+  same proposal: `attempt_of` is the first run's id and `attempt` its number.
+  The change list shows the latest run, and the change view picks among them. The result seals the plan, the
   steps, the outcome, and the final diff so history can show the file changes
   after the checkout is gone. Logs are not part of it.
 - An audit row notes who changed the organization or a job: the person, the
@@ -226,7 +229,12 @@ scheduler call.
   `409 runner_required`. The job hands the runner the model name for
   `claude --model`. The
   runner runs that person's Claude Code and sends commits back as a patch. LBW
-  applies them on `lbw/runner-<id>`, runs the tests, and publishes. The goal,
+  applies them on `lbw/runner-<id>`, runs the tests, and publishes. A runner
+  job stops at the spec, plan, and approval gates like any job: the runner
+  writes the spec and the plan without editing files, and approved commits are
+  published without the runner. A build may run the project's own commands,
+  and the runner runs Claude Code's shell commands in its sandbox, which a
+  command can never leave. The goal,
   events, and patch pass through `runtime/runner_hub.py` in memory, not the
   database. The runner is Go in `runner/`, standard library only.
 - A local model is a person's own model server, such as Ollama, reached
@@ -269,6 +277,12 @@ scheduler call.
 
 - Do not commit, stage, or push `.lbw/` or `history.json`. Config, cloned
   skills, run logs, and screenshots stay local.
+- A change whose pull request is open lists its CI checks (`runtime/ci_checks.py`,
+  `GET /api/tasks/{id}/checks`). A person can investigate failed ones: the next
+  run of the proposal reads what they printed, writes a fix on the pull
+  request's branch, and waits for approval. Approving pushes the fix and
+  comments on the pull request; its title and text stay. The checks' output
+  is read when the run starts and kept in memory. It is not stored.
 - Publishing commits the project files, pushes that branch, and then opens the pull request. The pull request is not opened while those files are still uncommitted, or before the push succeeds.
 - Do not force-push, skip hooks, or rewrite published history.
 - Do not bind-mount this app's `.lbw` over `/workspaces/.lbw`.

@@ -244,6 +244,14 @@ class Task:
     spec_path: str = ""
     spec_text: str = ""
     spec_accepted: bool = False
+    # A rerun is another run of the same proposal: its first run's id, and this run's number.
+    attempt_of: str = ""
+    attempt: int = 1
+    # An investigation of a pull request's failed CI checks: which ones. Their
+    # output is read when the run starts and kept in memory only.
+    ci_pr_url: str = ""
+    ci_checks: list[str] = field(default_factory=list)
+    ci_context: str = field(default="", repr=False)
 
     def to_dict(self, *, include_logs: bool = True) -> dict:
         payload = {
@@ -296,6 +304,10 @@ class Task:
             "spec_path": self.spec_path,
             "spec_text": self.spec_text,
             "spec_accepted": self.spec_accepted,
+            "attempt_of": self.attempt_of or self.id,
+            "attempt": self.attempt,
+            "ci_pr_url": self.ci_pr_url,
+            "ci_checks": list(self.ci_checks),
         }
         if include_logs:
             payload["logs"] = list(self.logs)
@@ -384,6 +396,10 @@ class TaskManager:
         spec_path: str = "",
         spec_text: str = "",
         spec_accepted: bool = False,
+        attempt_of: str = "",
+        attempt: int = 1,
+        ci_pr_url: str = "",
+        ci_checks: list[str] | None = None,
     ) -> Task:
         workspace = workspace.expanduser().resolve()
         if not workspace.is_dir():
@@ -445,6 +461,10 @@ class TaskManager:
             spec_text=spec_text if spec else "",
             spec_accepted=bool(spec and spec_accepted and spec_text.strip()),
             actor_id=(requester_id or "").strip(),
+            attempt_of=(attempt_of or "").strip(),
+            attempt=max(1, int(attempt or 1)),
+            ci_pr_url=(ci_pr_url or "").strip(),
+            ci_checks=list(ci_checks or []),
         )
         with self._lock:
             self._tasks[task.id] = task
@@ -514,11 +534,17 @@ class TaskManager:
         goal: str | None = None,
         actor_id: str | None = None,
         model: dict | None = None,
+        triage_gate: str = "",
+        approval_gate: str = "",
+        spec: bool = False,
+        ci_checks: list[str] | None = None,
     ) -> Task | None:
         """Queue a new cycle on the task's branch, with an optional revised goal.
 
         `model` is another model the person picked, as `use_model` returns it with
-        its `model_id`. Without it the run keeps the job's model.
+        its `model_id`. Without it the run keeps the job's model. A gate left empty
+        keeps the job's own. `spec` adds a spec to a job that had none; a job that
+        has one keeps it.
         """
         with self._lock:
             old_task = self._tasks.get(task_id)
@@ -554,9 +580,18 @@ class TaskManager:
             model_id = old_task.model_id
             agent_kind = old_task.agent_kind
             context_window = old_task.context_window if old_task.pin_context_window else None
+        first = old_task.attempt_of or old_task.id
+        with self._lock:
+            numbers = [
+                item.attempt
+                for item in self._tasks.values()
+                if item.id == first or item.attempt_of == first
+            ]
         return self.submit(
             Path(old_task.workspace),
             revised or old_task.goal,
+            attempt_of=first,
+            attempt=max([old_task.attempt, *numbers]) + 1,
             auto_commit=old_task.auto_commit,
             create_pr=create_pr,
             model_name=model_name,
@@ -569,14 +604,16 @@ class TaskManager:
             continuous=old_task.continuous,
             context_window=context_window,
             gate=old_task.gate,
-            triage_gate=old_task.triage_gate,
-            approval_gate=old_task.approval_gate,
+            triage_gate=(triage_gate or "").strip() or old_task.triage_gate,
+            approval_gate=(approval_gate or "").strip() or old_task.approval_gate,
             agent_id=old_task.agent_id,
             agent_kind=agent_kind,
             cursor_key=old_task.cursor_key,
             model_id=model_id,
             requester_id=actor_id or old_task.actor_id or old_task.requester_id,
-            spec=old_task.spec,
+            spec=old_task.spec or spec,
+            ci_pr_url=(old_task.pr_url or "") if ci_checks is not None else "",
+            ci_checks=list(ci_checks or []),
             spec_path=old_task.spec_path,
             spec_text=old_task.spec_text,
             spec_accepted=old_task.spec_accepted,
@@ -643,6 +680,22 @@ class TaskManager:
             record = open_job(self.store_root, self.settings.database_url, task_id)
         except Exception as exc:
             log.warning("task %s was not restored: %s", task_id, exc)
+            return None
+        if record is None:
+            return None
+        return self._adopt(record, start=False)
+
+    def load_job(self, task_id: str) -> Task | None:
+        """This job, from memory or from its stored row in any state. It is not started."""
+        current = self.adopt_job(task_id)
+        if current is not None or self.store_root is None:
+            return current
+        try:
+            from agent_lbw.runtime.store.recording import stored_job
+
+            record = stored_job(self.store_root, self.settings.database_url, task_id)
+        except Exception as exc:
+            log.warning("task %s was not loaded: %s", task_id, exc)
             return None
         if record is None:
             return None
@@ -834,9 +887,11 @@ class TaskManager:
         ]
         evidence = [item for item in (record.get("evidence") or []) if isinstance(item, dict)]
         decision = str(record.get("decision") or "") or None
+        attempt_of = str(record.get("attempt_of") or "")
+        ci = record.get("ci") if isinstance(record.get("ci"), dict) else {}
         return Task(
             id=str(record["id"]),
-            workspace=str(record.get("workspace") or ""),
+            workspace=self._checkout_for(str(record.get("workspace") or "")),
             goal=goal,
             auto_commit=self.settings.auto_commit,
             create_pr=None,
@@ -875,7 +930,20 @@ class TaskManager:
             spec_accepted=bool(spec.get("accepted")),
             events=[item for item in (record.get("events") or []) if isinstance(item, dict)],
             change_base=str(record.get("change_base") or "") or None,
+            attempt_of=attempt_of if attempt_of != str(record["id"]) else "",
+            attempt=int(record.get("attempt") or 1),
+            ci_pr_url=str(ci.get("pr_url") or ""),
+            ci_checks=[str(name) for name in ci.get("checks") or [] if str(name).strip()],
         )
+
+    def _checkout_for(self, workspace: str) -> str:
+        """A stored job's folder. Its project's `owner/repo` becomes the checkout here."""
+        if not workspace or Path(workspace).is_dir() or self.store_root is None:
+            return workspace
+        from agent_lbw.runtime.store.recording import local_checkout
+
+        found = local_checkout(self.store_root, workspace)
+        return str(found) if found is not None else workspace
 
     def _run(self, task: Task) -> None:
         task.status = "running"
@@ -966,8 +1034,34 @@ class TaskManager:
             _stop_acting(acting)
         self._maybe_continue(task)
 
+    def _read_ci_failures(self, task: Task) -> None:
+        """Read what the failed checks printed, for this run only."""
+        task.ci_context = ""
+        if not task.ci_pr_url or task.decision in {"approve", "hand_off"}:
+            return
+        from agent_lbw.runtime.ci_checks import ChecksError, failure_context
+        from agent_lbw.runtime.store.github import GitHubAppError, current_token
+
+        try:
+            token = (
+                current_token(self.store_root, self.settings.database_url)
+                if self.store_root
+                else None
+            )
+            if not token:
+                raise ChecksError("the organization has no GitHub App to read checks with")
+            task.ci_context = failure_context(task.ci_pr_url, token, task.ci_checks)
+        except (ChecksError, GitHubAppError, OSError, ValueError) as exc:
+            record_event(kind="step", message=f"Could not read the failed checks: {exc}")
+            return
+        if task.ci_context:
+            record_event(kind="step", message="Read the failed checks' output from GitHub")
+        else:
+            record_event(kind="step", message="No check is failing now")
+
     def _execute(self, task: Task) -> CycleResult:
         self._resume_workspace(task)
+        self._read_ci_failures(task)
         if self._runner is not None:
             return self._runner(task)
         if _on_runner(task):
@@ -1030,6 +1124,8 @@ class TaskManager:
                 review_notes=task.review_notes,
                 held_summary=task.summary or "",
                 store_root=self.store_root,
+                extra_context=task.ci_context,
+                keep_pull_request=bool(task.ci_pr_url),
                 spec=(
                     SpecRequest(
                         path=task.spec_path,

@@ -30,6 +30,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import PurePosixPath
 from urllib.parse import urlparse
 
+from agent_lbw.runtime import list_prices as catalog
 from agent_lbw.runtime.db import Database
 
 MAX_DAYS = 366
@@ -154,7 +155,10 @@ DATASETS: dict[str, Dataset] = {
                     otel="gen_ai.client.operation.duration",
                 ),
             ),
-            note="Cost uses the organization's price table at the time of the run.",
+            note=(
+                "Cost uses the organization's price for a model, or its public list"
+                " price, at the time of the run."
+            ),
         ),
         Dataset(
             key="files",
@@ -259,7 +263,7 @@ def record_run(
     this run changed. Returns the run's totals, which the audit trail notes.
     """
     day = (when or datetime.now(UTC)).date().isoformat()
-    prices = _prices(db, tenant_id)
+    pricing = load_pricing(db, tenant_id)
     rows: dict[tuple[str, str, str, str, str], dict[str, int]] = {}
     skills: set[str] = set()
     for event in events:
@@ -292,7 +296,7 @@ def record_run(
         row["duration_ms"] += _count(event.get("elapsed_ms"))
     totals = _empty_tokens()
     for (service, provider, model, step, purpose), row in rows.items():
-        row["cost_micros"] = _cost(prices, provider, model, row)
+        row["cost_micros"] = _cost(pricing, provider, model, row)
         for name, value in row.items():
             totals[name] += value
         db.execute(
@@ -502,6 +506,289 @@ def delete_price(db: Database, tenant_id: str, *, provider: str, model: str) -> 
         "DELETE FROM model_prices WHERE tenant_id = ? AND provider = ? AND model = ?",
         (tenant_id, " ".join((provider or "").split()).lower(), " ".join(model.split())),
     )
+
+
+_PRICE_FIELDS = ("input_micros", "output_micros", "cache_read_micros", "cache_write_micros")
+
+
+@dataclass(frozen=True)
+class Pricing:
+    """The organization's own prices first, then the public list prices."""
+
+    overrides: dict[tuple[str, str], dict]
+    listed: dict[str, catalog.ListPrice]
+
+    def price(self, provider: str, model: str) -> tuple[dict | None, str]:
+        """Micro-dollars per million tokens, and where the price came from."""
+        wanted = (provider or "").lower()
+        name = catalog.normalize_model(model)
+        for key in ((wanted, model), ("", model), (wanted, name), ("", name)):
+            found = self.overrides.get(key)
+            if found is not None:
+                return {field: int(found[field] or 0) for field in _PRICE_FIELDS}, "override"
+        listed = catalog.find_price(self.listed, model)
+        if listed is not None:
+            return listed.micros(), listed.source
+        return None, ""
+
+
+def load_pricing(db: Database, tenant_id: str) -> Pricing:
+    overrides: dict[tuple[str, str], dict] = {}
+    for row in db.fetchall(
+        f"SELECT provider, model, {', '.join(_PRICE_FIELDS)} FROM model_prices WHERE tenant_id = ?",
+        (tenant_id,),
+    ):
+        provider = str(row["provider"] or "")
+        overrides[(provider, str(row["model"]))] = row
+        overrides.setdefault((provider, catalog.normalize_model(str(row["model"]))), row)
+    fetched = {
+        str(row["model"]): catalog.ListPrice(
+            str(row["model"]),
+            str(row["provider"] or ""),
+            *(_dollars(row[field]) for field in _PRICE_FIELDS),
+            source=catalog.CATALOG_LABEL,
+        )
+        for row in db.fetchall(
+            f"SELECT model, provider, {', '.join(_PRICE_FIELDS)} "
+            "FROM model_list_prices WHERE tenant_id = ?",
+            (tenant_id,),
+        )
+    }
+    return Pricing(overrides, catalog.merged(fetched))
+
+
+def refresh_list_prices(
+    db: Database, tenant_id: str, rows: Sequence[catalog.ListPrice], *, when: int | None = None
+) -> int:
+    """Replace the organization's copy of the public catalog. Runs already recorded keep
+    their cost."""
+    stamp = int(when if when is not None else time.time())
+    db.execute("DELETE FROM model_list_prices WHERE tenant_id = ?", (tenant_id,))
+    for row in rows:
+        micros = row.micros()
+        db.execute(
+            """
+            INSERT INTO model_list_prices (
+                tenant_id, model, provider, input_micros, output_micros,
+                cache_read_micros, cache_write_micros, fetched
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (tenant_id, model) DO NOTHING
+            """,
+            (
+                tenant_id,
+                row.model,
+                row.provider,
+                *(micros[field] for field in _PRICE_FIELDS),
+                stamp,
+            ),
+        )
+    return len(rows)
+
+
+def price_table(db: Database, tenant_id: str) -> dict:
+    """Every model the organization runs, and every price it set, with the price a run
+    uses and where it came from."""
+    pricing = load_pricing(db, tenant_id)
+    rows: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for row in db.fetchall(
+        """
+        SELECT DISTINCT provider, model_name FROM models
+        WHERE tenant_id = ? AND model_name IS NOT NULL AND model_name <> ''
+        ORDER BY model_name, provider
+        """,
+        (tenant_id,),
+    ):
+        key = (str(row["provider"] or "").lower(), str(row["model_name"]))
+        if key not in seen:
+            seen.add(key)
+            rows.append(_price_row(pricing, *key, in_use=True))
+    for row in db.fetchall(
+        "SELECT provider, model FROM model_prices WHERE tenant_id = ? ORDER BY model, provider",
+        (tenant_id,),
+    ):
+        key = (str(row["provider"] or ""), str(row["model"]))
+        if key not in seen:
+            seen.add(key)
+            rows.append(_price_row(pricing, *key, in_use=False))
+    fetched = db.fetchone(
+        "SELECT MAX(fetched) AS fetched, COUNT(*) AS models "
+        "FROM model_list_prices WHERE tenant_id = ?",
+        (tenant_id,),
+    )
+    return {
+        "models": rows,
+        "list": {
+            "fetched": int((fetched or {}).get("fetched") or 0),
+            "fetched_models": int((fetched or {}).get("models") or 0),
+            "source": catalog.CATALOG_LABEL,
+            "source_url": catalog.CATALOG_URL,
+            "snapshot_as_of": catalog.SNAPSHOT_AS_OF,
+        },
+    }
+
+
+def _price_row(pricing: Pricing, provider: str, model: str, *, in_use: bool) -> dict:
+    price, source = pricing.price(provider, model)
+    listed = catalog.find_price(pricing.listed, model)
+    return {
+        "provider": provider,
+        "model": model,
+        "in_use": in_use,
+        "source": "override" if source == "override" else ("list" if price else "none"),
+        "price": _per_mtok(price) if price else None,
+        "list_price": _per_mtok(listed.micros()) if listed else None,
+        "list_source": listed.source if listed else "",
+    }
+
+
+def _per_mtok(micros: dict) -> dict:
+    return {
+        "input_per_mtok": _dollars(micros["input_micros"]),
+        "output_per_mtok": _dollars(micros["output_micros"]),
+        "cache_read_per_mtok": _dollars(micros["cache_read_micros"]),
+        "cache_write_per_mtok": _dollars(micros["cache_write_micros"]),
+    }
+
+
+# --- estimate --------------------------------------------------------------
+
+ESTIMATE_DAYS = 90
+# Used only until an organization has a finished build to learn from: an agent's
+# build turns resend a growing context, so a build spends many times its plan.
+DEFAULT_BUILD_RATIO = 15.0
+_PLANNING = ("plan", "propose")
+_NOT_BUILD = (*_PLANNING, "spec")
+
+
+def estimate_build(
+    db: Database,
+    *,
+    tenant_id: str,
+    project_id: str,
+    events: Iterable[dict],
+    model: str,
+    provider: str = "",
+    today: date | None = None,
+) -> dict:
+    """What building a planned change should spend, before anyone presses Build.
+
+    The change's own planning tokens are scaled by how many tokens builds,
+    reviews, and checks used per planning token in this project over the last
+    90 days, or in the organization when the project has none. With no history
+    at all, a rough default ratio is used and the answer says so. It reads
+    only the daily rollups.
+    """
+    planned = _empty_tokens()
+    for event in events:
+        if not isinstance(event, dict) or event.get("kind") != "llm":
+            continue
+        if event.get("ok") is False or str(event.get("purpose") or "") not in _PLANNING:
+            continue
+        planned["input_tokens"] += _count(event.get("prompt_tokens"))
+        planned["output_tokens"] += _count(event.get("completion_tokens"))
+        planned["cache_read_tokens"] += _count(event.get("cache_read_tokens"))
+        planned["cache_write_tokens"] += _count(event.get("cache_write_tokens"))
+        model = str(event.get("model_name") or "") or model
+        provider = str(event.get("provider") or "") or provider
+    plan_tokens = planned["input_tokens"] + planned["output_tokens"]
+    pricing = load_pricing(db, tenant_id)
+    price, source = pricing.price(provider, model)
+    answer: dict = {
+        "model": model,
+        "provider": provider,
+        "priced": price is not None,
+        "price_source": source,
+        "planning_tokens": plan_tokens,
+        "planning_cost_micros": _cost(pricing, provider, model, planned),
+    }
+    if not plan_tokens:
+        return answer | {
+            "available": False,
+            "note": "No planning calls were recorded for this change, so there is nothing "
+            "to scale from.",
+        }
+    since = ((today or datetime.now(UTC).date()) - timedelta(days=ESTIMATE_DAYS)).isoformat()
+    basis = "default"
+    history: dict[str, dict[str, int]] = {}
+    for scope, filters in (("project", project_id), ("organization", "")):
+        if scope == "project" and not project_id:
+            continue
+        history = _phase_totals(db, tenant_id, since, filters)
+        plan = history["plan"]["input_tokens"] + history["plan"]["output_tokens"]
+        after = history["after"]["input_tokens"] + history["after"]["output_tokens"]
+        if plan and after:
+            basis = scope
+            break
+    if basis == "default":
+        ratio = DEFAULT_BUILD_RATIO
+        mix = planned
+    else:
+        mix = history["after"]
+        ratio = (mix["input_tokens"] + mix["output_tokens"]) / (
+            history["plan"]["input_tokens"] + history["plan"]["output_tokens"]
+        )
+    total = int(round(plan_tokens * ratio))
+    mixed = mix["input_tokens"] + mix["output_tokens"]
+    built = _empty_tokens()
+    built["output_tokens"] = int(round(total * mix["output_tokens"] / mixed))
+    built["input_tokens"] = total - built["output_tokens"]
+    if mix["input_tokens"]:
+        for name in ("cache_read_tokens", "cache_write_tokens"):
+            built[name] = int(round(built["input_tokens"] * mix[name] / mix["input_tokens"]))
+    notes = {
+        "project": f"From this project's last {ESTIMATE_DAYS} days: building, reviews, and "
+        f"checks used about {ratio:.1f} tokens per planning token.",
+        "organization": f"This project has no finished build yet, so this uses the "
+        f"organization's last {ESTIMATE_DAYS} days: about {ratio:.1f} tokens per planning token.",
+        "default": f"No finished build to learn from yet, so this is rough: about "
+        f"{ratio:.0f} tokens per planning token.",
+    }
+    note = notes[basis]
+    if price is None:
+        note += f" {model or 'This model'} has no price, so cost is not shown."
+    return answer | {
+        "available": True,
+        "basis": basis,
+        "days": ESTIMATE_DAYS,
+        "ratio": round(ratio, 2),
+        "tokens": total,
+        "input_tokens": built["input_tokens"],
+        "output_tokens": built["output_tokens"],
+        "cache_read_tokens": built["cache_read_tokens"],
+        "cache_write_tokens": built["cache_write_tokens"],
+        "cost_micros": _cost(pricing, provider, model, built) if price else None,
+        "note": note,
+    }
+
+
+def _phase_totals(
+    db: Database, tenant_id: str, since: str, project_id: str
+) -> dict[str, dict[str, int]]:
+    planning = ", ".join("?" for _ in _PLANNING)
+    skipped = ", ".join("?" for _ in _NOT_BUILD)
+    where = "tenant_id = ? AND day >= ?"
+    params: list[str] = [tenant_id, since]
+    if project_id:
+        where += " AND project_id = ?"
+        params.append(project_id)
+    totals = {"plan": _empty_tokens(), "after": _empty_tokens()}
+    for phase, test in (
+        ("plan", f"purpose IN ({planning})"),
+        ("after", f"purpose NOT IN ({skipped})"),
+    ):
+        row = db.fetchone(
+            f"""
+            SELECT SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+                   SUM(cache_read_tokens) AS cache_read_tokens,
+                   SUM(cache_write_tokens) AS cache_write_tokens
+            FROM usage_daily WHERE {where} AND {test}
+            """,
+            (*params, *(_PLANNING if phase == "plan" else _NOT_BUILD)),
+        )
+        for name in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+            totals[phase][name] = int((row or {}).get(name) or 0)
+    return totals
 
 
 # --- reports ---------------------------------------------------------------
@@ -736,20 +1023,8 @@ def _labels(db: Database, tenant_id: str, groups: Sequence[str], rows: list[dict
     return labels
 
 
-def _prices(db: Database, tenant_id: str) -> dict[tuple[str, str], dict]:
-    rows = db.fetchall(
-        """
-        SELECT provider, model, input_micros, output_micros, cache_read_micros,
-               cache_write_micros
-        FROM model_prices WHERE tenant_id = ?
-        """,
-        (tenant_id,),
-    )
-    return {(str(row["provider"]), str(row["model"])): row for row in rows}
-
-
-def _cost(prices: dict, provider: str, model: str, row: dict[str, int]) -> int:
-    price = prices.get((provider.lower(), model)) or prices.get(("", model))
+def _cost(pricing: Pricing, provider: str, model: str, row: dict[str, int]) -> int:
+    price, _ = pricing.price(provider, model)
     if price is None:
         return 0
     cache_read = row["cache_read_tokens"]

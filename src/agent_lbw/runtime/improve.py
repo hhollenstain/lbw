@@ -95,6 +95,7 @@ from agent_lbw.tools.git import (
     CO_AUTHORED_BY,
     branch_named_in_goal,
     checkout_base_branch,
+    comment_on_pull_request,
     commit_changes,
     commits_ahead_of_base,
     create_pull_request,
@@ -346,6 +347,8 @@ def run_cycle(
     held_summary: str = "",
     store_root: Path | None = None,
     spec: SpecRequest | None = None,
+    extra_context: str = "",
+    keep_pull_request: bool = False,
 ) -> CycleResult:
     progress = bind_progress()
     token = _TASK_ID.set(task_id)
@@ -372,6 +375,8 @@ def run_cycle(
             held_summary=held_summary,
             store_root=store_root,
             spec=spec,
+            extra_context=extra_context,
+            keep_pull_request=keep_pull_request,
         )
     finally:
         _PALACE.reset(palace_token)
@@ -401,6 +406,8 @@ def _run_cycle(
     held_summary: str = "",
     store_root: Path | None = None,
     spec: SpecRequest | None = None,
+    extra_context: str = "",
+    keep_pull_request: bool = False,
 ) -> CycleResult:
     log_progress("Initializing workspace...")
     triage_choice, approval_choice = resolve_human_gates(gate, triage_gate, approval_gate)
@@ -452,6 +459,7 @@ def _run_cycle(
             mark_checkbox=mark_checkbox,
             store_root=store_root,
             pr_base=(base_branch or "").strip() or None,
+            keep_pull_request=keep_pull_request,
         )
     stay_here = goal_keeps_current_branch(goal) and not (base_branch or "").strip()
     pr_base = (base_branch or "").strip() or None
@@ -593,6 +601,8 @@ def _run_cycle(
         repo_text = ""
     if repo_text:
         base_context = f"{base_context}\n\n{repo_text}"
+    if extra_context.strip():
+        base_context = f"{extra_context.strip()}\n\n{base_context}"
     named_files = format_goal_files(workspace.root, selected_goal)
     spec_path = ""
     spec_text = ""
@@ -1388,6 +1398,7 @@ def _publish_held(
     mark_checkbox: bool,
     store_root: Path | None = None,
     pr_base: str | None = None,
+    keep_pull_request: bool = False,
 ) -> CycleResult:
     """Commit and publish work a person already approved. Does not run the builder."""
     selected = goal.strip() or "Approved change"
@@ -1474,6 +1485,7 @@ def _publish_held(
             settings=settings,
             store_root=store_root,
             pr_base=pr_base,
+            keep_text=keep_pull_request,
         )
         sha = current_sha(workspace) or sha
         if failed is not None:
@@ -1509,6 +1521,7 @@ def publish_runner_change(
     create_pr: bool,
     store_root: Path | None = None,
     pr_base: str | None = None,
+    keep_pull_request: bool = False,
 ) -> CycleResult:
     """Check and publish commits a person's runner built, already applied on a branch.
 
@@ -1555,6 +1568,8 @@ def publish_runner_change(
             store_root=store_root,
             pr_base=pr_base,
             rewind_sha=base_sha,
+            title=request_title(goal),
+            keep_text=keep_pull_request,
         )
         sha = current_sha(workspace) or sha
         if failed is not None:
@@ -1908,12 +1923,18 @@ def _publish_pull_request(
     store_root: Path | None = None,
     pr_base: str | None = None,
     rewind_sha: str | None = None,
+    title: str = "",
+    keep_text: bool = False,
 ) -> tuple[bool, str | None, CycleResult | None, bool]:
     """Commit project changes, push that branch, then open or update the pull request.
 
     The pull request is not opened until the push succeeds. ``.lbw/`` and
     ``history.json`` stay out of the commit. A protected branch is not pushed.
+    ``title`` names the commit and the pull request instead of the summary's
+    first line. ``keep_text`` leaves an open pull request's title and text as
+    they are and comments on it instead, for a fix pushed onto it.
     """
+    message = title or _commit_message(goal, summary)
     branch = current_branch(workspace)
     if is_protected_branch(branch):
         if committed:
@@ -1936,7 +1957,7 @@ def _publish_pull_request(
         log_progress("Committing changes before the push...")
         commit = commit_changes(
             workspace,
-            _commit_message(goal, summary),
+            message,
             env=_git_env(settings),
             store_root=store_root,
             database_url=settings.database_url,
@@ -1989,7 +2010,7 @@ def _publish_pull_request(
     folded = fold_unpublished_commits(
         workspace,
         base,
-        _commit_message(goal, summary),
+        message,
         env=_git_env(settings) if settings is not None else None,
         store_root=store_root,
         database_url=settings.database_url if settings is not None else "",
@@ -2030,11 +2051,22 @@ def _publish_pull_request(
         _write_run_log(workspace.root, result)
         _append_to_history(workspace.root, result)
         return False, None, result, committed
+    if existing and keep_text:
+        log_progress(f"Commenting on pull request {existing}")
+        said = comment_on_pull_request(
+            workspace,
+            f"LBW pushed {str(sha or '')[:8]}: {message}\n\n{summary}".strip(),
+            token=token,
+        )
+        if not said.ok:
+            log_progress(f"Pushed the branch; the comment was not posted: {said.output}")
+        record_event(kind="pr", url=existing, message="pushed a fix to the pull request")
+        return True, existing, None, committed
     if existing:
         log_progress(f"Updating pull request {existing}")
         updated = update_pull_request(
             workspace,
-            _commit_message(goal, summary),
+            message,
             _pr_body(
                 goal,
                 summary,
@@ -2061,7 +2093,7 @@ def _publish_pull_request(
     log_progress("Opening pull request...")
     pr = create_pull_request(
         workspace,
-        _commit_message(goal, summary),
+        message,
         _pr_body(
             goal,
             summary,
@@ -3346,6 +3378,23 @@ def _clip_title(text: str, limit: int = 72) -> str:
         return clean
     cut = clean[:limit].rsplit(" ", 1)[0].rstrip(".,;:-")
     return cut or clean[:limit].rstrip()
+
+
+_LIST_MARK = re.compile(r"^(?:[-*•]|\d+[.)])\s+")
+
+
+def request_title(goal: str) -> str:
+    """A title from the person's request, for work whose summary is a report.
+
+    A request written as a list joins its items, so the title names the whole change.
+    """
+    text = (goal or "").strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [line for line in lines if not _is_prompt_line(line)]
+    items = [_LIST_MARK.sub("", line) for line in lines if _LIST_MARK.match(line)]
+    if items and len(items) == len(lines):
+        return _clip_title("; ".join(item.rstrip(".;") for item in items)) or "Update the project"
+    return _clip_title(_user_request(goal)) or "Update the project"
 
 
 def _commit_message(goal: str, summary: str) -> str:

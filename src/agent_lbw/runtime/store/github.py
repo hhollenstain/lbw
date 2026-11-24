@@ -710,6 +710,45 @@ def _github_json(method: str, path: str, *, jwt: str) -> object:
     return body
 
 
+def github_download(path: str, *, token: str, limit: int = 2_000_000) -> str:
+    """Text GitHub serves through a redirect, such as an Actions job log.
+
+    GitHub answers with a short-lived download link on another host. The token
+    is sent to GitHub only, never to that host. Returns at most `limit` bytes,
+    from the end, where a failing step's output is.
+    """
+    try:
+        first = httpx.get(
+            _api_url(path),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            timeout=20,
+            follow_redirects=False,
+        )
+        if first.status_code in {401, 403, 404, 410}:
+            raise GitHubAppError(
+                "GitHub would not share that log. Grant the app Actions read."
+                if first.status_code == 403
+                else f"GitHub returned {first.status_code} for that log"
+            )
+        if first.status_code in {301, 302, 303, 307, 308}:
+            target = str(first.headers.get("location") or "")
+            if not target.startswith("https://"):
+                raise GitHubAppError("GitHub returned an unreadable response")
+            response = httpx.get(target, timeout=30, follow_redirects=False)
+        else:
+            response = first
+    except httpx.HTTPError as exc:
+        raise GitHubAppError("GitHub could not be reached") from exc
+    if response.status_code >= 400:
+        raise GitHubAppError(f"GitHub returned {response.status_code} for that log")
+    data = response.content[-limit:]
+    return data.decode("utf-8", errors="replace")
+
+
 def _request(method: str, path: str, *, auth: str) -> object:
     body, _link = _call(method, path, auth=auth)
     return body

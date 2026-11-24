@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, Response
 from agent_lbw.openapi_models import PriceWrite
 from agent_lbw.runtime.account import load_account
 from agent_lbw.runtime.db import database
+from agent_lbw.runtime.list_prices import fetch_catalog
 from agent_lbw.runtime.store.assignments import can_manage_org
 from agent_lbw.runtime.store.audit import record_audit
 from agent_lbw.runtime.store.gateway import LinkRequired, person_integrations, unlink
@@ -28,7 +29,10 @@ from agent_lbw.runtime.store.usage import (
     build_report,
     can_see_org_usage,
     delete_price,
+    estimate_build,
     list_prices,
+    price_table,
+    refresh_list_prices,
     registry,
     report_csv,
     run_report,
@@ -96,6 +100,46 @@ def register_integrations(app: FastAPI) -> None:
             request.state.audit_summary = f"Removed the price for {model.strip()}"
             request.state.audit_target_type = "price"
             return _prices(db)
+
+        return _act(request, apply)
+
+    @app.post("/api/org/prices/refresh", response_model=None)
+    def refresh_prices(request: Request) -> object:
+        def apply(db, root: Path) -> dict:
+            tenant_id = _manager(db)
+            count = refresh_list_prices(db, tenant_id, fetch_catalog())
+            request.state.audit_action = "usage.price"
+            request.state.audit_summary = f"Refreshed list prices for {count} models"
+            request.state.audit_target_type = "price"
+            return _prices(db)
+
+        return _act(request, apply)
+
+    @app.get("/api/tasks/{task_id}/estimate", response_model=None)
+    def task_estimate(request: Request, task_id: str) -> object:
+        task = request.app.state.ui.manager.get(task_id)
+        if task is None:
+            return JSONResponse({"error": "task not found"}, status_code=404)
+
+        def apply(db, root: Path) -> dict:
+            account = require_account(db)
+            tenant_id = account["org"]["id"]
+            if task.tenant_id and task.tenant_id != tenant_id:
+                raise KeyError(task_id)
+            project_id = project_id_for_checkout(db, tenant_id, Path(task.workspace)) or ""
+            if (
+                project_id
+                and not can_see_org_usage(db, account)
+                and not can_access(db, account["current_user_id"], project_id, need="use")
+            ):
+                raise PermissionError("that project is closed to this person")
+            return estimate_build(
+                db,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                events=list(task.events),
+                model=task.model_name,
+            )
 
         return _act(request, apply)
 
@@ -187,6 +231,7 @@ def _prices(db) -> dict:
     account = require_account(db)
     return {
         "prices": list_prices(db, account["org"]["id"]),
+        **price_table(db, account["org"]["id"]),
         "can_manage": can_manage_org(account),
     }
 

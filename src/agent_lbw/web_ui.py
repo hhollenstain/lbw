@@ -39,6 +39,9 @@ from agent_lbw.openapi_models import (
     AgentTeamProjectWrite,
     AuditList,
     DecidePayload,
+    InvestigateChecks,
+    ProjectFavoriteList,
+    ProjectFavoriteWrite,
     ProjectModelList,
     ProjectModelWrite,
     ProjectSpecPolicy,
@@ -471,6 +474,7 @@ class UiState:
         """Remove a project row that has no jobs. The checkout folder stays."""
         store = Path(self.store_root)
         from agent_lbw.runtime.db import database, database_configured
+        from agent_lbw.runtime.store.favorites import drop_favorites
         from agent_lbw.runtime.store.install import read_account
         from agent_lbw.runtime.store.recording import project_id_for_checkout
 
@@ -488,6 +492,7 @@ class UiState:
             jobs = db.fetchone("SELECT id FROM tasks WHERE project_id = ? LIMIT 1", (project_id,))
             if jobs is not None:
                 return
+            drop_favorites(db, project_id)
             db.execute("DELETE FROM project_grants WHERE project_id = ?", (project_id,))
             db.execute("DELETE FROM rule_requirements WHERE project_id = ?", (project_id,))
             db.execute("DELETE FROM schedules WHERE project_id = ?", (project_id,))
@@ -1268,7 +1273,7 @@ def create_app(
         run_from_sha = (payload.sha if payload else "") or None
         new_goal = (payload.goal if payload else "") or None
         picked = (payload.model_id if payload else "").strip()
-        old_task = ui.manager.get(task_id)
+        old_task = ui.manager.load_job(task_id)
         if old_task is None:
             return JSONResponse({"error": "task not found"}, status_code=404)
         if old_task.status not in ("failed", "error", "success"):
@@ -1288,6 +1293,11 @@ def create_app(
             if refused is not None:
                 return refused
             model = {**(creds or {}), "model_id": picked}
+        spec_blocked, write_spec = _spec_for_job(
+            ui, Path(old_task.workspace), bool(payload and payload.spec)
+        )
+        if spec_blocked is not None:
+            return spec_blocked
         try:
             new_task = ui.manager.rerun(
                 task_id,
@@ -1295,11 +1305,84 @@ def create_app(
                 goal=goal_to_use,
                 actor_id=actor,
                 model=model,
+                triage_gate=payload.triage_gate if payload else "",
+                approval_gate=payload.approval_gate if payload else "",
+                spec=write_spec,
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         if new_task is None:
             return JSONResponse({"error": "task not found or not rerunnable"}, status_code=404)
+        return JSONResponse(new_task.to_dict(), status_code=201)
+
+    @app.get("/api/tasks/{task_id}/checks")
+    def task_checks(task_id: str, request: Request, refresh: bool = False) -> Any:
+        from agent_lbw.runtime.ci_checks import ChecksError, pull_checks
+
+        ui: UiState = request.app.state.ui
+        task = ui.manager.load_job(task_id)
+        if task is None:
+            return JSONResponse({"error": "task not found"}, status_code=404)
+        if not task.pr_url:
+            return JSONResponse({"error": "this change has no pull request"}, status_code=404)
+        token = _ui_github_token(ui)
+        if not token:
+            return JSONResponse(
+                {"error": "Connect a GitHub App under Organization to read checks"},
+                status_code=409,
+            )
+        try:
+            return pull_checks(task.pr_url, token, force=refresh)
+        except ChecksError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+
+    @app.post("/api/tasks/{task_id}/checks/investigate")
+    def investigate_task_checks(
+        task_id: str, request: Request, payload: InvestigateChecks | None = None
+    ) -> Any:
+        from agent_lbw.runtime.ci_checks import ChecksError, investigation_goal, pull_checks
+
+        ui: UiState = request.app.state.ui
+        old_task = ui.manager.load_job(task_id)
+        if old_task is None:
+            return JSONResponse({"error": "task not found"}, status_code=404)
+        if not old_task.pr_url:
+            return JSONResponse({"error": "this change has no pull request"}, status_code=404)
+        blocked = _proposal_writer_block(ui, old_task.workspace)
+        if blocked:
+            return JSONResponse({"error": blocked}, status_code=403)
+        token = _ui_github_token(ui)
+        if not token:
+            return JSONResponse(
+                {"error": "Connect a GitHub App under Organization to read checks"},
+                status_code=409,
+            )
+        if lookup_pull_state(old_task.pr_url, force=True, token=token) in {"closed", "merged"}:
+            return JSONResponse({"error": "pull request is not open"}, status_code=409)
+        try:
+            failed = pull_checks(old_task.pr_url, token, force=True)["failed"]
+        except ChecksError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        asked = [name for name in (payload.checks if payload else []) if name.strip()]
+        names = [name for name in failed if not asked or name in asked]
+        if not names:
+            return JSONResponse({"error": "no check has failed"}, status_code=409)
+        credential_block, actor = _acting_credential(ui, old_task)
+        if credential_block is not None:
+            return credential_block
+        try:
+            new_task = ui.manager.rerun(
+                task_id,
+                goal=investigation_goal(old_task.pr_url, names),
+                actor_id=actor,
+                triage_gate="auto",
+                approval_gate="ask",
+                ci_checks=names,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if new_task is None:
+            return JSONResponse({"error": "this change cannot run again now"}, status_code=409)
         return JSONResponse(new_task.to_dict(), status_code=201)
 
     @app.post("/api/tasks/{task_id}/rework")
@@ -1823,6 +1906,31 @@ def create_app(
 
     def _workspace_root(ui: UiState, path: str | None) -> Path:
         return Path(path or ui.default_workspace).expanduser().resolve()
+
+    @app.put("/api/workspaces/favorites", response_model=ProjectFavoriteList)
+    def update_project_favorite(
+        request: Request, payload: ProjectFavoriteWrite
+    ) -> ProjectFavoriteList | JSONResponse:
+        ui: UiState = request.app.state.ui
+        from agent_lbw.runtime.db import database, database_configured
+        from agent_lbw.runtime.store.favorites import set_favorite
+
+        root = Path(ui.store_root)
+        url = ui.manager.settings.database_url
+        # A star is one person's shortcut, not a change to the organization.
+        request.state.audit_explicit = True
+        if not database_configured(root, url):
+            return JSONResponse({"error": "no organization database"}, status_code=400)
+        try:
+            with database(root, url) as db:
+                favorites = set_favorite(db, payload.project_id, favorite=payload.favorite)
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except KeyError:
+            return JSONResponse({"error": "unknown project"}, status_code=404)
+        except (OSError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return ProjectFavoriteList(favorites=favorites)
 
     @app.get("/api/workspaces/models", response_model=ProjectModelList)
     def list_project_models(

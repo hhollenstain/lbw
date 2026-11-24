@@ -47,7 +47,13 @@ styling, update that skill in the same change, then match the CSS to it.
   The project list does not include the checkout folder or store files.
   It shows a repository an owner or admin turned on, and only when the
   signed-in person's GitHub account can use it. One repository appears
-  once. The project field filters that list as you type. The address bar
+  once. The project list sits in the sidebar under a search field, not in a
+  dropdown. Favorites stay listed with the current project. All projects
+  expands the rest in place, and Show fewer folds it. Typing ranks every
+  project by a fuzzy match and marks the matched letters. Arrow keys move
+  through the matches, Enter opens one, and Escape clears the search. A star
+  on each row saves that project as a favorite for the signed-in person.
+  The address bar
   can open a section, an organization or personal tab, and a project, as
   in `/?section=changes&project=owner/repo`. The project bar does not
   add, remove, or archive a project. An organization with no projects says
@@ -191,7 +197,8 @@ The action card says what happens now. It holds every decision for a
 waiting checkpoint (Accept spec, Build it, Approve, Send back, Hand off,
 Continue) and Merge, Request changes, or Rerun when the change needs them.
 Do not put a decision only inside one step's detail, where a reader has to
-find the right step first. Selecting a step loads its detail under the
+find the right step first. At plan review the card shows what building
+should cost, above Build it, and says what the estimate is based on. Selecting a step loads its detail under the
 card. Log, Changes, Screenshots, and Audit stay as tabs under that. The log
 tab is labeled Log. Audit lists who did what, newest first, and stays off
 the step track.
