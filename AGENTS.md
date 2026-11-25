@@ -29,6 +29,11 @@ itself is also in `skills/agent-lbw/SKILL.md`.
   `{"error": "..."}` with a 4xx status. Do not let a tool exception escape the
   tool runner.
 - Prefer a public function over importing another module's `_private` helper.
+- Every JSON `GET` under `/api/` is conditional: an `ETag` on the `200`, and
+  `304 Not Modified` when `If-None-Match` matches (`lbw_shared/conditional.py`,
+  `docs/openapi.md`). A `GET` added to `openapi/lbw.yaml` lists the `304`
+  response. Set `Cache-Control: no-store` on a body that must never be kept.
+  Do not poll faster than the page's own pace, and do not poll a hidden tab.
 - Keep imports at the top of the file, in the order ruff applies. A function
   may import a heavy or circular dependency locally when the top-level import
   would cycle.

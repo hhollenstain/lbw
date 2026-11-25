@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../../api";
 import { workspacePath } from "../../page";
@@ -95,17 +95,23 @@ export function UsageDashboard(props: { scope: UsageScope }) {
     return params.toString();
   }, [current, chosenMeasure, chosenGroup, days, props.scope, tick, allowed]);
 
-  const load = useCallback(() => {
+  useEffect(() => {
     if (!query) return;
+    // A reply for the project or range shown before this one is dropped.
+    let live = true;
     api<Report>(`/api/usage?${query}`)
       .then((body) => {
+        if (!live) return;
         setReport(body);
         setError("");
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "usage is unavailable"));
+      .catch((err) => {
+        if (live) setError(err instanceof Error ? err.message : "usage is unavailable");
+      });
+    return () => {
+      live = false;
+    };
   }, [query]);
-
-  useEffect(load, [load]);
 
   if (!meta || !current || !chosenMeasure) {
     return (

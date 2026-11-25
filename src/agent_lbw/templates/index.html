@@ -2517,7 +2517,7 @@
 
       <div class="llm-block">
         <p class="llm-heading">Model</p>
-        <label for="model">Model</label>
+        <label for="model-picker">Model</label>
         <select id="model" name="model_id" aria-label="Model">
           <option value="">No models turned on</option>
         </select>
@@ -3020,7 +3020,7 @@
       <p class="hint" id="rerun-goal-hint">Edit the goal to add context. The new run continues on the same branch and updates its pull request when one exists.</p>
       <div class="modal-section">
         <div class="rerun-model" id="rerun-model-row" hidden>
-          <label for="rerun-model">Model</label>
+          <label for="rerun-model-picker">Model</label>
           <select id="rerun-model"></select>
         </div>
         <fieldset class="rerun-checkpoints" id="rerun-checkpoints" hidden>
@@ -4138,6 +4138,7 @@
       loadWorkspaceRoles();
       loadProjectModels();
       if (state.section === "rules") loadRulesSection();
+      if (state.section === "usage") showUsage("project");
     }
 
     function renderProjectSelect(workspaces, current) {
@@ -4577,11 +4578,15 @@
     }
 
     function highlightedTitle(item, hits) {
-      const title = projectTitle(item);
+      return markedText(projectTitle(item), hits, "project-row-name");
+    }
+
+    // The text in a span, with the matched letters at hits in <mark>.
+    function markedText(text, hits, className) {
       const span = document.createElement("span");
-      span.className = "project-row-name";
+      span.className = className;
       if (!hits.length) {
-        span.textContent = title;
+        span.textContent = text;
         return span;
       }
       const marked = new Set(hits);
@@ -4598,13 +4603,13 @@
         }
         run = "";
       }
-      for (let index = 0; index < title.length; index += 1) {
+      for (let index = 0; index < text.length; index += 1) {
         const hit = marked.has(index);
         if (hit !== inMark) {
           flush();
           inMark = hit;
         }
-        run += title[index];
+        run += text[index];
       }
       flush();
       return span;
@@ -7372,9 +7377,9 @@
       if (!el) return;
       const usage = tokenUsageFromItem(item || {});
       const hover = taskTokensHover(item);
-      el.innerHTML = renderTokenBar(usage.used, usage.window);
-      el.title = hover;
-      el.setAttribute("aria-label", hover);
+      setHtml(el, renderTokenBar(usage.used, usage.window));
+      if (el.title !== hover) el.title = hover;
+      if (el.getAttribute("aria-label") !== hover) el.setAttribute("aria-label", hover);
     }
 
     function progressNotes(item) {
@@ -8448,7 +8453,7 @@
         ["stuck", "Can't retry", "No failed job is stuck.", true],
         ["failed", "Failed", "No failed job can be rerun.", false],
       ];
-      listEl.innerHTML = `<div class="inbox">${groups.map(([bucket, title, empty, always]) => {
+      setHtml(listEl, `<div class="inbox">${groups.map(([bucket, title, empty, always]) => {
         const rows = items.filter((entry) => jobSection(entry) === bucket);
         if (!rows.length && !always) return "";
         const folded = inboxFolded(bucket, rows.length);
@@ -8468,7 +8473,7 @@
             ${body}
           </section>
         `;
-      }).join("")}</div>`;
+      }).join("")}</div>`);
     }
 
     function isRelease(entry) {
@@ -8555,7 +8560,7 @@
       if (!root) return;
       const items = releaseEntries();
       if (!items.length) {
-        root.innerHTML = `<p class="inbox-empty">Nothing has shipped yet.</p>`;
+        setHtml(root, `<p class="inbox-empty">Nothing has shipped yet.</p>`);
         return;
       }
       const groups = [
@@ -8584,7 +8589,7 @@
           </section>
         `;
       }
-      root.innerHTML = html;
+      setHtml(root, html);
     }
 
     async function openInboxItem(taskId, workspace) {
@@ -8600,7 +8605,66 @@
       render();
     }
 
+    // DOM writes that leave an element alone when its content is unchanged.
+    // Assigning the same text or HTML still replaces the nodes, which drops a
+    // person's text selection and hover, so compare first.
+    const writtenHtml = new WeakMap();
+
+    function setHtml(el, html) {
+      if (!el || writtenHtml.get(el) === html) return;
+      el.innerHTML = html;
+      writtenHtml.set(el, html);
+    }
+
+    function setText(el, text) {
+      if (el && el.textContent !== text) el.textContent = text;
+    }
+
+    // Live redraws from polling wait while a person is selecting or has
+    // selected text on the page, so they can read and copy it. The redraw
+    // runs once the pointer is up and the selection is cleared.
+    let pointerHeld = false;
+    let liveRenderPending = false;
+
+    function selectingText() {
+      if (pointerHeld) return true;
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
+      const anchor = selection.anchorNode;
+      const host = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
+      // A selection inside a field is that field's own, and redraws leave it alone.
+      return !(host && host.closest("input, textarea, select, [contenteditable]"));
+    }
+
+    function renderLive() {
+      if (selectingText()) {
+        liveRenderPending = true;
+        return;
+      }
+      liveRenderPending = false;
+      render();
+    }
+
+    function flushLiveRender() {
+      if (liveRenderPending && !selectingText()) renderLive();
+    }
+
+    document.addEventListener("pointerdown", function (event) {
+      if (event.button === 0) pointerHeld = true;
+    });
+    document.addEventListener("pointerup", function () {
+      pointerHeld = false;
+      // The selection settles after pointerup, so check on the next frame.
+      requestAnimationFrame(flushLiveRender);
+    });
+    document.addEventListener("pointercancel", function () {
+      pointerHeld = false;
+      flushLiveRender();
+    });
+    document.addEventListener("selectionchange", flushLiveRender);
+
     function render() {
+      liveRenderPending = false;
       mainEl.classList.toggle("showing-changes", state.taskPane === "changes");
       const scroll = captureProgressScroll();
       const page = { x: window.scrollX, y: window.scrollY };
@@ -8614,9 +8678,9 @@
         waiting ? `${waiting} waiting` : "",
         queued ? `${queued} queued` : "",
       ].filter(Boolean);
-      countsEl.textContent = liveCounts.length
+      setText(countsEl, liveCounts.length
         ? liveCounts.join(" · ")
-        : `${runs.length} run${runs.length === 1 ? "" : "s"}`;
+        : `${runs.length} run${runs.length === 1 ? "" : "s"}`);
       syncStatusFilters();
 
       const selectedRun = runs.find((run) => run.key === state.selectedRunKey) || null;
@@ -8657,14 +8721,12 @@
       const root = target.querySelector("[data-progress-root]");
       const sameItem = Boolean(root && itemKey && root.dataset.itemKey === itemKey);
       if (!itemKey) {
-        runDetailEl.innerHTML = `<p class="empty">Select a change.</p>`;
+        setHtml(runDetailEl, `<p class="empty">Select a change.</p>`);
       } else if (sameItem) {
         const metaEl = root.querySelector("[data-progress-meta]");
-        if (metaEl) metaEl.textContent = metaText;
-        const titleEl = root.querySelector("[data-progress-title]");
-        if (titleEl) titleEl.textContent = titleText;
-        const prEl = root.querySelector("[data-progress-pr]");
-        if (prEl) prEl.innerHTML = prHtml;
+        setText(metaEl, metaText);
+        setText(root.querySelector("[data-progress-title]"), titleText);
+        setHtml(root.querySelector("[data-progress-pr]"), prHtml);
         const attemptsEl = root.querySelector("[data-progress-attempts]");
         const picking = attemptsEl && attemptsEl.contains(document.activeElement);
         if (attemptsEl && !picking && lastAttemptsHtml !== attemptsHtml) {
@@ -8672,15 +8734,13 @@
           lastAttemptsHtml = attemptsHtml;
         }
         const body = root.querySelector("[data-progress-body]");
-        if (body && lastProgressHtml !== progressHtml) {
-          body.innerHTML = progressHtml;
-        }
+        if (body && lastProgressHtml !== progressHtml) setHtml(body, progressHtml);
         syncTaskTokens(root, selected || selectedHistory);
       } else {
         const tokenItem = selected || selectedHistory;
         const tokenUsage = tokenUsageFromItem(tokenItem);
         const tokenHover = taskTokensHover(tokenItem);
-        target.innerHTML = `
+        setHtml(target, `
           <div data-progress-root data-item-key="${escapeHtml(itemKey)}">
             <header class="change-head">
               <div class="change-head-text">
@@ -8695,7 +8755,7 @@
             </header>
             <div data-progress-body>${progressHtml}</div>
           </div>
-        `;
+        `);
       }
       lastProgressHtml = progressHtml;
       if (!sameItem) lastAttemptsHtml = attemptsHtml;
@@ -8750,10 +8810,11 @@
         state.historyToken = historyData.token || "";
       }
 
-      render();
+      renderLive();
       syncKeepImproving();
+      quickenPoll();
       refreshPullStates(workspaceRuns()).then((changed) => {
-        if (changed) render();
+        if (changed) renderLive();
       });
     }
 
@@ -9271,32 +9332,335 @@
       return (model.name || model.model_name) + host + mine;
     }
 
+    // The model list's groups, in order: each hosted provider, then what runs
+    // on this person's own machine through their runner.
+    const MODEL_GROUPS = [
+      { key: "anthropic", label: "Claude" },
+      { key: "runner", label: "Claude Code · your machine" },
+      { key: "openai", label: "OpenAI" },
+      { key: "google", label: "Google" },
+      { key: "cursor", label: "Cursor" },
+      { key: "gateway", label: "Gateways" },
+      { key: "server", label: "Model servers" },
+      { key: "local", label: "Local models · your machine" },
+    ];
+
+    function modelGroupKey(model) {
+      if (model.local) return "local";
+      if (model.runner) return "runner";
+      const provider = model.provider || "";
+      if (provider === "litellm" || provider === "gateway") return "gateway";
+      if (["anthropic", "openai", "google", "cursor"].includes(provider)) return provider;
+      return "server";
+    }
+
+    // The muted line under a model's name: its model id when the name differs,
+    // and the endpoint that serves it.
+    function modelOptionMeta(model) {
+      const name = model.name || model.model_name;
+      const parts = [];
+      if (model.model_name && model.model_name !== name) parts.push(model.model_name);
+      if (model.endpoint_name) parts.push(model.endpoint_name);
+      return parts.join(" · ");
+    }
+
+    // Fill a model <select> in groups and redraw its picker. choice.selected
+    // is the model to keep chosen, choice.lastUsed the one the last run used.
+    function fillModelSelect(select, models, choice) {
+      select.replaceChildren();
+      if (choice.placeholder) {
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = choice.placeholder;
+        select.append(placeholder);
+      }
+      for (const group of MODEL_GROUPS) {
+        const members = models.filter((model) => modelGroupKey(model) === group.key);
+        if (!members.length) continue;
+        const holder = document.createElement("optgroup");
+        holder.label = group.label;
+        for (const model of members) {
+          const option = document.createElement("option");
+          option.value = model.id;
+          option.textContent = modelOptionLabel(model);
+          option.dataset.name = model.name || model.model_name;
+          option.dataset.meta = modelOptionMeta(model);
+          if (model.runner) option.dataset.runner = "1";
+          if (model.runner || model.local) option.dataset.mine = "1";
+          if (model.id === choice.lastUsed) option.dataset.note = "Used last time";
+          if (model.id === choice.selected) option.selected = true;
+          holder.append(option);
+        }
+        select.append(holder);
+      }
+    }
+
+    // A searchable, grouped picker drawn in place of a model <select>. The
+    // hidden select keeps the value, so the form reads it and hears its change
+    // event as before. Call refreshModelPicker after the select changes.
+    function refreshModelPicker(select) {
+      if (!select.modelPicker) select.modelPicker = attachModelPicker(select);
+      select.modelPicker.refresh();
+    }
+
+    function attachModelPicker(select) {
+      const root = document.createElement("div");
+      root.className = "model-picker";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "model-picker-button";
+      button.id = select.id + "-picker";
+      button.dataset.modelPicker = select.id;
+      button.setAttribute("aria-haspopup", "listbox");
+      button.setAttribute("aria-expanded", "false");
+      const panel = document.createElement("div");
+      panel.className = "model-picker-panel";
+      panel.hidden = true;
+      const search = document.createElement("input");
+      search.type = "search";
+      search.className = "model-picker-search";
+      search.placeholder = "Search models";
+      search.autocomplete = "off";
+      search.setAttribute("aria-label", "Search models");
+      const list = document.createElement("div");
+      list.className = "model-picker-list";
+      list.id = select.id + "-picker-list";
+      list.setAttribute("role", "listbox");
+      search.setAttribute("aria-controls", list.id);
+      panel.append(search, list);
+      root.append(button, panel);
+      select.hidden = true;
+      select.after(root);
+      let rows = [];
+      let active = -1;
+
+      function realOptions() {
+        return Array.from(select.options).filter((option) => option.value);
+      }
+
+      function optionRows(query) {
+        const needle = query.trim().toLowerCase();
+        const found = [];
+        for (const option of realOptions()) {
+          const group = option.parentElement.tagName === "OPTGROUP" ? option.parentElement.label : "";
+          const name = option.dataset.name || option.textContent;
+          const meta = option.dataset.meta || "";
+          if (!needle) {
+            found.push({ option: option, name: name, meta: meta, group: group, hits: [], score: 0 });
+            continue;
+          }
+          const byName = fuzzyMatch(name, needle);
+          // The endpoint and group only match as written, or scattered
+          // letters would match every model.
+          const byMeta = (meta + " " + group).toLowerCase().includes(needle);
+          if (!byName && !byMeta) continue;
+          found.push({
+            option: option,
+            name: name,
+            meta: meta,
+            group: group,
+            hits: byName ? byName.hits : [],
+            score: byName ? byName.score : 0,
+          });
+        }
+        if (!needle) return found;
+        // Keep each group together, with the group holding the best match first.
+        const best = new Map();
+        for (const row of found) best.set(row.group, Math.max(best.get(row.group) ?? -Infinity, row.score));
+        found.sort((left, right) => (best.get(right.group) - best.get(left.group))
+          || left.group.localeCompare(right.group)
+          || (right.score - left.score));
+        return found;
+      }
+
+      function showActive() {
+        let index = 0;
+        for (const item of list.querySelectorAll("[data-model-id]")) {
+          const on = index === active;
+          item.classList.toggle("is-active", on);
+          if (on) {
+            search.setAttribute("aria-activedescendant", item.id);
+            item.scrollIntoView({ block: "nearest" });
+          }
+          index += 1;
+        }
+        if (active < 0) search.removeAttribute("aria-activedescendant");
+      }
+
+      function render() {
+        rows = optionRows(search.value);
+        list.replaceChildren();
+        let lastGroup = null;
+        let index = 0;
+        for (const row of rows) {
+          if (row.group && row.group !== lastGroup) {
+            const head = document.createElement("p");
+            head.className = "model-picker-group";
+            head.setAttribute("role", "presentation");
+            head.textContent = row.group;
+            list.append(head);
+          }
+          lastGroup = row.group;
+          const item = document.createElement("button");
+          item.type = "button";
+          item.tabIndex = -1;
+          item.className = "model-picker-option";
+          item.id = list.id + "-" + index;
+          item.dataset.modelId = row.option.value;
+          item.setAttribute("role", "option");
+          item.setAttribute("aria-selected", row.option.selected ? "true" : "false");
+          const text = document.createElement("span");
+          text.className = "model-picker-text";
+          text.append(markedText(row.name, row.hits, "model-picker-name"));
+          if (row.meta) {
+            const meta = document.createElement("span");
+            meta.className = "model-picker-meta";
+            meta.textContent = row.meta;
+            text.append(meta);
+          }
+          item.append(text);
+          if (row.option.dataset.note) {
+            const note = document.createElement("span");
+            note.className = "model-picker-note";
+            note.textContent = row.option.dataset.note;
+            item.append(note);
+          }
+          list.append(item);
+          index += 1;
+        }
+        if (!rows.length) {
+          const empty = document.createElement("p");
+          empty.className = "model-picker-empty";
+          empty.textContent = "No models match " + JSON.stringify(search.value.trim());
+          list.append(empty);
+        }
+      }
+
+      function open() {
+        if (button.disabled) return;
+        search.value = "";
+        render();
+        active = rows.findIndex((row) => row.option.selected);
+        panel.hidden = false;
+        button.setAttribute("aria-expanded", "true");
+        showActive();
+        search.focus();
+      }
+
+      function close(refocus) {
+        if (panel.hidden) return;
+        panel.hidden = true;
+        button.setAttribute("aria-expanded", "false");
+        if (refocus) button.focus();
+      }
+
+      function choose(value) {
+        if (select.value !== value) {
+          select.value = value;
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        refresh();
+        close(true);
+      }
+
+      function refresh() {
+        const option = select.selectedOptions[0];
+        button.replaceChildren();
+        const text = document.createElement("span");
+        text.className = "model-picker-text";
+        const name = document.createElement("span");
+        name.className = "model-picker-name";
+        if (option && option.value) {
+          name.textContent = option.dataset.name || option.textContent;
+          text.append(name);
+          const mine = option.dataset.mine ? "your machine" : "";
+          const where = [option.dataset.meta, mine].filter(Boolean).join(" · ");
+          if (where) {
+            const meta = document.createElement("span");
+            meta.className = "model-picker-meta";
+            meta.textContent = where;
+            text.append(meta);
+          }
+        } else {
+          name.textContent = option ? option.textContent : "No models turned on";
+          name.classList.add("is-empty");
+          text.append(name);
+        }
+        button.append(text);
+        button.disabled = select.disabled || !realOptions().length;
+        if (!panel.hidden) render();
+      }
+
+      button.addEventListener("click", function () {
+        if (panel.hidden) open();
+        else close(true);
+      });
+      button.addEventListener("keydown", function (event) {
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+        event.preventDefault();
+        open();
+      });
+      search.addEventListener("input", function () {
+        render();
+        active = rows.length ? 0 : -1;
+        showActive();
+      });
+      search.addEventListener("keydown", function (event) {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          if (!rows.length) return;
+          const step = event.key === "ArrowDown" ? 1 : -1;
+          active = active < 0 ? 0 : (active + step + rows.length) % rows.length;
+          showActive();
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          if (rows[active]) choose(rows[active].option.value);
+        } else if (event.key === "Escape") {
+          // Close the list, not the dialog the picker sits in.
+          event.preventDefault();
+          event.stopPropagation();
+          close(true);
+        } else if (event.key === "Tab") {
+          close(false);
+        }
+      });
+      list.addEventListener("click", function (event) {
+        const item = event.target.closest("[data-model-id]");
+        if (item) choose(item.dataset.modelId);
+      });
+      document.addEventListener("click", function (event) {
+        if (!root.contains(event.target)) close(false);
+      });
+      return { refresh: refresh, close: close };
+    }
+
+    for (const id of ["model", "rerun-model"]) {
+      const select = document.getElementById(id);
+      if (select) refreshModelPicker(select);
+    }
+
     async function fillRerunModels(entry) {
       const select = document.getElementById("rerun-model");
       if (!select) return;
       select.replaceChildren();
       select.disabled = true;
+      refreshModelPicker(select);
       const workspace = entry.workspace || (document.getElementById("workspace") || {}).value || "";
       try {
         const res = await fetch("/api/org/models?workspace=" + encodeURIComponent(workspace));
         const body = await res.json();
         if (!res.ok) throw new Error(body.error || "Could not list models");
         const models = body.models || [];
-        const placeholder = document.createElement("option");
-        placeholder.value = "";
-        placeholder.textContent = models.length ? "Choose a model…" : "No models granted";
-        select.append(placeholder);
-        for (const model of models) {
-          const option = document.createElement("option");
-          option.value = model.id;
-          option.textContent = modelOptionLabel(model) + (model.id === entry.model_id ? " — used last time" : "");
-          if (model.id === entry.model_id) option.selected = true;
-          select.append(option);
-        }
+        fillModelSelect(select, models, {
+          placeholder: models.length ? "Choose a model…" : "No models granted",
+          selected: entry.model_id,
+          lastUsed: entry.model_id,
+        });
         select.disabled = !models.length;
       } catch (err) {
         notify("error", err.message, { title: "Could not list models" });
       }
+      refreshModelPicker(select);
     }
 
     function hideRerunGoalPicker() {
@@ -9828,18 +10192,13 @@
           option.textContent = "No models granted";
           select.append(option);
           select.disabled = true;
+          refreshModelPicker(select);
           syncRunOn();
           return;
         }
         select.disabled = false;
-        for (const model of models) {
-          const option = document.createElement("option");
-          option.value = model.id;
-          option.textContent = modelOptionLabel(model);
-          if (model.runner) option.dataset.runner = "1";
-          if (model.id === previous) option.selected = true;
-          select.append(option);
-        }
+        fillModelSelect(select, models, { selected: previous });
+        refreshModelPicker(select);
         syncRunOn();
       } catch (err) {
         showNotice(errorEl, "error", err.message);
@@ -10562,9 +10921,10 @@
       });
       blankScheduleForm();
       setInterval(() => {
-        if (state.section !== "schedules") return;
+        // Skip a hidden tab, and wait while a person selects text to copy.
+        if (state.section !== "schedules" || document.hidden || selectingText()) return;
         refreshSchedules().catch(() => {});
-      }, 1500);
+      }, 3000);
       renderScheduleAgenda();
       setScheduleView("agenda");
     }
@@ -10689,10 +11049,55 @@
       loadRecentWorkspaces().catch(() => {});
       loadGrantedModels();
       loadSpecPolicy();
-      setInterval(refresh, 1000);
+      schedulePoll();
+      document.addEventListener("visibilitychange", function () {
+        if (document.hidden) {
+          clearTimeout(pollTimer);
+          return;
+        }
+        refresh().catch(() => {});
+        schedulePoll();
+      });
+      // Running work shows elapsed time, so redraw it each second while on screen.
       setInterval(() => {
-        if (state.tasks.some(task => task.status === "running")) render();
+        if (document.hidden) return;
+        if (state.tasks.some(task => task.status === "running")) renderLive();
       }, 1000);
+    }
+
+    // Poll quickly while work is running or queued, slowly when nothing moves,
+    // and not at all while the tab is hidden. A person's own action calls
+    // refresh() at once, so the slow pace only delays other people's changes.
+    const POLL_BUSY_MS = 2000;
+    const POLL_IDLE_MS = 10000;
+    let pollTimer = 0;
+    let pollDue = 0;
+
+    function pollDelay() {
+      const busy = [...state.tasks, ...state.allTasks].some(
+        (task) => task.status === "running" || task.status === "queued",
+      );
+      return busy ? POLL_BUSY_MS : POLL_IDLE_MS;
+    }
+
+    function schedulePoll() {
+      clearTimeout(pollTimer);
+      if (document.hidden) return;
+      const delay = pollDelay();
+      pollDue = Date.now() + delay;
+      pollTimer = setTimeout(async function () {
+        try {
+          await refresh();
+        } catch (err) {
+          // A missed poll is retried on the next one.
+        }
+        schedulePoll();
+      }, delay);
+    }
+
+    // Work that just started should not wait out the idle pace.
+    function quickenPoll() {
+      if (pollDue && pollDelay() < pollDue - Date.now()) schedulePoll();
     }
 
     startApp();

@@ -111,7 +111,11 @@ styling, update that skill in the same change, then match the CSS to it.
   model name, with a switch and a remove button. The switch makes that model
   available on every project until a project turns it off. Plus opens a dialog to add
   an endpoint or a model. The proposal screen chooses a model turned on for the
-  project. OpenAI, Claude, and the other endpoints are that model. It does not add
+  project from a picker, not a bare dropdown. The picker groups models by
+  provider, then Claude Code and local models on your machine. Typing ranks
+  them by a fuzzy match and marks the matched letters. Arrow keys move,
+  Enter chooses, and Escape closes the list without closing its dialog. The
+  rerun dialog uses the same picker. OpenAI, Claude, and the other endpoints are that model. It does not add
   a host from that screen.
   Do not put Rules or Skills back in an overlay.
 - A new dialog uses the existing `.modal-backdrop` and `.modal`, starts
@@ -129,6 +133,15 @@ styling, update that skill in the same change, then match the CSS to it.
   `EventSource`, and a template URL all count. Do not add a second route
   that the page never calls.
 - Do not leave a button, route, or form field that nothing calls.
+
+## Live updates
+
+- Polling must not stop a person reading or copying. Write through
+  `setText` and `setHtml`, which leave an unchanged element alone, and send
+  a redraw from a timer through `renderLive`, which waits while text is
+  selected and runs once the selection clears.
+- Poll quickly only while work is running or queued, slowly when idle, and
+  not while the tab is hidden. A person's own action refreshes at once.
 
 ## Prove the layout
 

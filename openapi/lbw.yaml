@@ -5,6 +5,14 @@ info:
   description: >
     The organization API. Add a route here first, then run make openapi.
     Handlers use the generated models in src/agent_lbw/openapi_models.py.
+
+
+    Conditional GET applies to every JSON GET under /api/, listed here or
+    not. A 200 carries an ETag made from its body, Cache-Control
+    "private, no-cache", and Vary: Cookie. A request whose If-None-Match
+    names that ETag gets 304 Not Modified with no body, so a page that polls
+    downloads data only when it changed. Errors, streams, files, and a
+    response that sets no-store or its own ETag are sent as they are.
 paths:
   /api/schedules:
     post:
@@ -28,6 +36,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RepoRuleList"
+        "304":
+          $ref: "#/components/responses/NotModified"
     put:
       operationId: setRepoRule
       requestBody:
@@ -53,6 +63,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuditList"
+        "304":
+          $ref: "#/components/responses/NotModified"
   /api/org/endpoints/{endpoint_id}/credential:
     post:
       operationId: saveEndpointCredential
@@ -130,6 +142,8 @@ paths:
       responses:
         "200":
           description: The integrations the organization turned on, and how this person linked each.
+        "304":
+          $ref: "#/components/responses/NotModified"
   /api/me/integrations/{endpoint_id}:
     delete:
       operationId: unlinkIntegration
@@ -151,6 +165,8 @@ paths:
             Each model the organization runs with the price a run uses: the
             organization's own price, or else the public list price. Also the
             prices the organization set, and when the list was last refreshed.
+        "304":
+          $ref: "#/components/responses/NotModified"
     put:
       operationId: saveModelPrice
       requestBody:
@@ -200,12 +216,16 @@ paths:
             Tokens and cost a planned change should spend to build, scaled from
             its planning tokens by this project's or this organization's recent
             builds, and priced on the change's model.
+        "304":
+          $ref: "#/components/responses/NotModified"
   /api/usage/meta:
     get:
       operationId: usageRegistry
       responses:
         "200":
           description: The datasets, breakdowns, and numbers a usage report can ask for.
+        "304":
+          $ref: "#/components/responses/NotModified"
   /api/usage:
     get:
       operationId: usageReport
@@ -245,6 +265,8 @@ paths:
       responses:
         "200":
           description: Totals, top groups, and a daily series from the usage rollups.
+        "304":
+          $ref: "#/components/responses/NotModified"
   /api/workspaces/agent-teams/import-roles:
     post:
       operationId: importRolesAsAgentTeams
@@ -279,6 +301,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProjectModelList"
+        "304":
+          $ref: "#/components/responses/NotModified"
     put:
       operationId: setProjectModel
       requestBody:
@@ -375,6 +399,8 @@ paths:
           description: The leased job, with its goal and the commit to start from.
         "204":
           description: No job is waiting.
+        "304":
+          $ref: "#/components/responses/NotModified"
   /api/runner/jobs/{job_id}/events:
     post:
       operationId: postRunnerEvents
@@ -417,6 +443,8 @@ paths:
       responses:
         "200":
           description: This person's runners, or everyone's for an owner or admin.
+        "304":
+          $ref: "#/components/responses/NotModified"
   /api/me/runners/approve:
     post:
       operationId: approveRunner
@@ -469,6 +497,8 @@ paths:
           description: The call's id, method, path, body, and the owner's server address.
         "204":
           description: No call is waiting.
+        "304":
+          $ref: "#/components/responses/NotModified"
   /api/tasks/{task_id}/checks:
     get:
       operationId: listTaskChecks
@@ -496,6 +526,8 @@ paths:
           description: The job is gone or has no pull request.
         "409":
           description: GitHub could not say what the checks are.
+        "304":
+          $ref: "#/components/responses/NotModified"
   /api/tasks/{task_id}/checks/investigate:
     post:
       operationId: investigateTaskChecks
@@ -614,6 +646,8 @@ paths:
       responses:
         "200":
           description: Whether every project's proposals must start from a spec.
+        "304":
+          $ref: "#/components/responses/NotModified"
     put:
       operationId: setOrgSpecPolicy
       description: An organization owner or admin requires a spec on every project.
@@ -642,6 +676,8 @@ paths:
           description: >-
             Whether this project's proposals must start from a spec, and whether
             the organization or the project requires it.
+        "304":
+          $ref: "#/components/responses/NotModified"
     put:
       operationId: setProjectSpecPolicy
       description: >-
@@ -688,6 +724,8 @@ paths:
       responses:
         "200":
           description: Who may use a model server on their own machine. People are listed for an owner or admin.
+        "304":
+          $ref: "#/components/responses/NotModified"
     put:
       operationId: setLocalModelPolicy
       requestBody:
@@ -723,6 +761,8 @@ paths:
       responses:
         "200":
           description: This person's model server, its synced model names, and whether the organization allows it.
+        "304":
+          $ref: "#/components/responses/NotModified"
     put:
       operationId: saveMyLocalModel
       requestBody:
@@ -743,6 +783,25 @@ paths:
         "409":
           description: No runner of this person's that relays model calls is online.
 components:
+  headers:
+    ETag:
+      description: A validator for this exact body. Send it back in If-None-Match.
+      schema:
+        type: string
+    CacheControl:
+      description: "private, no-cache: a browser keeps the body and asks again each time."
+      schema:
+        type: string
+  responses:
+    NotModified:
+      description: >
+        The body is the one named in If-None-Match. Nothing is sent, and the
+        client uses its stored copy.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControl"
   schemas:
     ScheduleCadence:
       type: object
