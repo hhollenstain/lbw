@@ -25,8 +25,8 @@ from agent_lbw.web_ui import create_app
 
 
 def _local(year: int, month: int, day: int, hour: int, minute: int) -> datetime:
-    zone = datetime.now().astimezone().tzinfo
-    return datetime(year, month, day, hour, minute, tzinfo=zone)
+    """That wall-clock time here, with the offset in effect on that date, not today's."""
+    return datetime(year, month, day, hour, minute).astimezone()
 
 
 def _daily(hour: int = 9, minute: int = 0) -> dict:

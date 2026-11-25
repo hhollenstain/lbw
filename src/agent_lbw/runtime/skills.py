@@ -412,13 +412,48 @@ def _discover_repo_skills(root: Path) -> list[Skill]:
     if repo_root is None or not repo_root.is_dir():
         return []
     bundled = bundled_skills_root().resolve()
+    known = _skill_files_git_knows(repo_root)
     found: list[Skill] = []
     for skill in _discover(repo_root, origin="repo", skip_paths={".lbw", ".loco"}):
         path = Path(skill.path).resolve()
         if path == bundled or bundled in path.parents:
             continue
+        if known is not None and path not in known:
+            continue
         found.append(skill)
     return found
+
+
+def _skill_files_git_knows(repo_root: Path) -> set[Path] | None:
+    """Skill files this repository tracks or would track, or None when git cannot say.
+
+    An ignored folder, such as other projects' checkouts kept inside this one,
+    and a repository nested inside it do not hold this repository's skills.
+    """
+    patterns = [f":(glob)**/{name}" for name in SKILL_FILENAMES]
+    try:
+        listed = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "--",
+                *patterns,
+            ],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if listed.returncode != 0:
+        return None
+    return {(repo_root / name).resolve() for name in listed.stdout.split("\0") if name}
 
 
 def _find_git_repo_root(start: Path) -> Path | None:
