@@ -238,7 +238,11 @@ def test_a_merge_an_earlier_attempt_left_unfinished_goes_to_the_resolver(
     work, _ = _pull_request(tmp_path, base_edit=("app.py", "greeting = 'hey'\n"))
     _git(work, "fetch", "-q", "origin")
     left = subprocess.run(
-        ["git", "merge", "--no-edit", "origin/main"], cwd=work, capture_output=True, text=True
+        ["git", "merge", "--no-edit", "origin/main"],
+        cwd=work,
+        env={**os.environ, **_ENV},
+        capture_output=True,
+        text=True,
     )
     assert left.returncode != 0
     assert (work / ".git" / "MERGE_HEAD").exists()
