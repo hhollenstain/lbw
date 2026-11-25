@@ -611,6 +611,69 @@ def test_a_runner_change_that_failed_lbws_tests_reruns_the_tests_on_the_same_com
         manager.shutdown(wait=False)
 
 
+def test_a_runner_job_plans_with_the_projects_plan_step_before_it_builds(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """With planning on, the runner plans the way the project's plan role says, then builds."""
+    from agent_lbw.runtime.roles import plan_role
+
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    base = _repo(workspace)
+    manager = TaskManager(settings.model_copy(update={"plan_goals": True}))
+    client = TestClient(create_app(manager, default_workspace=workspace))
+    try:
+        client.get("/api/directory")
+        model_id = _runner_model(client, workspace, workspace)
+        save_project_commands(workspace, test_command="true", lint_command="true")
+        planner = plan_role(workspace)
+        assert planner is not None
+        token = _link(client)
+        _beat(client, token)
+        auth = {"Authorization": f"Bearer {token}"}
+        created = client.post(
+            "/api/tasks",
+            json={
+                "workspace": str(workspace),
+                "goal": "Add a hello file",
+                "model_id": model_id,
+                "create_pr": False,
+                "triage_gate": "auto",
+                "approval_gate": "auto",
+            },
+        )
+        assert created.status_code == 201, created.text
+        task_id = created.json()["id"]
+        plan_job = _lease(client, auth)
+        assert plan_job["phase"] == "plan"
+        assert "This project plans with these steps" in plan_job["instructions"]
+        assert f"{planner.title}:" in plan_job["instructions"]
+        _finish(
+            client,
+            auth,
+            plan_job,
+            '{"cause": "No file", "steps": [{"do": "Write hello.txt", "file": "hello.txt"}]}',
+        )
+        build_job = _lease(client, auth)
+        assert build_job["phase"] == "build"
+        assert "Write hello.txt" in build_job["plan"]
+        clone = tmp_path / "runner-worktree"
+        subprocess.run(["git", "clone", "-q", str(workspace), str(clone)], check=True)
+        _finish(
+            client,
+            auth,
+            build_job,
+            "Added hello.txt",
+            _commit_patch(clone, base, "hello.txt", "hello\n"),
+        )
+        done = _wait(client, task_id, "success")
+        assert "Write hello.txt" in done["plan"]
+        messages = [event.get("message") or "" for event in done["events"]]
+        assert f"{planner.title} planned the change" in messages
+    finally:
+        manager.shutdown(wait=False)
+
+
 def test_a_restart_puts_back_approved_commits_the_runner_branch_lost(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

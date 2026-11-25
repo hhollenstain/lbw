@@ -239,7 +239,9 @@ scheduler call.
   applies them on `lbw/runner-<id>`, runs the tests, and publishes. A runner
   job stops at the spec, plan, and approval gates like any job: the runner
   writes the spec and the plan without editing files, and approved commits are
-  published without the runner. The approval step records the approved commit.
+  published without the runner. With planning on, a runner job plans first with
+  the project's plan steps, its roles or agent teams, as a job in LBW does,
+  even when triage does not ask. The approval step records the approved commit.
   Publishing puts the runner branch back on it when the branch no longer holds
   it, reading the branch's reflog when no step recorded it. A person never
   repairs a runner branch by hand. A build may run the project's own commands,

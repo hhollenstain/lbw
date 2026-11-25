@@ -1625,6 +1625,17 @@ def _scoped_skills(store_root: Path | None, settings: Settings, workspace: Path)
         return []
 
 
+def runner_plan_steps(store_root: Path | None, settings: Settings, workspace: Path) -> list[Step]:
+    """The plan steps a runner job follows when it plans, the one that writes the plan last.
+
+    Empty when planning is off, or when this project's roles and agent teams
+    have no plan step.
+    """
+    if not settings.plan_goals:
+        return []
+    return ordered(_pipeline_steps(store_root, settings, workspace), "plan")
+
+
 def _pipeline_steps(store_root: Path | None, settings: Settings, workspace: Path) -> list[Step]:
     """The steps a proposal runs: this project's agent teams, then its ROLE.md roles.
 

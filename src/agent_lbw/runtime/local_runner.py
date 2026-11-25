@@ -24,6 +24,7 @@ from agent_lbw.runtime.improve import (
     publish_runner_change,
     resolve_create_pr,
     resolve_human_gates,
+    runner_plan_steps,
 )
 from agent_lbw.runtime.merge_fix import Conflict, resolution_notes
 from agent_lbw.runtime.plan import PLAN_SYSTEM, format_plan, parse_plan
@@ -240,8 +241,14 @@ def run_on_runner(
                 spec_path=spec_path,
                 spec_text=spec_text,
             )
-    if triage == "ask" and decision not in {"build", "send_back", "continue"}:
-        asked = f"{PLAN_SYSTEM}\n\nGoal:\n{goal.strip()}"
+    build_plan = task.plan or ""
+    steps = (
+        runner_plan_steps(store_root, settings, workspace.root)
+        if decision not in {"build", "send_back", "continue"}
+        else []
+    )
+    if decision not in {"build", "send_back", "continue"} and (triage == "ask" or steps):
+        asked = f"{PLAN_SYSTEM}\n\n{planner_brief(steps)}Goal:\n{goal.strip()}"
         if spec_text.strip():
             asked = f"{asked}\n\n{spec_context(spec_path, spec_text)}"
         answer = _read_only(
@@ -252,15 +259,15 @@ def run_on_runner(
         plan = parse_plan(answer)
         plan_text = format_plan(plan) if plan is not None and plan.steps else answer.strip()
         checks = [step.check for step in plan.steps if step.check] if plan is not None else []
-        record_event(kind="step", message="The plan is ready")
-        return _waiting(
-            task,
-            facts["base_sha"],
-            "triage",
-            plan_text,
-            plan=plan_text,
-            criteria=[*criteria, *(item for item in checks if item not in criteria)],
-        )
+        criteria = [*criteria, *(item for item in checks if item not in criteria)]
+        lead = f"{steps[-1].title} planned the change" if steps else "The plan is ready"
+        record_event(kind="step", message=lead)
+        if triage == "ask":
+            return _waiting(
+                task, facts["base_sha"], "triage", plan_text, plan=plan_text, criteria=criteria
+            )
+        build_plan = plan_text
+        task.plan = plan_text
     held = task.branch or ""
     if decision == "send_back" and _holds_runner_work(task, held):
         tip = held
@@ -276,7 +283,7 @@ def run_on_runner(
             "instructions": PR_TEXT_INSTRUCTIONS,
             "spec_path": spec_path if task.spec_accepted else "",
             "spec": spec_text if task.spec_accepted else "",
-            "plan": task.plan or "",
+            "plan": build_plan,
             "start_patch": start_patch,
             "commands": project_commands(workspace.root),
         },
@@ -345,6 +352,19 @@ def run_on_runner(
         pr_base=task.base_branch,
         keep_pull_request=bool(getattr(task, "ci_pr_url", "")),
     )
+
+
+def planner_brief(steps) -> str:
+    """How this project plans: each plan step's instruction, the one that writes the plan last."""
+    parts = []
+    for step in steps:
+        instruction = (step.instruction or "").strip()
+        if instruction:
+            parts.append(f"{step.title}:\n{instruction[:4000]}")
+    if not parts:
+        return ""
+    text = "\n\n".join(parts)[:12000]
+    return f"This project plans with these steps. Follow each one:\n\n{text}\n\n"
 
 
 def project_commands(root: Path) -> list[str]:
