@@ -3647,13 +3647,236 @@ a.usage-export {
   margin: 0;
 }
 
-.local-model-names {
+.local-model-list {
+  margin-top: 1rem;
+  max-width: 36rem;
+}
+
+.local-model-list-head {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem 0.8rem;
-  margin: 0.4rem 0 0;
-  padding: 0;
-  list-style: none;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.3rem;
+  font-size: 0.95rem;
+}
+
+.local-model-count {
+  padding: 0 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.local-model-list .hint {
+  margin: 0 0 0.6rem;
+}
+
+.local-model-name {
+  color: var(--ink);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.local-model-tag {
+  display: inline-block;
+  padding: 0 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--code-bg);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+/* Model picker: a searchable, grouped list in place of a model select */
+.model-picker {
+  position: relative;
+}
+
+button.model-picker-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 0.88rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.model-picker-button::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.42rem;
+  height: 0.42rem;
+  margin: 0 0.15rem 0.2rem auto;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+}
+
+button.model-picker-button:focus-visible,
+button.model-picker-button[aria-expanded="true"] {
+  outline: none;
+  border-color: var(--navy);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+button.model-picker-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.model-picker-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+
+.model-picker-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.model-picker-name.is-empty {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.model-picker-name mark {
+  background: transparent;
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.model-picker-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.model-picker-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 0.3rem);
+  left: 0;
+  right: 0;
+  padding: 0.4rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.model-picker-panel[hidden] {
+  display: none;
+}
+
+/* A dialog scrolls its own body, so the list opens in place there. */
+.modal .model-picker-panel {
+  position: static;
+  margin-top: 0.3rem;
+  box-shadow: none;
+}
+
+input[type="search"].model-picker-search {
+  font-size: 0.88rem;
+}
+
+.model-picker-list {
+  max-height: 18rem;
+  margin-top: 0.35rem;
+  overflow-y: auto;
+}
+
+.model-picker-group {
+  margin: 0.55rem 0 0.15rem;
+  padding: 0 0.55rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.model-picker-group:first-child {
+  margin-top: 0.15rem;
+}
+
+button.model-picker-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.38rem 0.55rem;
+  background: transparent;
+  color: var(--ink);
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.88rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.model-picker-option .model-picker-name {
+  font-weight: 500;
+}
+
+button.model-picker-option:hover,
+button.model-picker-option.is-active {
+  background: var(--panel-2);
+}
+
+button.model-picker-option[aria-selected="true"] .model-picker-name {
+  color: var(--navy);
+  font-weight: 680;
+}
+
+button.model-picker-option[aria-selected="true"]::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-left: -0.15rem;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.model-picker-note {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.model-picker-empty {
+  margin: 0;
+  padding: 0.4rem 0.55rem;
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 .runner-approve label {

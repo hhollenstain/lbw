@@ -625,6 +625,23 @@ def test_submit_uses_requested_model(settings: Settings, tmp_path: Path) -> None
         manager.shutdown(wait=False)
 
 
+def test_job_form_chooses_a_model_from_a_grouped_search(settings: Settings, tmp_path: Path) -> None:
+    manager = TaskManager(settings)
+    client = TestClient(create_app(manager, default_workspace=tmp_path))
+    try:
+        page = client.get("/").content
+        # The form and the rerun dialog label a searchable picker over each model select.
+        assert b'<label for="model-picker">Model</label>' in page
+        assert b'<label for="rerun-model-picker">Model</label>' in page
+        assert b'for (const id of ["model", "rerun-model"])' in page
+        # Hosted providers, then what runs on this person's machine.
+        for group in (b'"Claude"', b'"Claude Code \xc2\xb7 your machine"', b'"OpenAI"'):
+            assert group in page
+        assert b'"Local models \xc2\xb7 your machine"' in page
+    finally:
+        manager.shutdown(wait=False)
+
+
 def test_web_ui_lists_models_and_queues_with_selection(settings: Settings, tmp_path: Path) -> None:
     gate = threading.Event()
 

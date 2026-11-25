@@ -25,6 +25,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from lbw_shared.conditional import ConditionalGetMiddleware
 from lbw_shared.directory import bind_directory
 from lbw_shared.hosts import crossing_url
 from pydantic import BaseModel
@@ -1044,6 +1045,7 @@ def create_app(
     default_create_pr: bool | None = None,
 ) -> FastAPI:
     app = FastAPI(title="lbw", docs_url=None, redoc_url=None)
+    app.add_middleware(ConditionalGetMiddleware)
     app.state.ui = UiState(
         manager,
         default_workspace=default_workspace,

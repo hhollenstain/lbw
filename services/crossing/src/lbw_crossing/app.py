@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from lbw_shared.conditional import ConditionalGetMiddleware
 from lbw_shared.directory import bind_directory
 from lbw_shared.hosts import github_callback_url, is_crossing_host
 
@@ -24,6 +25,7 @@ _FAVICON = (_STATIC / "favicon.svg").read_text(encoding="utf-8")
 
 def create_app(root: Path, database_url: str = "") -> FastAPI:
     app = FastAPI(title="lbw-crossing", docs_url=None, redoc_url=None)
+    app.add_middleware(ConditionalGetMiddleware)
     bind_directory(app, root, database_url)
     register_auth(app)
     register_crossing(app)

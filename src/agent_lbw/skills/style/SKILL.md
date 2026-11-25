@@ -115,6 +115,23 @@ outline in `--muted` that shows on hover. A favorite is a filled `--warn`
 star and always shows. All projects and Show fewer are a plain `--muted`
 text button that turns `--navy` on hover. The list scrolls past `16rem`.
 
+The model picker on the proposal form and the rerun dialog looks like a
+field: `--panel`, `1px` `--line` border, `10px` radius, a muted chevron at
+the right. It shows the chosen model's name in `--ink` weight 600 with its
+group and endpoint muted under it. Opened, it is a `--panel` list with an
+`8px` radius and `--shadow` under a search field, and opens in place inside
+a dialog. Group labels (Claude, Claude Code · your machine, OpenAI, Local
+models · your machine) are uppercase `--muted` at `0.7rem`. A row is the
+name with its endpoint muted under it, and a `--panel-2` fill on hover or
+while the keyboard is on it. The chosen model is `--navy` weight 680 with a
+small `--accent` dot. Matched letters are bold and underlined, as in the
+project list. A note such as Used last time is a muted outline pill.
+
+A person's synced local models are an `.org-table` of Model and Tag under a
+Synced models heading with a muted count pill. The model name is `--ink`
+weight 600. The tag, such as `7b`, is a monospace pill on `--code-bg`. The
+names are not a run of inline code.
+
 ## Type
 
 Body text is `15px/1.5` system UI. The logo wordmark is Avenir Next, weight

@@ -166,18 +166,7 @@ export function LocalModelSection() {
         </div>
       </form>
       {data.models.length ? (
-        <>
-          <p className="hint" id="local-model-synced">
-            {`Synced ${new Date(data.synced * 1000).toLocaleString()}. These show on the job form as "your machine".`}
-          </p>
-          <ul className="local-model-names" id="local-model-names">
-            {data.models.map((name) => (
-              <li key={name}>
-                <code>{name}</code>
-              </li>
-            ))}
-          </ul>
-        </>
+        <SyncedModels data={data} />
       ) : (
         <p className="hint" id="local-model-synced">
           {data.enabled
@@ -187,6 +176,50 @@ export function LocalModelSection() {
       )}
     </div>
   );
+}
+
+/** The synced model names as a table: the model, then its tag, such as `7b`. */
+function SyncedModels({ data }: { data: LocalModel }) {
+  const rows = data.models.map(splitTag);
+  const tagged = rows.some((row) => row.tag);
+  const server = data.providers.find((item) => item.id === data.provider)?.label ?? "your server";
+  return (
+    <div className="local-model-list">
+      <h4 className="local-model-list-head">
+        Synced models <span className="local-model-count">{rows.length}</span>
+      </h4>
+      <p className="hint" id="local-model-synced">
+        {`From ${server}, synced ${new Date(data.synced * 1000).toLocaleString()}. They show on the job form under Local models · your machine.`}
+      </p>
+      <table className="org-table" id="local-model-names">
+        <thead>
+          <tr>
+            <th>Model</th>
+            {tagged ? <th>Tag</th> : null}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.full}>
+              <td className="local-model-name">{row.base}</td>
+              {tagged ? (
+                <td>{row.tag ? <span className="local-model-tag">{row.tag}</span> : null}</td>
+              ) : null}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** `qwen2.5-coder:7b` is the model `qwen2.5-coder` with the tag `7b`. */
+function splitTag(full: string): { full: string; base: string; tag: string } {
+  const at = full.lastIndexOf(":");
+  if (at <= 0 || at === full.length - 1 || full.slice(at + 1).includes("/")) {
+    return { full, base: full, tag: "" };
+  }
+  return { full, base: full.slice(0, at), tag: full.slice(at + 1) };
 }
 
 function message(err: unknown): string {
