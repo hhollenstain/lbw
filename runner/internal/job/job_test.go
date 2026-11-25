@@ -129,6 +129,47 @@ func TestThePromptCarriesTheGoalAndReviewNotes(t *testing.T) {
 	}
 }
 
+func TestABuildPromptEndsWithLBWsPullRequestInstructions(t *testing.T) {
+	text := Prompt(&client.Job{Goal: "Fix the login", Phase: "build", Instructions: "PR title: <title>"})
+	if !strings.HasSuffix(strings.TrimSpace(text), "PR title: <title>") {
+		t.Fatalf("prompt does not end with the instructions: %q", text)
+	}
+	if strings.Contains(text, "short summary") {
+		t.Fatalf("prompt still asks for a short summary: %q", text)
+	}
+	if old := Prompt(&client.Job{Goal: "Fix the login"}); !strings.Contains(old, "short summary") {
+		t.Fatalf("a job without instructions lost its summary line: %q", old)
+	}
+}
+
+func TestAMergeClaudeMakesIsSentAsOneOrdinaryCommit(t *testing.T) {
+	remote, base := Repo(t)
+	t.Setenv("FAKE_CLAUDE_MERGE", "1")
+	r := &Runner{Config: &config.Config{WorkDir: t.TempDir()}, Claude: fakeClaude(t)}
+	job := &client.Job{JobID: "m", TaskID: "task1", Goal: "Resolve the merge conflicts", BaseSHA: base, RemoteURL: remote}
+	got := r.Run(context.Background(), job, func(client.Event) {})
+	if got.Status != "done" {
+		t.Fatalf("result = %+v", got)
+	}
+	if n := strings.Count(got.Patch, "\nSubject: [PATCH"); n != 1 {
+		t.Fatalf("patch has %d commits, want one:\n%s", n, got.Patch)
+	}
+	clone := t.TempDir()
+	gitIn(t, "", "clone", "-q", remote, clone)
+	gitIn(t, clone, "config", "user.name", "Ada")
+	gitIn(t, clone, "config", "user.email", "ada@example.com")
+	mbox := filepath.Join(t.TempDir(), "change.mbox")
+	if err := os.WriteFile(mbox, []byte(got.Patch), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, clone, "am", "--3way", mbox)
+	for _, name := range []string{"side.txt", "hello.txt"} {
+		if _, err := os.Stat(filepath.Join(clone, name)); err != nil {
+			t.Fatalf("%s did not arrive: %v", name, err)
+		}
+	}
+}
+
 func TestModelPrefersTheJobOverTheRunnerSetting(t *testing.T) {
 	if got := model(&client.Job{Model: "opus"}, "sonnet"); got != "opus" {
 		t.Fatalf("job model: got %q", got)

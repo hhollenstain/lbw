@@ -105,7 +105,8 @@ type Job struct {
 	// Phase is "spec" or "plan" for a job that only reads the repository and
 	// answers with that document, or "build" (or empty) for a change.
 	Phase string `json:"phase"`
-	// Instructions say how to write a spec or a plan. LBW sends them for those phases.
+	// Instructions say how to write a spec or a plan, or, for a build, how to end
+	// with the pull request's title and description.
 	Instructions string `json:"instructions"`
 	// Spec and Plan are what a person accepted. A build follows them.
 	SpecPath string `json:"spec_path"`

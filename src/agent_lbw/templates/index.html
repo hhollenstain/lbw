@@ -9183,7 +9183,7 @@
 
     // The step a failed run can start the next run at, as the step track names it.
     function restartPhaseLabel(phase) {
-      if (phase === "publish") return "Pull request";
+      if (phase === "publish") return "Tests and pull request";
       if (phase === "build") return "Build";
       return "";
     }

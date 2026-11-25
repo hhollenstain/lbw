@@ -30,6 +30,10 @@ const MaxPatchBytes = 5 << 20
 // DocumentLimit is the longest spec or plan the runner sends back. LBW keeps 40,000 characters.
 const DocumentLimit = 40000
 
+// PullRequestLimit is the longest build reply the runner sends back when LBW
+// asks it to end with the pull request's title and description.
+const PullRequestLimit = 12000
+
 // readOnlyTools are the tools a spec or plan job turns off: every tool that can
 // write, including the shell and subagents. It reads with Read, Glob, and Grep.
 var readOnlyTools = []string{"Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "Task", "Agent"}
@@ -61,9 +65,13 @@ func (r *Runner) Run(ctx context.Context, job *client.Job, emit func(client.Even
 		_, _ = git(context.Background(), repo, "worktree", "prune")
 	}()
 	emit(client.Event{Kind: "step", Message: fmt.Sprintf("Working in a fresh worktree at %s", short(job.BaseSHA))})
+	start := job.BaseSHA
 	if job.StartPatch != "" && !ReadOnly(job) {
 		if err := applyStart(ctx, r.Config.WorkDir, tree, job); err != nil {
 			return failed(err)
+		}
+		if head, err := git(ctx, tree, "rev-parse", "HEAD"); err == nil {
+			start = strings.TrimSpace(head)
 		}
 		emit(client.Event{Kind: "step", Message: "Continuing from the work that was sent back"})
 	}
@@ -82,6 +90,8 @@ func (r *Runner) Run(ctx context.Context, job *client.Job, emit func(client.Even
 	if ReadOnly(job) {
 		opts.DisallowedTools = readOnlyTools
 		opts.ResultLimit = DocumentLimit
+	} else if strings.TrimSpace(job.Instructions) != "" {
+		opts.ResultLimit = PullRequestLimit
 	}
 	outcome := claude.Run(ctx, opts, emit)
 	if !outcome.OK {
@@ -93,7 +103,7 @@ func (r *Runner) Run(ctx context.Context, job *client.Job, emit func(client.Even
 		}
 		return client.Result{Status: "done", Summary: outcome.Summary}
 	}
-	patch, err := collect(ctx, tree, job)
+	patch, err := collect(ctx, tree, job, start)
 	if err != nil {
 		return client.Result{Status: "failed", Summary: outcome.Summary, Error: err.Error()}
 	}
@@ -166,6 +176,12 @@ func Prompt(job *client.Job) string {
 	}
 	b.WriteString("\nMake the change, keep it focused on the goal, and run the project's tests if you can. ")
 	b.WriteString("Do not push, open pull requests, or change git remotes: LBW reviews and publishes the work. ")
+	if finish := strings.TrimSpace(job.Instructions); finish != "" {
+		b.WriteString("\n")
+		b.WriteString(finish)
+		b.WriteString("\n")
+		return b.String()
+	}
 	b.WriteString("End with a short summary of what you changed and why.\n")
 	return b.String()
 }
@@ -232,8 +248,11 @@ func applyStart(ctx context.Context, workDir, tree string, job *client.Job) erro
 }
 
 // collect commits whatever Claude Code left uncommitted and returns every
-// commit since the base as one mailbox patch.
-func collect(ctx context.Context, tree string, job *client.Job) (string, error) {
+// commit since the base as one mailbox patch. A patch cannot carry a merge:
+// format-patch would send the merged branch's own commits instead, and they
+// do not apply. So when Claude Code merged or rebased past `start`, the commit
+// LBW sent, everything after it goes as one commit holding the final files.
+func collect(ctx context.Context, tree string, job *client.Job, start string) (string, error) {
 	if _, err := git(ctx, tree, "add", "-A"); err != nil {
 		return "", err
 	}
@@ -243,7 +262,20 @@ func collect(ctx context.Context, tree string, job *client.Job) (string, error) 
 			return "", fmt.Errorf("could not commit the change: %w", err)
 		}
 	}
-	patch, err := git(ctx, tree, "format-patch", "--stdout", job.BaseSHA+"..HEAD")
+	head := "HEAD"
+	if !linear(ctx, tree, start) {
+		message := commitMessage(job)
+		flat, err := gitAuthor(ctx, tree, "commit-tree", "HEAD^{tree}", "-p", start, "-m", message)
+		if err != nil {
+			return "", fmt.Errorf("could not flatten the change: %w", err)
+		}
+		fields := strings.Fields(flat)
+		if len(fields) == 0 {
+			return "", errors.New("could not flatten the change: git wrote no commit")
+		}
+		head = fields[len(fields)-1]
+	}
+	patch, err := git(ctx, tree, "format-patch", "--binary", "--stdout", job.BaseSHA+".."+head)
 	if err != nil {
 		return "", err
 	}
@@ -279,6 +311,16 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 
 // gitAuthor commits as the person's own git identity, with a fallback when
 // this machine has none set.
+// linear says whether HEAD is `start` plus ordinary commits on top of it:
+// no merge, and `start` still in its history.
+func linear(ctx context.Context, dir, start string) bool {
+	if _, err := git(ctx, dir, "merge-base", "--is-ancestor", start, "HEAD"); err != nil {
+		return false
+	}
+	merges, err := git(ctx, dir, "rev-list", "--merges", start+"..HEAD")
+	return err == nil && strings.TrimSpace(merges) == ""
+}
+
 func gitAuthor(ctx context.Context, dir string, args ...string) (string, error) {
 	if name, _ := git(ctx, dir, "config", "user.name"); strings.TrimSpace(name) == "" {
 		args = append([]string{"-c", "user.name=LBW runner", "-c", "user.email=runner@lbw.invalid"}, args...)

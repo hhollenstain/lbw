@@ -27,6 +27,7 @@ from agent_lbw.runtime.improve import (
 )
 from agent_lbw.runtime.merge_fix import Conflict, resolution_notes
 from agent_lbw.runtime.plan import PLAN_SYSTEM, format_plan, parse_plan
+from agent_lbw.runtime.pr_text import PR_TEXT_INSTRUCTIONS
 from agent_lbw.runtime.project import load_project
 from agent_lbw.runtime.runner_hub import MAX_PATCH_BYTES, RunnerHub
 from agent_lbw.runtime.spec import (
@@ -265,13 +266,14 @@ def run_on_runner(
         tip = held
     start_patch = ""
     if tip != base:
-        earlier = run_git(workspace, ["format-patch", "--stdout", f"{base}..{tip}"])
+        earlier = run_git(workspace, ["format-patch", "--binary", "--stdout", f"{base}..{tip}"])
         if earlier.returncode != 0:
             return _failed(task, f"could not read the work on {tip}: {earlier.stderr.strip()}")
         start_patch = earlier.stdout
     result = _dispatch(
         {
             "phase": "build",
+            "instructions": PR_TEXT_INSTRUCTIONS,
             "spec_path": spec_path if task.spec_accepted else "",
             "spec": spec_text if task.spec_accepted else "",
             "plan": task.plan or "",
@@ -785,7 +787,9 @@ def resolve_on_runner(
     """
     workspace = conflict.workspace
     base = published_base(workspace, conflict.head)
-    start = run_git(workspace, ["format-patch", "--stdout", f"{base}..{conflict.snapshot}"])
+    start = run_git(
+        workspace, ["format-patch", "--binary", "--stdout", f"{base}..{conflict.snapshot}"]
+    )
     if start.returncode != 0:
         return "", f"could not send the conflicted files: {start.stderr.strip()}"
     facts = _git_facts(workspace)

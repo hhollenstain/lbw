@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from tests.support import init_git_repo
@@ -287,3 +288,27 @@ def test_discover_repo_skills_skips_lbw_subdirectories(tmp_path: Path) -> None:
     assert "should-discover" in skills
     assert skills["should-discover"].origin == "repo"
     assert "should-not-discover" not in skills
+
+
+def test_repo_skills_skip_ignored_folders_and_nested_repositories(tmp_path: Path) -> None:
+    """Other projects' checkouts kept inside this one do not lend it their skills."""
+
+    def write_skill(folder: Path, name: str) -> None:
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name}.\n---\n\nBody.\n", encoding="utf-8"
+        )
+
+    (tmp_path / ".gitignore").write_text("workspaces/\n", encoding="utf-8")
+    write_skill(tmp_path / "skills" / "mine", "mine")
+    write_skill(tmp_path / "workspaces" / "other" / "skills" / "theirs", "theirs")
+    nested = tmp_path / "vendor" / "lib"
+    write_skill(nested / "skills" / "nested", "nested")
+    subprocess.run(["git", "init", "-q"], cwd=nested, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    repo = {item.name for item in list_skills(tmp_path) if item.origin == "repo"}
+
+    assert "mine" in repo
+    assert "theirs" not in repo
+    assert "nested" not in repo

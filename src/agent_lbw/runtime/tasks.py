@@ -34,7 +34,7 @@ from agent_lbw.progress import (
 from agent_lbw.runtime.improve import CycleResult, SpecRequest, resolve_human_gates, run_cycle
 from agent_lbw.runtime.llm_relay import LlmRelay, relay_client, relay_route
 from agent_lbw.runtime.merge_fix import agent_runner, fix_merge_conflict, resolve_with_agent
-from agent_lbw.runtime.restart import RESTART_PHASES, restart_phase
+from agent_lbw.runtime.restart import RESTART_PHASES, carried_summary, restart_phase
 from agent_lbw.runtime.runner_hub import RunnerHub
 from agent_lbw.runtime.store.local_models import is_local_model
 
@@ -319,6 +319,7 @@ class Task:
                 plan=self.plan,
                 branch=self.branch or "",
                 agent_kind=self.agent_kind,
+                committed=self.committed,
             ),
         }
         if include_logs:
@@ -590,6 +591,7 @@ class TaskManager:
                 plan=old_task.plan,
                 branch=old_task.branch or "",
                 agent_kind=old_task.agent_kind,
+                committed=old_task.committed,
             )
             if phase not in RESTART_PHASES or phase != allowed:
                 raise ValueError(f"this run cannot restart from {phase}")
@@ -602,7 +604,7 @@ class TaskManager:
                 "stage": "approval" if phase == "publish" else "triage",
                 "plan": old_task.plan,
                 "criteria": list(old_task.criteria),
-                "summary": old_task.summary or "",
+                "summary": carried_summary(old_task.summary or ""),
             }
         resume_branch = old_task.branch
         resume_sha = (from_sha or old_task.commit_sha or old_task.sha_before or "").strip() or None

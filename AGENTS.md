@@ -142,8 +142,10 @@ scheduler call.
   The change list shows the latest run, and the change view picks among them.
   A failed run can rerun every phase, or start the next run at the phase that
   failed (`from_phase`, rules in `runtime/restart.py`). A run that failed
-  publishing an approved change starts at publishing. A runner job that failed
-  after its plan was approved starts at building from that plan. The job names
+  publishing an approved change starts at publishing. So does a runner job
+  whose applied commits then failed the tests or publishing: publishing runs
+  the tests again on those commits without building them again. A runner job
+  that failed after its plan was approved starts at building from that plan. The job names
   the phase in `restart_from`, and no other phase is accepted. The result seals the plan, the
   steps, the outcome, and the final diff so history can show the file changes
   after the checkout is gone. Logs are not part of it.
@@ -298,7 +300,15 @@ scheduler call.
   Conflicted files go to the job's model (a runner gets them as an ordinary
   commit, since a patch cannot carry a merge), LBW checks no markers are left
   and writes the merge commit, and it waits for approval.
+- A test or lint command that cannot find uv or Node (npm, npx, pnpm, yarn)
+  runs again with that toolchain installed in a throwaway directory beside the
+  checkout (`runtime/testbed.py`). A Node package without `node_modules` gets
+  its dependencies there too, linked in and listed in `.git/info/exclude`.
 - Publishing commits the project files, pushes that branch, and then opens the pull request. The pull request is not opened while those files are still uncommitted, or before the push succeeds.
+- The agent that builds a change, on LBW or on a runner, ends with the pull
+  request's title and description (`runtime/pr_text.py`): a summary, the
+  changes, how to test, and what to check. LBW adds what it checked itself,
+  the screenshots, and the commit. The title is never the goal's first line.
 - Do not force-push, skip hooks, or rewrite published history.
 - Do not bind-mount this app's `.lbw` over `/workspaces/.lbw`.
 - `lbw init` needs a directory that already exists. Do not document

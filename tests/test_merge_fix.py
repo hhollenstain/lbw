@@ -229,3 +229,86 @@ def test_a_branch_behind_github_catches_up_and_a_diverged_one_stops(
     diverged = _run(_task(work), settings, _never)
     assert diverged.status == "failed"
     assert "have different commits" in diverged.reason
+
+
+def test_a_merge_an_earlier_attempt_left_unfinished_goes_to_the_resolver(
+    settings: Settings, tmp_path: Path, published: list[dict]
+) -> None:
+    """A checkout still mid-merge is cleared, and git's conflicts reach the model."""
+    work, _ = _pull_request(tmp_path, base_edit=("app.py", "greeting = 'hey'\n"))
+    _git(work, "fetch", "-q", "origin")
+    left = subprocess.run(
+        ["git", "merge", "--no-edit", "origin/main"],
+        cwd=work,
+        env={**os.environ, **_ENV},
+        capture_output=True,
+        text=True,
+    )
+    assert left.returncode != 0
+    assert (work / ".git" / "MERGE_HEAD").exists()
+    seen: list[list[str]] = []
+
+    def unresolved(conflict: Conflict) -> tuple[str, str]:
+        seen.append(conflict.files)
+        return "", "the model stopped"
+
+    task = _task(work)
+    result = _run(task, settings, unresolved)
+
+    assert seen == [["app.py"]]
+    assert result.reason == "the model stopped"
+    messages = [event.get("message") or "" for event in task.events]
+    assert "Cleared a merge an earlier attempt left unfinished" in messages
+    assert not (work / ".git" / "MERGE_HEAD").exists()
+    assert published == []
+
+
+def test_a_file_one_side_deleted_goes_to_the_resolver(
+    settings: Settings, tmp_path: Path, published: list[dict]
+) -> None:
+    work, origin = _pull_request(tmp_path, base_edit=("README.md", "# demo\n"))
+    other = tmp_path / "other"
+    _git(other, "rm", "-q", "app.py")
+    _git(other, "commit", "-q", "-m", "Drop app.py")
+    _git(other, "push", "-q", "origin", "main")
+    seen: list[list[str]] = []
+
+    def unresolved(conflict: Conflict) -> tuple[str, str]:
+        seen.append(conflict.files)
+        return "", "the model stopped"
+
+    result = _run(_task(work), settings, unresolved)
+
+    assert seen == [["app.py"]]
+    assert result.reason == "the model stopped"
+    assert not (work / ".git" / "MERGE_HEAD").exists()
+
+
+def test_a_merge_made_here_but_never_pushed_is_published(
+    settings: Settings, tmp_path: Path, published: list[dict]
+) -> None:
+    """An earlier attempt merged and stopped before the push: the next one pushes it."""
+    work, _ = _pull_request(tmp_path, base_edit=("README.md", "# demo\n"))
+    _git(work, "fetch", "-q", "origin")
+    _git(work, "merge", "-q", "--no-ff", "--no-edit", "origin/main")
+    merged = _git(work, "rev-parse", "HEAD")
+
+    result = _run(_task(work, approval_gate="auto"), settings, _never)
+
+    assert result.status == "success"
+    assert published[0]["head"] == merged
+    assert published[0]["reason"] == "merged earlier"
+
+
+def test_a_merge_github_already_has_is_left_alone(
+    settings: Settings, tmp_path: Path, published: list[dict]
+) -> None:
+    work, _ = _pull_request(tmp_path, base_edit=("README.md", "# demo\n"))
+    _git(work, "fetch", "-q", "origin")
+    _git(work, "merge", "-q", "--no-ff", "--no-edit", "origin/main")
+    _git(work, "push", "-q", "origin", BRANCH)
+
+    result = _run(_task(work), settings, _never)
+
+    assert (result.status, result.reason) == ("success", "nothing to merge")
+    assert published == []

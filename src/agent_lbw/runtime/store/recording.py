@@ -607,6 +607,7 @@ def _history_item(root: Path, database_url: str, row: dict) -> dict:
             plan=str(result.get("plan") or ""),
             branch=str(row["branch"] or ""),
             agent_kind=str(row.get("agent_kind") or ""),
+            committed=bool(result.get("committed")),
         ),
         "summary": str(result.get("summary") or ""),
         "reason": str(result.get("reason") or ""),

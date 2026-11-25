@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from agent_lbw.llm.glimmer import uses_atem_tools
+from agent_lbw.runtime.pr_text import PR_TEXT_INSTRUCTIONS
 
 _GENERIC_TOOL_FORMAT = re.compile(
     r"- Prefer native tool calls\..*?then wait\.",
@@ -61,7 +62,8 @@ Rules:
 - Do not invent dependencies, APIs, or files you have not seen.
 - If you cannot complete the goal safely, stop and explain what blocked you.
   Stopping is for a real blocker, not for leaving a stub.
-- When you are done, summarize what changed, how you verified it, and what is still open.
+- When you are done, end with the pull request for the change in the shape
+  the task message gives.
 - Prefer native tool calls. If you cannot, emit JSON like
   {"name": "read_file", "arguments": {"path": "src/app.py"}} or Qwen XML
   <function=name><parameter=key>value</parameter></function>, then wait.
@@ -136,6 +138,8 @@ def user_prompt(goal: str, context: str) -> str:
             "Docker or docs, call run_tests; documented commands must run. "
             "Do not call git_commit. The cycle makes one commit after review. "
             "A later review will reject a PR if the diff does not fulfill this goal.",
+            "",
+            PR_TEXT_INSTRUCTIONS,
         ]
     )
     return "\n".join(parts)
