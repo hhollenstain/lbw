@@ -13,6 +13,7 @@ before pushing it.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,11 @@ from agent_lbw.tools.git import (
 )
 
 _MARKERS = r"^(<<<<<<<|>>>>>>>)( |$)"
+# "CONFLICT (content): Merge conflict in a.py", or
+# "CONFLICT (modify/delete): a.py deleted in HEAD and modified in master."
+_CONFLICT_LINE = re.compile(
+    r"^CONFLICT \([^)]*\): (?:Merge conflict in (.+)|(\S+) deleted in )", re.MULTILINE
+)
 
 
 @dataclass
@@ -75,7 +81,9 @@ def resolution_notes(conflict: Conflict) -> str:
         f"{names}\n\n"
         "Each one has git conflict markers (<<<<<<<, =======, >>>>>>>). Edit only these "
         "files. Keep what both sides meant, remove every marker, and leave the rest of "
-        "the project as it is."
+        "the project as it is. The merge is already in this checkout, and LBW writes "
+        "the merge commit itself. Do not run git merge, rebase, pull, or cherry-pick, "
+        f"and do not merge {conflict.base} again."
     )
 
 
@@ -104,6 +112,15 @@ def fix_merge_conflict(
     if not target or not head:
         return _failed(task, f"could not read {branch} or origin/{base}")
     ancestor = run_git(workspace, ["merge-base", "--is-ancestor", target, head])
+    if ancestor.returncode == 0 and _ahead_of_github(workspace, branch, head):
+        # An earlier attempt merged here and stopped before the push.
+        record_event(
+            kind="step",
+            message=f"{branch} here already has {base} merged, and GitHub does not have it yet",
+        )
+        return _hold_or_publish(
+            workspace, task, settings, store_root, base, branch, head, "merged earlier"
+        )
     if ancestor.returncode == 0:
         record_event(kind="step", message=f"{branch} already has every commit on {base}")
         return CycleResult(
@@ -118,6 +135,8 @@ def fix_merge_conflict(
             branch=branch,
             stage="done",
         )
+    if _abort(workspace):
+        record_event(kind="step", message="Cleared a merge an earlier attempt left unfinished")
     cleared = stash_local_edits(workspace, f"lbw: stashed before merging {base}")
     if not cleared.ok:
         return _failed(task, f"could not set local edits aside: {cleared.output}")
@@ -127,7 +146,7 @@ def fix_merge_conflict(
     if merged.returncode == 0:
         record_event(kind="step", message=f"Merged {base} into {branch} with no conflicts")
         return _publish(workspace, task, settings, store_root, base, "merged with no conflicts")
-    files = _unmerged(workspace)
+    files = _unmerged(workspace, f"{merged.stdout}\n{merged.stderr}")
     if not files:
         _abort(workspace)
         output = (merged.stderr or merged.stdout).strip()
@@ -167,18 +186,44 @@ def fix_merge_conflict(
     if diff.returncode == 0:
         for event in file_events_from_diff(diff.stdout):
             record_event(**event)
+    summary = f"Merged {base} into {branch} and resolved conflicts in {', '.join(files)}."
+    return _hold_or_publish(
+        workspace,
+        task,
+        settings,
+        store_root,
+        base,
+        branch,
+        merge_sha,
+        "resolved merge conflicts",
+        summary=summary,
+    )
+
+
+def _hold_or_publish(
+    workspace: Workspace,
+    task,
+    settings: Settings,
+    store_root: Path | None,
+    base: str,
+    branch: str,
+    merge_sha: str,
+    reason: str,
+    *,
+    summary: str = "",
+) -> CycleResult:
+    """Push the merge, or wait for a person to approve it first when the job asks."""
     if task.approval_gate != "ask":
-        return _publish(workspace, task, settings, store_root, base, "resolved merge conflicts")
+        return _publish(workspace, task, settings, store_root, base, reason)
     record_event(
         kind="step",
         message="Waiting for you to approve the merge",
         approved_sha=merge_sha,
     )
-    summary = f"Merged {base} into {branch} and resolved conflicts in {', '.join(files)}."
     return CycleResult(
         status="waiting",
         goal=task.goal,
-        summary=summary,
+        summary=summary or f"Merged {base} into {branch}. GitHub does not have the merge yet.",
         tests_passed=None,
         committed=True,
         published=False,
@@ -187,6 +232,14 @@ def fix_merge_conflict(
         stage="approval",
         branch=branch,
     )
+
+
+def _ahead_of_github(workspace: Workspace, branch: str, head: str) -> bool:
+    """The branch here has commits the pull request's branch on GitHub does not."""
+    remote = _sha(workspace, f"refs/remotes/origin/{branch}")
+    if not remote or remote == head:
+        return False
+    return run_git(workspace, ["merge-base", "--is-ancestor", remote, head]).returncode == 0
 
 
 def resolve_with_agent(conflict: Conflict, run_agent: Callable[[str], None]) -> tuple[str, str]:
@@ -353,14 +406,29 @@ def _move_branch(workspace: Workspace, branch: str, sha: str) -> str:
     return "" if moved.returncode == 0 else (moved.stderr or moved.stdout).strip()
 
 
-def _abort(workspace: Workspace) -> None:
-    if run_git(workspace, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).returncode == 0:
-        run_git(workspace, ["merge", "--abort"])
+def _abort(workspace: Workspace) -> bool:
+    """Leave no merge in progress. Returns whether one was."""
+    if run_git(workspace, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).returncode != 0:
+        return False
+    if run_git(workspace, ["merge", "--abort"]).returncode != 0:
+        run_git(workspace, ["reset", "--merge"])
+    return True
 
 
-def _unmerged(workspace: Workspace) -> list[str]:
-    listed = run_git(workspace, ["diff", "--name-only", "--diff-filter=U"])
-    return [line for line in listed.stdout.splitlines() if line.strip()]
+def _unmerged(workspace: Workspace, output: str = "") -> list[str]:
+    """The files git could not merge: the index's conflict entries, and each one
+    the merge named, such as both sides changing it or one side deleting it."""
+    found: list[str] = []
+    listed = run_git(workspace, ["ls-files", "--unmerged", "-z"])
+    for entry in listed.stdout.split("\0"):
+        name = entry.split("\t", 1)[1] if "\t" in entry else ""
+        if name and name not in found:
+            found.append(name)
+    for match in _CONFLICT_LINE.finditer(output or ""):
+        name = (match.group(1) or match.group(2) or "").strip()
+        if name and name not in found and (workspace.root / name).exists():
+            found.append(name)
+    return found
 
 
 def _names(workspace: Workspace, left: str, right: str) -> list[str]:

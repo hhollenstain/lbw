@@ -7,7 +7,11 @@ from dataclasses import dataclass
 
 from agent_lbw.progress import record_test_run
 from agent_lbw.runtime.project import configured_value, load_project
-from agent_lbw.runtime.testbed import run_in_testbed
+from agent_lbw.runtime.testbed import (
+    run_in_testbed,
+    run_with_throwaway_toolchains,
+    toolchain_missing,
+)
 from agent_lbw.sandbox import Workspace
 from agent_lbw.tools.base import ToolResult, ToolSpec, object_schema
 from agent_lbw.tools.codechange import code_fingerprint, reused_check_result
@@ -56,6 +60,9 @@ _RUNNER_MISSING = re.compile(
 def runner_unavailable(output: str) -> bool:
     """The test command never started a runner. That is not a failed test."""
     text = output or ""
+    if toolchain_missing(text):
+        # A later step of the command, such as npm after pytest, could not start.
+        return True
     if _SUITE_STARTED.search(text):
         return False
     return _RUNNER_MISSING.search(text) is not None
@@ -118,6 +125,12 @@ def run_project_tests(
     started = time.perf_counter()
     result = run_command(workspace, command, timeout_seconds)
     result = _reject_vacuous_pass(result)
+    if not result.ok and toolchain_missing(result.output or "", workspace.root):
+        prepared = run_with_throwaway_toolchains(
+            workspace, command, result.output or "", timeout_seconds
+        )
+        if prepared is not None:
+            result = _reject_vacuous_pass(prepared)
     if not result.ok and runner_unavailable(result.output or ""):
         prepared = run_in_testbed(workspace, command, result.output or "", timeout_seconds)
         if prepared is not None:

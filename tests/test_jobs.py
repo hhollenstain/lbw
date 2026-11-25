@@ -364,6 +364,17 @@ def test_only_a_failed_run_offers_a_phase_to_restart_from(tmp_path: Path) -> Non
         ({"status": "failed", "decision": "build", **runner_plan}, "build"),
         ({"status": "failed", "decision": "build", "plan": "Plan:\n1. Write it"}, ""),
         ({"status": "failed", "decision": "build", "agent_kind": "claude_code"}, ""),
+        (
+            {
+                "status": "failed",
+                "decision": "build",
+                "agent_kind": "claude_code",
+                "committed": True,
+                "branch": "lbw/runner-1",
+            },
+            "publish",
+        ),
+        ({"status": "failed", "decision": "build", "committed": True, "branch": "lbw/x"}, ""),
         ({"status": "failed", "decision": "approve", "branch": "lbw/note"}, "publish"),
         ({"status": "success", "decision": "approve", "branch": "lbw/note"}, ""),
         ({"status": "failed"}, ""),

@@ -9,7 +9,13 @@ from pathlib import Path
 
 from agent_lbw.progress import record_lint_run
 from agent_lbw.runtime.project import configured_value, load_project
-from agent_lbw.runtime.testbed import ruff_unavailable, run_lint_in_testbed, run_with_throwaway_ruff
+from agent_lbw.runtime.testbed import (
+    ruff_unavailable,
+    run_lint_in_testbed,
+    run_with_throwaway_ruff,
+    run_with_throwaway_toolchains,
+    toolchain_missing,
+)
 from agent_lbw.sandbox import Workspace
 from agent_lbw.tools.base import ToolResult, ToolSpec, object_schema
 from agent_lbw.tools.codechange import code_fingerprint, reused_check_result
@@ -157,6 +163,12 @@ def run_project_lint(
         return reused_check_result("run_lint", cached.result)
     started = time.perf_counter()
     result = run_command(workspace, command, timeout_seconds)
+    if not result.ok and toolchain_missing(result.output or "", workspace.root):
+        prepared = run_with_throwaway_toolchains(
+            workspace, command, result.output or "", timeout_seconds
+        )
+        if prepared is not None:
+            result = prepared
     if not result.ok and ruff_unavailable(result.output or ""):
         prepared = run_lint_in_testbed(workspace, command, result.output or "", timeout_seconds)
         if prepared is not None:

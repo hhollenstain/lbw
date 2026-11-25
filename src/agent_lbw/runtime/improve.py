@@ -17,6 +17,7 @@ from agent_lbw.progress import bind_progress, current_events, record_event, rese
 from agent_lbw.runtime.importer import goal_headline
 from agent_lbw.runtime.plan import GoalPlan, PlanStep, format_plan, ground_plan, plan_goal
 from agent_lbw.runtime.polloco_review import blocking_review_findings
+from agent_lbw.runtime.pr_text import written_pull_request
 from agent_lbw.runtime.project import (
     DEFAULT_MAX_REPAIR_ATTEMPTS,
     ProjectConfig,
@@ -1931,11 +1932,13 @@ def _publish_pull_request(
 
     The pull request is not opened until the push succeeds. ``.lbw/`` and
     ``history.json`` stay out of the commit. A protected branch is not pushed.
-    ``title`` names the commit and the pull request instead of the summary's
-    first line. ``keep_text`` leaves an open pull request's title and text as
+    The pull request the agent wrote in its summary names and describes it.
+    Without one, ``title`` names the commit and the pull request instead of the
+    summary's first line. ``keep_text`` leaves an open pull request's title and text as
     they are and comments on it instead, for a fix pushed onto it.
     """
-    message = title or _commit_message(goal, summary)
+    written = written_pull_request(summary)
+    message = written.title if written is not None else title or _commit_message(goal, summary)
     branch = current_branch(workspace)
     if is_protected_branch(branch):
         if committed:
@@ -3399,6 +3402,9 @@ def request_title(goal: str) -> str:
 
 
 def _commit_message(goal: str, summary: str) -> str:
+    written = written_pull_request(summary)
+    if written is not None:
+        return written.title
     request = _user_request(goal)
     summary_line = summary.strip().splitlines()[0] if summary.strip() else ""
     if (
@@ -3491,6 +3497,13 @@ def _pr_body(
         tests_line = "- [ ] Project tests failed locally — do not merge until green"
     else:
         tests_line = "- [ ] No project test command; verify manually"
+    shots = [Path(name).name for name in (screenshots or []) if str(name).strip()]
+    hosted = (image_base or "").rstrip("/")
+    written = written_pull_request(summary)
+    if written is not None:
+        lines = [written.body, "", "## Checked by LBW", "", tests_line]
+        _append_pr_footer(lines, shots, hosted, commit_sha, branch)
+        return "\n".join(lines)
 
     changes_section = _extract_changes_from_summary(summary)
     changed = changes_section if changes_section else ((summary or "").strip() or request)
@@ -3527,8 +3540,17 @@ def _pr_body(
             lines.append(f"{i}. {step}")
         lines.append("")
 
-    shots = [Path(name).name for name in (screenshots or []) if str(name).strip()]
-    hosted = (image_base or "").rstrip("/")
+    _append_pr_footer(lines, shots, hosted, commit_sha, branch)
+    return "\n".join(lines)
+
+
+def _append_pr_footer(
+    lines: list[str],
+    shots: list[str],
+    hosted: str,
+    commit_sha: str | None,
+    branch: str,
+) -> None:
     if shots and hosted:
         lines.extend(["", "## Screenshots", ""])
         for name in shots:
@@ -3538,7 +3560,6 @@ def _pr_body(
     if branch:
         lines.append(f"Branch: `{branch}`")
     lines.extend(["", CO_AUTHORED_BY])
-    return "\n".join(lines)
 
 
 def _extract_changes_from_summary(summary: str | None) -> str:

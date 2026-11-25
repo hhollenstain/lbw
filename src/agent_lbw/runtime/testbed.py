@@ -5,7 +5,8 @@ are. Dependencies are installed beside the checkout, then the suite or linter
 runs with that tool. When the language tool is not on the machine, the same
 install happens inside a short-lived container. A missing ruff binary is
 installed the same way, and the container that already contains ruff has no
-network.
+network. A command that could not find a whole toolchain, such as uv or npm,
+runs again with that toolchain installed beside the checkout.
 """
 
 from __future__ import annotations
@@ -17,8 +18,10 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from agent_lbw.progress import record_event
@@ -860,3 +863,298 @@ def _discard(bed: Path) -> None:
 
 def _q(value: object) -> str:
     return shlex.quote(str(value))
+
+
+@dataclass(frozen=True)
+class _Toolchain:
+    name: str
+    package: str
+    commands: tuple[str, ...]
+    # Commands that run through another one, such as pnpm through corepack.
+    through: tuple[tuple[str, str], ...] = ()
+
+
+_TOOLCHAINS = (
+    _Toolchain("uv", "uv", ("uv", "uvx")),
+    _Toolchain(
+        "Node",
+        "nodejs-wheel",
+        ("node", "npm", "npx", "corepack"),
+        through=(("pnpm", "corepack pnpm"), ("yarn", "corepack yarn")),
+    ),
+)
+_BY_COMMAND = {
+    command: chain
+    for chain in _TOOLCHAINS
+    for command in (*chain.commands, *(name for name, _ in chain.through))
+}
+_NAME = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "make"})
+# "make: uv: No such file or directory", "/bin/sh: 1: npm: not found", or
+# "bash: npm: command not found".
+_MISSING = re.compile(
+    rf"(?im)(?:^|[\s:/])({_NAME}):\s*(?:command not found|not found|No such file or directory)\b"
+)
+# "zsh: command not found: npm".
+_MISSING_AFTER = re.compile(rf"(?im)command not found:\s*({_NAME})\b")
+_NODE_MISSING_MODULE = re.compile(r"Cannot find module|ERR_MODULE_NOT_FOUND|Cannot find package")
+_SKIP_DIRS = {"node_modules", ".git", ".lbw", ".venv", "venv", "dist", "build"}
+_LOCKS = ("package-lock.json", "pnpm-lock.yaml", "yarn.lock")
+_ROUNDS = len(_TOOLCHAINS) + 1
+
+
+def missing_commands(output: str) -> list[str]:
+    """Each command the shell said it could not find, in the order it said so."""
+    text = output or ""
+    matches = [*_MISSING.finditer(text), *_MISSING_AFTER.finditer(text)]
+    found: list[str] = []
+    for match in sorted(matches, key=lambda item: item.start(1)):
+        name = match.group(1)
+        if name not in found and name not in _SHELLS:
+            found.append(name)
+    return found
+
+
+def toolchain_missing(output: str, root: Path | None = None) -> bool:
+    """The command called a toolchain this machine does not have, such as uv or npm.
+
+    With the checkout's root, a Node package whose dependencies are not
+    installed counts too.
+    """
+    if any(name in _BY_COMMAND for name in missing_commands(output)):
+        return True
+    return root is not None and _needs_node_modules(root, output, {})
+
+
+def run_with_throwaway_toolchains(
+    workspace: Workspace,
+    command: str,
+    output: str,
+    timeout_seconds: int,
+) -> ToolResult | None:
+    """Install what the command could not find and run it again.
+
+    Returns None when nothing could be installed, so the caller keeps the
+    first result.
+    """
+    try:
+        return _install_and_rerun(workspace, command, output, timeout_seconds)
+    except OSError as exc:
+        record_event(kind="step", message=f"Could not set up a throwaway toolchain: {exc}")
+        return None
+
+
+def _install_and_rerun(
+    workspace: Workspace,
+    command: str,
+    output: str,
+    timeout_seconds: int,
+) -> ToolResult | None:
+    provided: dict[str, Path] = {}
+    linked = False
+    result: ToolResult | None = None
+    for _ in range(_ROUNDS):
+        added = False
+        for name in missing_commands(output):
+            chain = _BY_COMMAND.get(name)
+            if chain is None or chain.name in provided:
+                continue
+            shim = _ensure(workspace, chain, timeout_seconds)
+            if shim is None:
+                record_event(kind="step", message=f"Could not install a throwaway {chain.name}.")
+                return result
+            provided[chain.name] = shim
+            added = True
+        if not linked and _needs_node_modules(workspace.root, output, provided):
+            linked = True
+            added = _link_node_modules(workspace, provided, timeout_seconds) or added
+        if not added:
+            return result
+        labels = ", ".join(sorted(provided))
+        record_event(kind="step", message=f"Running the command again with the throwaway {labels}.")
+        result = run_command(workspace, _rerun(workspace.root, provided, command), timeout_seconds)
+        if result.ok:
+            return result
+        output = result.output or ""
+    return result
+
+
+def _ensure(workspace: Workspace, chain: _Toolchain, timeout_seconds: int) -> Path | None:
+    """A directory holding only this toolchain's commands, so the project's python stays first."""
+    bed = _bed(workspace.root, chain.package)
+    tool = bed / "tool"
+    shim = bed / "shim"
+    if all((shim / name).exists() for name in chain.commands):
+        record_event(kind="step", message=f"Reusing the throwaway {chain.name}.")
+        return shim
+    record_event(kind="step", message=f"Installing a throwaway {chain.name} outside the project.")
+    _discard(bed)
+    python = tool / "bin" / "python"
+    command = (
+        f"env -u VIRTUAL_ENV {_q(sys.executable)} -m venv {_q(tool)} && "
+        f"env -u VIRTUAL_ENV {_q(python)} -m pip install --no-input --no-cache-dir "
+        f"--disable-pip-version-check --only-binary=:all: {_q(chain.package)}"
+    )
+    installed = run_command(workspace, command, timeout_seconds)
+    binaries = [tool / "bin" / name for name in chain.commands]
+    if not installed.ok or not all(path.is_file() for path in binaries):
+        _discard(bed)
+        return None
+    shim.mkdir(parents=True, exist_ok=True)
+    for path in binaries:
+        (shim / path.name).symlink_to(path)
+    for name, runs in chain.through:
+        script = shim / name
+        script.write_text(f'#!/bin/sh\nexec {runs} "$@"\n', encoding="utf-8")
+        script.chmod(0o755)
+    return shim
+
+
+def _rerun(root: Path, provided: dict[str, Path], command: str) -> str:
+    path = ":".join(_q(shim) for shim in provided.values())
+    exports = [f"PATH={path}:$PATH"]
+    if "uv" in provided:
+        bed = _bed(root, "uv")
+        exports += [
+            f"UV_PROJECT_ENVIRONMENT={_q(bed / 'env')}",
+            f"UV_CACHE_DIR={_q(bed / 'cache')}",
+        ]
+    if "Node" in provided:
+        bed = _bed(root, "nodejs-wheel")
+        exports += [
+            f"npm_config_cache={_q(bed / 'cache')}",
+            f"COREPACK_HOME={_q(bed / 'corepack')}",
+        ]
+    return f"unset VIRTUAL_ENV && export {' '.join(exports)} && {command}"
+
+
+def _package_dirs(root: Path) -> list[Path]:
+    """Directories with a package.json and a lock file whose dependencies LBW should
+    install, three levels deep: no node_modules, or LBW's own link to an install
+    that is gone or older than the manifest."""
+    found: list[Path] = []
+    queue = [(root, 0)]
+    while queue:
+        folder, depth = queue.pop(0)
+        if (folder / "package.json").is_file() and any(
+            (folder / lock).is_file() for lock in _LOCKS
+        ):
+            link = folder / "node_modules"
+            if not link.exists() and not link.is_symlink():
+                found.append(folder)
+            elif _our_link(link) and not _current_install(root, folder):
+                found.append(folder)
+        if depth >= 3:
+            continue
+        try:
+            children = sorted(item for item in folder.iterdir() if item.is_dir())
+        except OSError:
+            continue
+        queue.extend(
+            (child, depth + 1)
+            for child in children
+            if child.name not in _SKIP_DIRS and not child.name.startswith(".")
+        )
+    return found
+
+
+def _needs_node_modules(root: Path, output: str, provided: dict[str, Path]) -> bool:
+    """npm ran, and a missing command or module says the dependencies are not installed."""
+    if "Node" not in provided and shutil.which("npm") is None:
+        return False
+    if not _package_dirs(root):
+        return False
+    missing = [name for name in missing_commands(output) if name not in _BY_COMMAND]
+    return bool(missing) or _NODE_MISSING_MODULE.search(output or "") is not None
+
+
+def _modules_bed(root: Path, folder: Path) -> Path:
+    relative = folder.relative_to(root).as_posix()
+    return _bed(root, f"node-modules-{hashlib.sha256(relative.encode()).hexdigest()[:12]}")
+
+
+def _manifest_stamp(folder: Path) -> str:
+    return _stamp([folder / name for name in ("package.json", *_LOCKS)])
+
+
+def _current_install(root: Path, folder: Path) -> bool:
+    bed = _modules_bed(root, folder)
+    modules = bed / "node_modules"
+    return modules.is_dir() and _reusable(bed, _manifest_stamp(folder), modules)
+
+
+def _our_link(link: Path) -> bool:
+    """A node_modules link LBW made into its throwaway directory, even a broken one."""
+    if not link.is_symlink():
+        return False
+    try:
+        target = Path(os.readlink(link))
+    except OSError:
+        return False
+    return any(part.startswith("lbw-testbed-") for part in target.parts)
+
+
+def _link_node_modules(
+    workspace: Workspace, provided: dict[str, Path], timeout_seconds: int
+) -> bool:
+    linked = False
+    root = workspace.root
+    for folder in _package_dirs(root):
+        relative = folder.relative_to(root)
+        bed = _modules_bed(root, folder)
+        stamp = _manifest_stamp(folder)
+        modules = bed / "node_modules"
+        if not _current_install(root, folder):
+            record_event(
+                kind="step",
+                message=f"Installing {relative or '.'} dependencies outside the project.",
+            )
+            _discard(bed)
+            bed.mkdir(parents=True)
+            for name in ("package.json", *_LOCKS):
+                if (folder / name).is_file():
+                    shutil.copy2(folder / name, bed / name)
+            install = _node_install_command(folder)
+            ran = run_command(
+                workspace, _rerun(root, provided, f"cd {_q(bed)} && {install}"), timeout_seconds
+            )
+            if not ran.ok or not modules.is_dir():
+                record_event(
+                    kind="step", message=f"Could not install {relative or '.'} dependencies."
+                )
+                _discard(bed)
+                continue
+            _write_stamp(bed, stamp)
+        _exclude(root, relative / "node_modules")
+        link = folder / "node_modules"
+        if _our_link(link):
+            link.unlink()
+        link.symlink_to(modules, target_is_directory=True)
+        linked = True
+    return linked
+
+
+def _node_install_command(folder: Path) -> str:
+    if (folder / "pnpm-lock.yaml").is_file():
+        return "corepack pnpm install --frozen-lockfile"
+    if (folder / "yarn.lock").is_file():
+        return "corepack yarn install --frozen-lockfile"
+    return "npm ci --no-audit --no-fund"
+
+
+def _exclude(root: Path, relative: Path) -> None:
+    """Keep the link out of every commit, without editing the project's .gitignore."""
+    git_dir = root / ".git"
+    if not git_dir.is_dir():
+        return
+    exclude = git_dir / "info" / "exclude"
+    line = "/" + relative.as_posix()
+    try:
+        current = exclude.read_text(encoding="utf-8") if exclude.is_file() else ""
+    except OSError:
+        return
+    if line in current.splitlines():
+        return
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    prefix = "" if not current or current.endswith("\n") else "\n"
+    exclude.write_text(f"{current}{prefix}{line}\n", encoding="utf-8")

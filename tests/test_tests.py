@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 
+from tests.support import init_git_repo
+
 from agent_lbw.progress import bind_progress, current_events, reset_progress
+from agent_lbw.runtime.testbed import toolchain_missing
 from agent_lbw.sandbox import Workspace
 from agent_lbw.tools.base import ToolResult
+from agent_lbw.tools.git import run_git
+from agent_lbw.tools.shell import run_command
 from agent_lbw.tools.tests import run_project_tests, runner_unavailable
 
 _BED = re.compile(r"(lbw-testbed-[0-9a-f]{12}-[a-z0-9-]+)")
@@ -123,6 +129,133 @@ def test_missing_pytest_builds_a_throwaway_environment(tmp_path: Path, monkeypat
     assert "uv run" not in rerun
     assert "make" not in rerun
     assert any("throwaway Python environment" in message for message in steps)
+
+
+def test_a_missing_toolchain_is_not_a_failed_suite() -> None:
+    for output in (
+        "uv run ruff check .\nmake: uv: No such file or directory\nmake: *** [test] Error 127\n",
+        "/bin/sh: 1: uv: not found\n",
+        "bash: npm: command not found\n",
+        "zsh: command not found: npx\n",
+        "27 passed, 1 skipped in 0.45s\ncd frontend && npm test\n/bin/sh: 1: npm: not found\n",
+    ):
+        assert toolchain_missing(output), output
+        assert runner_unavailable(output), output
+    assert not toolchain_missing("error: uvicorn: not found in requirements\n")
+    assert not toolchain_missing("tests/test_uv.py::test_run FAILED\n")
+
+
+_FAKE_UV = '#!/bin/sh\necho "uv $* env=$UV_PROJECT_ENVIRONMENT"\necho "27 passed in 0.45s"\n'
+_FAKE_NPM = """#!/bin/sh
+case "$1" in
+  ci) mkdir -p node_modules/.bin && echo "added 1 package"; exit 0 ;;
+  run) [ -d node_modules ] && echo "typecheck ok" && exit 0
+       echo "sh: 1: tsc: not found" >&2; exit 127 ;;
+  test) echo "5 passed"; exit 0 ;;
+esac
+exit 1
+"""
+_MAKE_TEST = """#!/bin/sh
+set -e
+# Only the throwaway toolchains and the system directories, never this machine's own uv or npm.
+PATH="$(printf %s "$PATH" | tr ':' '\\n' | grep lbw-testbed | tr '\\n' ':')/usr/bin:/bin"
+command -v uv >/dev/null || { echo "make: uv: No such file or directory" >&2; exit 2; }
+uv run pytest
+cd frontend
+command -v npm >/dev/null || { echo "/bin/sh: 1: npm: not found" >&2; exit 127; }
+npm run typecheck && npm test
+"""
+
+
+def _fake_pip(installs: list[str]):
+    def fake(workspace, command, timeout, allow_publish=False):
+        if "pip install" not in command:
+            return run_command(workspace, command, timeout)
+        installs.append(command)
+        match = re.search(
+            r"(\S*lbw-testbed-[0-9a-f]{12}-(uv|nodejs-wheel))/tool/bin/python", command
+        )
+        assert match is not None, command
+        bin_dir = Path(match.group(1).strip("'")) / "tool" / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        names = ["uv", "uvx"] if match.group(2) == "uv" else ["node", "npm", "npx", "corepack"]
+        for name in names:
+            body = {"uv": _FAKE_UV, "npm": _FAKE_NPM}.get(name, "#!/bin/sh\nexit 0\n")
+            (bin_dir / name).write_text(body, encoding="utf-8")
+            (bin_dir / name).chmod(0o755)
+        return ToolResult(True, "installed")
+
+    return fake
+
+
+def test_missing_uv_and_npm_install_outside_the_checkout_and_rerun(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """make test calls uv, then npm in a frontend without node_modules, and neither is here."""
+    script = tmp_path / "make-test.sh"
+    script.write_text(_MAKE_TEST, encoding="utf-8")
+    script.chmod(0o755)
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text('{"name": "ui"}\n', encoding="utf-8")
+    (frontend / "package-lock.json").write_text('{"lockfileVersion": 3}\n', encoding="utf-8")
+    init_git_repo(tmp_path)
+    installs: list[str] = []
+    monkeypatch.setattr("agent_lbw.runtime.testbed.run_command", _fake_pip(installs))
+    token = bind_progress()
+    try:
+        result = run_project_tests(Workspace(tmp_path), "./make-test.sh", 60, phase="after")
+        steps = [event.get("message", "") for event in current_events() if event["kind"] == "step"]
+    finally:
+        reset_progress(token)
+    assert result.ok, result.output
+    assert "27 passed" in result.output
+    assert "typecheck ok" in result.output and "5 passed" in result.output
+    assert [("nodejs-wheel" in command) for command in installs] == [False, True]
+    assert all(f"{sys.executable} -m venv" in command for command in installs)
+    link = frontend / "node_modules"
+    assert link.is_symlink()
+    assert "lbw-testbed-" in str(link.resolve())
+    assert not (tmp_path / ".venv").exists()
+    exclude = (tmp_path / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    assert "/frontend/node_modules" in exclude.splitlines()
+    status = run_git(Workspace(tmp_path), ["status", "--porcelain"]).stdout
+    assert "node_modules" not in status
+    assert any("throwaway Node" in message for message in steps)
+    assert any("frontend dependencies outside the project" in message for message in steps)
+
+
+def test_a_broken_link_lbw_made_is_installed_again_and_replaced(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The manifest changed and the old install is gone: LBW installs it again."""
+    script = tmp_path / "make-test.sh"
+    script.write_text(_MAKE_TEST, encoding="utf-8")
+    script.chmod(0o755)
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text('{"name": "ui"}\n', encoding="utf-8")
+    (frontend / "package-lock.json").write_text('{"lockfileVersion": 3}\n', encoding="utf-8")
+    init_git_repo(tmp_path)
+    gone = Path(tempfile.gettempdir()) / "lbw-testbed-000000000000-node-modules-gone"
+    (frontend / "node_modules").symlink_to(gone / "node_modules", target_is_directory=True)
+    monkeypatch.setattr("agent_lbw.runtime.testbed.run_command", _fake_pip([]))
+
+    result = run_project_tests(Workspace(tmp_path), "./make-test.sh", 60, phase="after")
+
+    assert result.ok, result.output
+    assert "typecheck ok" in result.output
+    link = frontend / "node_modules"
+    assert link.is_symlink() and link.resolve().is_dir()
+    assert "gone" not in str(link.resolve())
+
+
+def test_a_real_node_modules_folder_is_left_alone(tmp_path: Path) -> None:
+    frontend = tmp_path / "frontend"
+    (frontend / "node_modules").mkdir(parents=True)
+    (frontend / "package.json").write_text('{"name": "ui"}\n', encoding="utf-8")
+    (frontend / "package-lock.json").write_text('{"lockfileVersion": 3}\n', encoding="utf-8")
+    assert not toolchain_missing("sh: 1: tsc: not found\n", tmp_path)
 
 
 def test_locked_project_syncs_extras_outside_the_checkout(tmp_path: Path, monkeypatch) -> None:

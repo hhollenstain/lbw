@@ -9,6 +9,15 @@ if [ -n "$FAKE_CLAUDE_FAIL" ]; then
   echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":""}'
   exit 1
 fi
+if [ -n "$FAKE_CLAUDE_MERGE" ]; then
+  # Merge a side commit, as Claude Code may when it sees conflict markers.
+  here=$(git rev-parse HEAD)
+  printf 'side\n' > side.txt && git add side.txt
+  git -c user.name=Fake -c user.email=fake@example.com commit -q -m side
+  side=$(git rev-parse HEAD)
+  git reset -q --hard "$here"
+  git -c user.name=Fake -c user.email=fake@example.com merge -q --no-ff --no-edit "$side"
+fi
 printf 'hello from claude\n' > hello.txt
 cat <<'JSON'
 {"type":"system","subtype":"init","model":"claude-sonnet-4-5","claude_code_version":"2.1.0"}
