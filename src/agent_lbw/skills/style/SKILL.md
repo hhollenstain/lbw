@@ -95,6 +95,9 @@ muted Details link with an arrow at the right that turns `--navy` and
 underlines on hover. Passed is a filled `--ok` dot with a check, failed a
 filled `--bad` dot with an ×, and running a `--warn` ring that pulses. A
 failed check has a checkbox before its icon for Investigate failures.
+A merge conflict with the base branch is the first row, drawn as a failed
+check without a checkbox, and Fix merge conflict sits above Investigate
+failures with a hint under it.
 
 The proposal form draws the path a change will take with the same flow
 track, in a `Path` panel above its checkboxes. A checkpoint a person stops

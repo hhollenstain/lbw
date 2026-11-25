@@ -666,6 +666,130 @@ def test_a_runner_build_that_failed_restarts_at_build_with_the_approved_plan(
         manager.shutdown(wait=False)
 
 
+def test_a_runner_resolves_a_merge_conflict_and_lbw_writes_the_merge(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_lbw.runtime import merge_fix
+    from agent_lbw.runtime.tasks import Task
+
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    _repo(workspace)
+    _git(workspace, "remote", "add", "origin", str(origin))
+    (workspace / "app.py").write_text("greeting = 'hi'\n", encoding="utf-8")
+    _git(workspace, "add", "app.py")
+    _git(workspace, "commit", "-q", "-m", "app")
+    _git(workspace, "push", "-q", "origin", "main")
+    branch = "lbw/runner-feedface"
+    _git(workspace, "checkout", "-q", "-b", branch)
+    (workspace / "app.py").write_text("greeting = 'hello'\n", encoding="utf-8")
+    _git(workspace, "commit", "-q", "-am", "Say hello")
+    _git(workspace, "push", "-q", "origin", branch)
+    head = _git(workspace, "rev-parse", "HEAD").strip()
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", str(origin), str(other))
+    (other / "app.py").write_text("greeting = 'hey'\n", encoding="utf-8")
+    _git(other, "commit", "-q", "-am", "Say hey")
+    _git(other, "push", "-q", "origin", "main")
+    main = _git(other, "rev-parse", "HEAD").strip()
+
+    published: list[str] = []
+
+    def publish(root, settings, goal, summary, **kwargs):
+        published.append(_git(Path(root), "rev-parse", "HEAD").strip())
+        return CycleResult(
+            status="success",
+            goal=goal,
+            summary=summary,
+            tests_passed=None,
+            committed=True,
+            published=True,
+            commit_sha=published[-1],
+            reason=kwargs["reason"],
+            pr_url="https://github.com/acme/demo/pull/7",
+            stage="done",
+        )
+
+    monkeypatch.setattr(merge_fix, "publish_runner_change", publish)
+    manager = TaskManager(settings)
+    client = TestClient(create_app(manager, default_workspace=workspace))
+    try:
+        client.get("/api/directory")
+        model_id = _runner_model(client, workspace, workspace)
+        token = _link(client)
+        _beat(client, token)
+        auth = {"Authorization": f"Bearer {token}"}
+        account = client.get("/api/account").json()
+        person = account["current_user_id"]
+        first = Task(
+            id="feedface0000",
+            workspace=str(workspace),
+            goal="Say hello",
+            auto_commit=True,
+            create_pr=True,
+            model_name="opus",
+            model_base_url="",
+            model_api_key="",
+            status="success",
+            branch=branch,
+            pr_url="https://github.com/acme/demo/pull/7",
+            model_id=model_id,
+            agent_kind="claude_code",
+            requester_id=person,
+            actor_id=person,
+            tenant_id=account["org"]["id"],
+        )
+        with manager._lock:
+            manager._tasks[first.id] = first
+        run = manager.rerun(
+            first.id,
+            goal="Merge main into the pull request",
+            actor_id=person,
+            triage_gate="auto",
+            approval_gate="ask",
+            ci_checks=[],
+            merge_base="main",
+        )
+        assert run is not None
+        job = _lease(client, auth)
+        assert job["phase"] == "build"
+        assert job["base_sha"] == head
+        assert "<<<<<<<" in job["start_patch"]
+        assert "- app.py" in job["review_notes"]
+
+        clone = tmp_path / "runner-worktree"
+        _git(tmp_path, "clone", "-q", str(origin), str(clone))
+        _git(clone, "checkout", "-q", head)
+        patch_file = tmp_path / "start.mbox"
+        patch_file.write_text(job["start_patch"], encoding="utf-8")
+        _git(clone, "am", "-q", str(patch_file))
+        (clone / "app.py").write_text("greeting = 'hello, hey'\n", encoding="utf-8")
+        _git(clone, "commit", "-q", "-am", "Resolve the greeting")
+        patch = _git(clone, "format-patch", "--stdout", f"{head}..HEAD")
+        _finish(client, auth, job, "Resolved app.py", patch)
+
+        waiting = _wait_stage(client, run.id, "approval")
+        merge = _git(workspace, "rev-parse", "HEAD").strip()
+        assert _git(workspace, "rev-list", "--parents", "-n", "1", merge).split()[1:] == [
+            head,
+            main,
+        ]
+        assert _git(workspace, "show", f"{merge}:app.py") == "greeting = 'hello, hey'\n"
+        assert any(event.get("approved_sha") == merge for event in waiting["events"])
+        assert published == []
+
+        approved = client.post(f"/api/tasks/{run.id}/decide", json={"decision": "approve"})
+        assert approved.status_code == 200, approved.text
+        done = _wait(client, run.id, "success")
+        assert published == [merge]
+        assert done["reason"] == "approved the merge"
+        assert client.get("/api/runner/jobs/next", headers=auth).status_code == 204
+    finally:
+        manager.shutdown(wait=False)
+
+
 def test_runner_commits_apply_over_lbws_own_gitignore_edit(
     settings: Settings, tmp_path: Path
 ) -> None:

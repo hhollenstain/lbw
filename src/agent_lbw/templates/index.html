@@ -6140,16 +6140,26 @@
       }
       const data = entry.data || {};
       const checks = data.checks || [];
-      if (!checks.length) {
-        return `<section class="ci-checks">${head}<p class="step-copy">No checks have run on this pull request.</p></section>`;
-      }
-      const skipped = state.ciSkipped[id] || new Set();
       const labels = { failing: "Failed", pending: "Running", passing: "Passed" };
       const glyphs = {
         failing: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6"/></svg>`,
         passing: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.5l2.5 2.5L12 5.5"/></svg>`,
         pending: "",
       };
+      const merge = data.merge || {};
+      const conflict = merge.state === "conflict";
+      const base = escapeHtml(merge.base || "the base branch");
+      const mergeRow = conflict
+        ? `<li class="ci-check ci-failing"><span class="ci-pick-space" aria-hidden="true"></span><span class="ci-icon ci-icon-failing" role="img" aria-label="Failed" title="Failed">${glyphs.failing}</span><span class="ci-name"><span class="ci-label">Merge conflict with ${base}</span><span class="ci-summary">GitHub cannot merge this pull request into ${base} until the conflict is fixed.</span></span></li>`
+        : "";
+      const mergeAction = conflict
+        ? `<div class="ci-actions"><button type="button" data-ci-merge="${escapeHtml(id)}">Fix merge conflict</button><p class="hint">The next run merges ${base} into this pull request. A merge with no conflicting files is pushed at once. When files conflict, the model resolves them and the merge waits for you to approve it.</p></div>`
+        : "";
+      if (!checks.length) {
+        const none = `<p class="step-copy">No checks have run on this pull request.</p>`;
+        return `<section class="ci-checks">${head}${conflict ? `<ul class="ci-list">${mergeRow}</ul>` : ""}${none}${mergeAction}</section>`;
+      }
+      const skipped = state.ciSkipped[id] || new Set();
       const rows = checks.map((check) => {
         const name = escapeHtml(check.name);
         const label = labels[check.state] || "Unknown";
@@ -6173,7 +6183,24 @@
       const action = failed
         ? `<div class="ci-actions"><button type="button" data-ci-investigate="${escapeHtml(id)}">Investigate failures</button><p class="hint">The next run reads what the ticked checks printed, writes a fix, and waits for you to approve it. Approving pushes the fix to this pull request.</p></div>`
         : "";
-      return `<section class="ci-checks">${head}<ul class="ci-list">${rows}</ul>${action}</section>`;
+      return `<section class="ci-checks">${head}<ul class="ci-list">${mergeRow}${rows}</ul>${mergeAction}${action}</section>`;
+    }
+
+    // The run of this proposal whose pull request is still open, newest first.
+    // A later run can fail without touching that pull request, and its checks
+    // and merge conflict still need a place on the change.
+    function openPullOfProposal(item) {
+      if (!item || !item.id) return null;
+      const run = workspaceRuns().find((entry) => (entry.attempts || [entry]).some((attempt) => attempt.item.id === item.id));
+      const attempts = run ? (run.attempts || [run]).slice() : [];
+      attempts.sort((left, right) => attemptNumber(right.item) - attemptNumber(left.item));
+      for (const attempt of attempts) {
+        const url = prUrl(attempt.item);
+        if (!url || !attempt.item.id || attempt.item.merged) continue;
+        if (["merged", "closed"].includes(prStateOf(url))) continue;
+        return attempt.item;
+      }
+      return null;
     }
 
     async function loadCiChecks(taskId, refresh) {
@@ -6215,6 +6242,24 @@
         await refresh();
       } catch (err) {
         notify("error", err.message, { title: "Could not investigate" });
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    async function fixMergeConflict(taskId, button) {
+      if (button) button.disabled = true;
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/checks/merge`, { method: "POST" });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "Could not start the merge");
+        state.selectedRunKey = `task:${body.id}`;
+        state.selected = body.id;
+        state.taskStatus[body.id] = body.status || "queued";
+        notify("queued", body.merge_base ? `Merging ${body.merge_base}` : "Merging the base branch", { title: "Fixing the merge conflict" });
+        await refresh();
+      } catch (err) {
+        notify("error", err.message, { title: "Could not fix the merge conflict" });
       } finally {
         if (button) button.disabled = false;
       }
@@ -7985,7 +8030,10 @@
         const next = canReply
           ? replyBox("Say what should change, then continue. Or rerun it from the start.", item.id, rerun)
           : (rerun ? `<div class="change-actions">${rerun}</div>` : "");
-        callout = calloutHtml("bad", "Failed", stuck ? "This job cannot be retried" : "The change did not finish", `<p class="callout-copy">${escapeHtml(why)}</p>${next}`);
+        const pullRun = openPullOfProposal(item);
+        const pullUrl = pullRun ? prUrl(pullRun) : "";
+        const pullChecks = pullRun ? `<div class="change-actions">${prLinkHtml(pullUrl)}</div>${ciChecksHtml(pullRun)}` : "";
+        callout = calloutHtml("bad", "Failed", stuck ? "This job cannot be retried" : "The change did not finish", `<p class="callout-copy">${escapeHtml(why)}</p>${next}${pullChecks}`);
       } else if (done) {
         calloutStep = "pr";
         const pull = url ? prStateOf(url) : "";
@@ -9540,7 +9588,12 @@
         return;
       }
       const investigate = event.target.closest("[data-ci-investigate]");
-      if (investigate) investigateCiChecks(investigate.dataset.ciInvestigate, investigate);
+      if (investigate) {
+        investigateCiChecks(investigate.dataset.ciInvestigate, investigate);
+        return;
+      }
+      const merge = event.target.closest("[data-ci-merge]");
+      if (merge) fixMergeConflict(merge.dataset.ciMerge, merge);
     });
 
     runDetailEl.addEventListener("change", (event) => {

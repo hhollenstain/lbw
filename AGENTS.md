@@ -291,6 +291,13 @@ scheduler call.
   request's branch, and waits for approval. Approving pushes the fix and
   comments on the pull request; its title and text stay. The checks' output
   is read when the run starts and kept in memory. It is not stored.
+  When GitHub reports the pull request conflicts with its base, the checks
+  list a merge conflict, and Fix merge conflict (`runtime/merge_fix.py`,
+  `POST /api/tasks/{id}/checks/merge`) starts the next run. It merges the
+  base into the branch as a merge commit. A clean merge is pushed at once.
+  Conflicted files go to the job's model (a runner gets them as an ordinary
+  commit, since a patch cannot carry a merge), LBW checks no markers are left
+  and writes the merge commit, and it waits for approval.
 - Publishing commits the project files, pushes that branch, and then opens the pull request. The pull request is not opened while those files are still uncommitted, or before the push succeeds.
 - Do not force-push, skip hooks, or rewrite published history.
 - Do not bind-mount this app's `.lbw` over `/workspaces/.lbw`.

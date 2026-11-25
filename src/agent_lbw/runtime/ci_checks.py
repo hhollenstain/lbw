@@ -55,7 +55,9 @@ def pull_checks(
 ) -> dict:
     """The checks on the pull request's head commit, failed ones first.
 
-    `state` is `failing`, `pending`, `passing`, or `none`. Cached for 30 seconds.
+    `state` is `failing`, `pending`, `passing`, or `none`. `merge` says whether
+    the pull request conflicts with its base: `conflict`, `clean`, or `unknown`
+    while GitHub is still working it out. Cached for 30 seconds.
     """
     parts = pull_parts(pr_url)
     if parts is None:
@@ -88,6 +90,7 @@ def pull_checks(
         "state": _overall(checks),
         "checks": checks,
         "failed": [check["name"] for check in checks if check["state"] == "failing"],
+        "merge": _merge(pull or {}),
     }
     with _lock:
         _cache[pr_url] = (time.monotonic(), result)
@@ -154,6 +157,18 @@ def investigation_goal(pr_url: str, names: list[str]) -> str:
         "Find why each check failed and fix the cause. Keep the change to what "
         "the failures need."
     )
+
+
+def _merge(pull: dict) -> dict:
+    """Whether GitHub can merge the pull request into its base as it stands."""
+    mergeable = pull.get("mergeable")
+    if mergeable is False or pull.get("mergeable_state") == "dirty":
+        state = "conflict"
+    elif mergeable is True:
+        state = "clean"
+    else:
+        state = "unknown"
+    return {"state": state, "base": str((pull.get("base") or {}).get("ref") or "")}
 
 
 def _check_run(item: dict) -> dict:

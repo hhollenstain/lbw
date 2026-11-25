@@ -25,6 +25,7 @@ from agent_lbw.runtime.improve import (
     resolve_create_pr,
     resolve_human_gates,
 )
+from agent_lbw.runtime.merge_fix import Conflict, resolution_notes
 from agent_lbw.runtime.plan import PLAN_SYSTEM, format_plan, parse_plan
 from agent_lbw.runtime.project import load_project
 from agent_lbw.runtime.runner_hub import MAX_PATCH_BYTES, RunnerHub
@@ -726,16 +727,31 @@ def _apply(workspace: Workspace, task, settings: Settings, base_sha: str, patch:
     the checkout while the job runs (it keeps `.lbw/` in the root .gitignore).
     Then the checkout moves to the result.
     """
-    if len(patch.encode("utf-8")) > MAX_PATCH_BYTES:
-        return "the runner's change is larger than LBW accepts"
+    head, error = _apply_aside(workspace, task, settings, base_sha, patch)
+    if error:
+        return error
     branch = _branch_for(task)
+    moved = _switch(workspace, ["-B", branch, head])
+    if moved:
+        return f"could not check out {branch}: {moved}"
+    task.branch = branch
+    return ""
+
+
+def _apply_aside(
+    workspace: Workspace, task, settings: Settings, base_sha: str, patch: str
+) -> tuple[str, str]:
+    """Apply the runner's commits on `base_sha` in a worktree. Returns (head, error)."""
+    if len(patch.encode("utf-8")) > MAX_PATCH_BYTES:
+        return "", "the runner's change is larger than LBW accepts"
     committer = _committer(task, settings)
     env = {key: value for key, value in committer.items() if key.startswith("GIT_COMMITTER")}
     with tempfile.TemporaryDirectory(prefix="lbw-runner-") as scratch:
         tree = Path(scratch) / "tree"
         added = run_git(workspace, ["worktree", "add", "--detach", str(tree), base_sha])
         if added.returncode != 0:
-            return f"could not start from {base_sha[:8]}: {(added.stderr or added.stdout).strip()}"
+            output = (added.stderr or added.stdout).strip()
+            return "", f"could not start from {base_sha[:8]}: {output}"
         try:
             mbox = Path(scratch) / "change.mbox"
             mbox.write_text(patch, encoding="utf-8")
@@ -744,16 +760,68 @@ def _apply(workspace: Workspace, task, settings: Settings, base_sha: str, patch:
             if applied.returncode != 0:
                 run_git(side, ["am", "--abort"])
                 output = (applied.stderr or applied.stdout).strip()
-                return f"the runner's commits did not apply: {output}"
-            head = current_sha(side) or ""
+                return "", f"the runner's commits did not apply: {output}"
+            return current_sha(side) or "", ""
         finally:
             run_git(workspace, ["worktree", "remove", "--force", str(tree)])
             run_git(workspace, ["worktree", "prune"])
-    moved = _switch(workspace, ["-B", branch, head])
-    if moved:
-        return f"could not check out {branch}: {moved}"
-    task.branch = branch
-    return ""
+
+
+def resolve_on_runner(
+    task,
+    conflict: Conflict,
+    *,
+    settings: Settings,
+    store_root: Path,
+    hub: RunnerHub,
+    job_seconds: float = JOB_SECONDS,
+    pickup_seconds: float = PICKUP_SECONDS,
+) -> tuple[str, str]:
+    """The person's runner resolves a merge's conflicted files. Returns (tree, error).
+
+    A patch cannot carry a merge, so the runner gets the conflicted files as an
+    ordinary commit on the pull request's branch and edits them. LBW writes the
+    merge commit from the result.
+    """
+    workspace = conflict.workspace
+    base = published_base(workspace, conflict.head)
+    start = run_git(workspace, ["format-patch", "--stdout", f"{base}..{conflict.snapshot}"])
+    if start.returncode != 0:
+        return "", f"could not send the conflicted files: {start.stderr.strip()}"
+    facts = _git_facts(workspace)
+    facts["base_sha"] = base
+    record_event(kind="step", message="Asking your runner to resolve the conflicts")
+    result = _dispatch(
+        {
+            "phase": "build",
+            "spec_path": "",
+            "spec": "",
+            "plan": "",
+            "start_patch": start.stdout,
+            "commands": project_commands(workspace.root),
+            "review_notes": resolution_notes(conflict),
+        },
+        task,
+        settings,
+        store_root,
+        hub,
+        facts,
+        job_seconds,
+        pickup_seconds,
+    )
+    if isinstance(result, CycleResult):
+        return "", result.reason or "the runner could not resolve the conflicts"
+    patch = str(result.get("patch") or "")
+    if not patch.strip():
+        return "", "the runner made no changes"
+    head, error = _apply_aside(workspace, task, settings, base, patch)
+    if error:
+        return "", error
+    tree = run_git(workspace, ["rev-parse", f"{head}^{{tree}}"])
+    if tree.returncode != 0:
+        return "", f"could not read the runner's result: {tree.stderr.strip()}"
+    record_event(kind="step", message="The runner resolved the conflicts")
+    return tree.stdout.strip(), ""
 
 
 def _switch(workspace: Workspace, target: list[str]) -> str:

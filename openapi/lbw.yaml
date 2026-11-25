@@ -490,7 +490,8 @@ paths:
         "200":
           description: >-
             pr_url, sha, state (failing, pending, passing, or none), checks
-            (name, state, conclusion, url, summary), and the failed names.
+            (name, state, conclusion, url, summary), the failed names, and
+            merge (state conflict, clean, or unknown, and the base branch).
         "404":
           description: The job is gone or has no pull request.
         "409":
@@ -521,6 +522,30 @@ paths:
           description: The job is gone or has no pull request.
         "409":
           description: The pull request is not open, or no check has failed.
+  /api/tasks/{task_id}/checks/merge:
+    post:
+      operationId: fixMergeConflict
+      description: >-
+        Start the next run of this job to merge its pull request's base branch
+        into the pull request. A merge git completes on its own is pushed at
+        once. When files conflict, the job's model resolves them, LBW checks
+        that no conflict markers are left, and the merge waits for approval.
+        Nothing is force-pushed.
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "201":
+          description: The merge run.
+        "403":
+          description: The person cannot write to this project.
+        "404":
+          description: The job is gone or has no pull request.
+        "409":
+          description: The pull request is not open, or GitHub reports no conflict.
   /api/tasks/{task_id}/rerun:
     post:
       operationId: rerunTask

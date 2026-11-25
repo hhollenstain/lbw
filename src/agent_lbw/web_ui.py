@@ -1393,6 +1393,61 @@ def create_app(
             return JSONResponse({"error": "this change cannot run again now"}, status_code=409)
         return JSONResponse(new_task.to_dict(), status_code=201)
 
+    @app.post("/api/tasks/{task_id}/checks/merge")
+    def fix_task_merge_conflict(task_id: str, request: Request) -> Any:
+        from agent_lbw.runtime.ci_checks import ChecksError, pull_checks
+        from agent_lbw.runtime.merge_fix import merge_goal
+
+        ui: UiState = request.app.state.ui
+        old_task = ui.manager.load_job(task_id)
+        if old_task is None:
+            return JSONResponse({"error": "task not found"}, status_code=404)
+        if not old_task.pr_url:
+            return JSONResponse({"error": "this change has no pull request"}, status_code=404)
+        blocked = _proposal_writer_block(ui, old_task.workspace)
+        if blocked:
+            return JSONResponse({"error": blocked}, status_code=403)
+        token = _ui_github_token(ui)
+        if not token:
+            return JSONResponse(
+                {"error": "Connect a GitHub App under Organization to read checks"},
+                status_code=409,
+            )
+        if lookup_pull_state(old_task.pr_url, force=True, token=token) in {"closed", "merged"}:
+            return JSONResponse({"error": "pull request is not open"}, status_code=409)
+        try:
+            merge = pull_checks(old_task.pr_url, token, force=True)["merge"]
+        except ChecksError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        base = str(merge.get("base") or "")
+        if merge.get("state") != "conflict" or not base:
+            return JSONResponse(
+                {"error": "GitHub reports no merge conflict on this pull request"},
+                status_code=409,
+            )
+        credential_block, actor = _acting_credential(ui, old_task)
+        if credential_block is not None:
+            return credential_block
+        try:
+            new_task = ui.manager.rerun(
+                task_id,
+                goal=merge_goal(old_task.pr_url, base),
+                actor_id=actor,
+                triage_gate="auto",
+                approval_gate="ask",
+                ci_checks=[],
+                merge_base=base,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if new_task is None:
+            return JSONResponse({"error": "this change cannot run again now"}, status_code=409)
+        request.state.audit_action = "task.merge"
+        request.state.audit_summary = f"Started merging {base} into a pull request"
+        request.state.audit_target_type = "task"
+        request.state.audit_target_id = new_task.id
+        return JSONResponse(new_task.to_dict(), status_code=201)
+
     @app.post("/api/tasks/{task_id}/rework")
     def rework_task(task_id: str, request: Request, payload: ReworkPayload | None = None) -> Any:
         ui: UiState = request.app.state.ui
