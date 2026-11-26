@@ -115,3 +115,38 @@ jobs:
 
       - name: Build every release target
         run: make dist
+
+  runner-macos:
+    # macOS builds the runner with cgo for its menu bar icon, so check that
+    # build on a Mac here instead of first at release time.
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: runner
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: runner/go.mod
+          cache-dependency-path: runner/go.sum
+
+      - name: Test, and build both Mac architectures with the menu bar icon
+        run: |
+          go vet ./...
+          go test ./...
+          for arch in arm64 amd64; do
+            clang_arch=arm64
+            if [ "$arch" = amd64 ]; then clang_arch=x86_64; fi
+            CGO_ENABLED=1 CC="clang -arch $clang_arch" GOOS=darwin GOARCH=$arch \
+              go build -o "/tmp/lbw-runner-$arch" ./cmd/lbw-runner
+            otool -L "/tmp/lbw-runner-$arch" | grep -q AppKit
+          done
+
+      - name: Cross-build Linux and Windows without cgo
+        run: |
+          for target in linux/amd64 linux/arm64 windows/amd64; do
+            CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null ./cmd/lbw-runner
+          done

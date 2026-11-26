@@ -70,10 +70,12 @@ export function RunnersSection() {
     <div className="runner-panel">
       <h3>Your machines</h3>
       <p className="hint">
-        Install <code>lbw-runner</code> on your computer, sign in to Claude Code there, then run{" "}
+        Install <code>lbw-runner</code> on your computer and sign in to Claude Code there. Run{" "}
+        <code>lbw-runner install-app</code> to add the LBW Runner app, then link it to{" "}
+        <code>{window.location.origin}</code> from the app, or run{" "}
         <code>lbw-runner login --server {window.location.origin}</code>. Enter the code it shows
         here. Jobs on a "your machine" model then run with your own Claude Code, and LBW never sees
-        your Claude login.
+        your Claude login. The app shows what runs on that machine.
       </p>
       <div className="runner-approve">
         <label htmlFor="runner-code">Code from lbw-runner</label>

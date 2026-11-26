@@ -60,6 +60,17 @@ type Config struct {
 	LLMPrivateNetwork *bool `json:"llm_private_network,omitempty"`
 	// TokenStore is "keychain", "secret-service", or "file". Set at login.
 	TokenStore string `json:"token_store,omitempty"`
+	// DashboardPort is where the runner's own page listens on 127.0.0.1.
+	// Zero means 7317.
+	DashboardPort int `json:"dashboard_port,omitempty"`
+	// NoDashboard turns the runner's own page off, such as in a container.
+	NoDashboard bool `json:"no_dashboard,omitempty"`
+	// ReleasesURL is where the runner looks for new releases: a GitHub releases
+	// list, or a mirror of one. Empty means LBW's own releases. A release is
+	// installed only when it is signed by LBW's release key, wherever it came from.
+	ReleasesURL string `json:"releases_url,omitempty"`
+	// NoUpdateCheck stops the daily check for a newer runner.
+	NoUpdateCheck bool `json:"no_update_check,omitempty"`
 
 	home string
 }
@@ -159,6 +170,21 @@ func Load() (*Config, error) {
 		cfg.AllowedTools = append([]string(nil), DefaultAllowedTools...)
 	}
 	return cfg, nil
+}
+
+// DefaultDashboardPort is where the dashboard listens unless dashboard_port says otherwise.
+const DefaultDashboardPort = 7317
+
+// Dashboard is the dashboard's port, or 0 when it is off. LBW_RUNNER_DASHBOARD=off
+// turns it off, for containers.
+func (c *Config) Dashboard() int {
+	if c.NoDashboard || strings.EqualFold(strings.TrimSpace(os.Getenv("LBW_RUNNER_DASHBOARD")), "off") {
+		return 0
+	}
+	if c.DashboardPort > 0 {
+		return c.DashboardPort
+	}
+	return DefaultDashboardPort
 }
 
 // HomeDir is where this config was loaded from.

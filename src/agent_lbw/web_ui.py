@@ -1240,7 +1240,9 @@ def create_app(
         workspace: str | None = None,
     ) -> Any:
         ui: UiState = request.app.state.ui
-        tasks = ui.manager.list()
+        access = _Access(ui)
+        # Only the jobs of projects this person can read.
+        tasks = [task for task in ui.manager.list() if access.task_refusal(task, "use") is None]
         if workspace and workspace.strip():
             wanted = Path(workspace).expanduser().resolve()
             tasks = [
@@ -1265,7 +1267,7 @@ def create_app(
     def get_task(task_id: str, request: Request) -> Any:
         ui: UiState = request.app.state.ui
         task = ui.manager.get(task_id)
-        if task is None:
+        if task is None or _Access(ui).task_refusal(task, "use") is not None:
             return JSONResponse({"error": "task not found"}, status_code=404)
         return task.to_dict()
 
@@ -1277,8 +1279,11 @@ def create_app(
         new_goal = (payload.goal if payload else "") or None
         picked = (payload.model_id if payload else "").strip()
         old_task = ui.manager.load_job(task_id)
-        if old_task is None:
+        if old_task is None or _Access(ui).task_refusal(old_task, "use") is not None:
             return JSONResponse({"error": "task not found"}, status_code=404)
+        refused = _Access(ui).task_refusal(old_task, "write")
+        if refused is not None:
+            return refused
         if old_task.status not in ("failed", "error", "success"):
             return JSONResponse({"error": "task not rerunnable"}, status_code=400)
         if (
@@ -1286,7 +1291,6 @@ def create_app(
             and lookup_pull_state(old_task.pr_url or "", token=_ui_github_token(ui)) != "open"
         ):
             return JSONResponse({"error": "pull request is not open"}, status_code=409)
-        goal_to_use = new_goal or old_task.goal
         blocked, actor = _acting_credential(ui, old_task, model_id=picked or None)
         if blocked is not None:
             return blocked
@@ -1305,7 +1309,7 @@ def create_app(
             new_task = ui.manager.rerun(
                 task_id,
                 from_sha=run_from_sha,
-                goal=goal_to_use,
+                goal=new_goal,
                 actor_id=actor,
                 model=model,
                 triage_gate=payload.triage_gate if payload else "",
@@ -1331,7 +1335,7 @@ def create_app(
 
         ui: UiState = request.app.state.ui
         task = ui.manager.load_job(task_id)
-        if task is None:
+        if task is None or _Access(ui).task_refusal(task, "use") is not None:
             return JSONResponse({"error": "task not found"}, status_code=404)
         if not task.pr_url:
             return JSONResponse({"error": "this change has no pull request"}, status_code=404)
@@ -1358,9 +1362,9 @@ def create_app(
             return JSONResponse({"error": "task not found"}, status_code=404)
         if not old_task.pr_url:
             return JSONResponse({"error": "this change has no pull request"}, status_code=404)
-        blocked = _proposal_writer_block(ui, old_task.workspace)
-        if blocked:
-            return JSONResponse({"error": blocked}, status_code=403)
+        refused = _Access(ui).task_refusal(old_task, "write")
+        if refused is not None:
+            return refused
         token = _ui_github_token(ui)
         if not token:
             return JSONResponse(
@@ -1406,9 +1410,9 @@ def create_app(
             return JSONResponse({"error": "task not found"}, status_code=404)
         if not old_task.pr_url:
             return JSONResponse({"error": "this change has no pull request"}, status_code=404)
-        blocked = _proposal_writer_block(ui, old_task.workspace)
-        if blocked:
-            return JSONResponse({"error": blocked}, status_code=403)
+        refused = _Access(ui).task_refusal(old_task, "write")
+        if refused is not None:
+            return refused
         token = _ui_github_token(ui)
         if not token:
             return JSONResponse(
@@ -1460,9 +1464,13 @@ def create_app(
             ui.manager.adopt_job(task_id)
         current = ui.manager.get(task_id)
         if current is not None:
-            blocked = _proposal_writer_block(ui, current.workspace)
-            if blocked:
-                return JSONResponse({"error": blocked}, status_code=403)
+            refused = _Access(ui).task_refusal(
+                current,
+                "write",
+                message="a person with write access to this project can continue a proposal",
+            )
+            if refused is not None:
+                return refused
         if current is None:
             return JSONResponse({"error": "task not found"}, status_code=404)
         if current.pr_url and lookup_pull_state(current.pr_url, token=_ui_github_token(ui)) in {
@@ -1504,9 +1512,13 @@ def create_app(
             ui.manager.adopt_job(task_id)
             current = ui.manager.get(task_id)
         if current is not None:
-            blocked = _proposal_writer_block(ui, current.workspace)
-            if blocked:
-                return JSONResponse({"error": blocked}, status_code=403)
+            refused = _Access(ui).task_refusal(
+                current,
+                "write",
+                message="a person with write access to this project can continue a proposal",
+            )
+            if refused is not None:
+                return refused
         actor = None
         if current is not None and choice != "hand_off":
             credential_block, actor = _acting_credential(ui, current)
@@ -1532,10 +1544,36 @@ def create_app(
         request.state.audit_explicit = True
         return reply
 
+    @app.post("/api/tasks/{task_id}/stop")
+    def stop_task(task_id: str, request: Request) -> Any:
+        ui: UiState = request.app.state.ui
+        current = ui.manager.get(task_id)
+        if current is None:
+            return JSONResponse({"error": "task not found"}, status_code=404)
+        refused = _Access(ui).task_refusal(
+            current, "write", message="a person with write access to this project can stop its jobs"
+        )
+        if refused is not None:
+            return refused
+        try:
+            stopped = ui.manager.stop(task_id, by=_signed_in_name(ui))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        if stopped is None:
+            return JSONResponse({"error": "task not found"}, status_code=404)
+        request.state.audit_action = "task.stop"
+        request.state.audit_summary = "Stopped a job"
+        request.state.audit_target_type = "task"
+        request.state.audit_target_id = task_id
+        return stopped.to_dict()
+
     @app.get("/api/branches")
     def branches(request: Request, workspace: str | None = None) -> Any:
         ui: UiState = request.app.state.ui
-        root = Path(workspace or ui.default_workspace).expanduser()
+        root = Path(workspace or ui.shown_workspace() or ui.default_workspace).expanduser()
+        refused = _Access(ui).refusal(str(root), "use")
+        if refused is not None:
+            return refused
         if not root.is_dir():
             return JSONResponse({"error": "workspace is not a directory"}, status_code=400)
         if not (root / ".git").exists():
@@ -1555,6 +1593,12 @@ def create_app(
     ) -> JSONResponse:
         ui: UiState = request.app.state.ui
         body = payload or TaskCreate()
+        # A job pushes its branch and opens a pull request, so starting one is writing.
+        refused = _Access(ui).refusal(
+            str(body.workspace or ui.shown_workspace() or ui.default_workspace), "write"
+        )
+        if refused is not None:
+            return refused
         if body.pr_url and lookup_pull_state(body.pr_url, token=_ui_github_token(ui)) != "open":
             return JSONResponse({"error": "pull request is not open"}, status_code=409)
         picked = (body.base_branch or "").strip()
@@ -1645,7 +1689,10 @@ def create_app(
     ) -> dict[str, object]:
         ui: UiState = request.app.state.ui
         body = payload or ContinuousStop()
-        workspace = body.workspace or ui.default_workspace
+        workspace = body.workspace or ui.shown_workspace() or ui.default_workspace
+        refused = _Access(ui).refusal(str(workspace), "write")
+        if refused is not None:
+            return refused
         ui.manager.stop_continuous(workspace)
         return {
             "ok": True,
@@ -1661,9 +1708,10 @@ def create_app(
         if not body.force:
             load_cached_pr_states(root)
         urls: list[str] = []
+        readable = _readable_repos(ui)
         for raw in body.urls[:80]:
             clean = extract_pr_url(raw or "") or ""
-            if clean and clean not in urls:
+            if clean and clean not in urls and _repo_of(clean, readable):
                 urls.append(clean)
         if not urls:
             return {"states": {}}
@@ -1686,13 +1734,33 @@ def create_app(
         if not url:
             return JSONResponse({"error": "that is not a pull request"}, status_code=400)
         root = Path(body.workspace or ui.shown_workspace()).expanduser()
+        access = _Access(ui)
+        refused = access.refusal(str(root), "write")
+        if refused is not None:
+            return refused
         if not root.is_dir() or not (root / ".git").exists():
             return JSONResponse({"error": "that checkout is not a git repository"}, status_code=400)
+        from agent_lbw.runtime.ci_checks import pull_parts
+        from agent_lbw.sandbox import Workspace
+        from agent_lbw.tools.git import github_owner_repo
+
+        # A member with write access to this project merges this project's
+        # pull requests only. An owner or admin can use every project.
+        parts = pull_parts(url)
+        repo = github_owner_repo(Workspace(root))
+        if not access.runs_account and (
+            parts is None
+            or repo is None
+            or (parts[0].casefold(), parts[1].casefold())
+            != (repo[0].casefold(), repo[1].casefold())
+        ):
+            return JSONResponse(
+                {"error": "that pull request is not in this project's repository"},
+                status_code=403,
+            )
         token = _ui_github_token(ui)
         if lookup_pull_state(url, force=True, token=token) != "open":
             return JSONResponse({"error": "pull request is not open"}, status_code=409)
-        from agent_lbw.sandbox import Workspace
-
         merged = merge_pull_request(Workspace(root), url, token=token)
         if not merged.ok:
             return JSONResponse({"error": merged.output or "could not merge"}, status_code=400)
@@ -1708,9 +1776,14 @@ def create_app(
         page_size: int = 10,
         search: str | None = None,
         token: str | None = None,
-    ) -> dict[str, Any]:
+        workspace: str | None = None,
+    ) -> Any:
         ui: UiState = request.app.state.ui
-        root = Path(ui.shown_workspace() or ui.default_workspace)
+        # The page names its project. The server's current project is shared.
+        root = Path(workspace or ui.shown_workspace() or ui.default_workspace)
+        refused = _Access(ui).refusal(str(root), "use")
+        if refused is not None:
+            return refused
         current = history_token(
             root,
             store_root=Path(ui.store_root),
@@ -1743,7 +1816,9 @@ def create_app(
         workspace: str | None = None,
     ) -> Any:
         ui: UiState = request.app.state.ui
-        root = Path(workspace or ui.default_workspace).expanduser()
+        root = Path(workspace or ui.shown_workspace() or ui.default_workspace).expanduser()
+        if _Access(ui).refusal(str(root), "use") is not None:
+            return JSONResponse({"error": "screenshot not found"}, status_code=404)
         path = resolve_ui_screenshot(root, name)
         if path is None:
             return JSONResponse({"error": "screenshot not found"}, status_code=404)
@@ -1797,6 +1872,10 @@ def create_app(
     def _workspace_payload(ui: UiState) -> dict[str, Any]:
         workspaces = ui.visible_workspaces()
         shown = ui.shown_workspace()
+        # The server's current project is shared, so name it only when this
+        # person can see it.
+        if shown and not any(item["path"] == shown for item in workspaces):
+            shown = str(workspaces[-1]["path"]) if workspaces else ""
         current = next(
             (item for item in workspaces if item["path"] == shown),
             None,
@@ -1909,6 +1988,9 @@ def create_app(
         ui: UiState = request.app.state.ui
         from agent_lbw.runtime.store.github_sync import CheckoutMissing, materialize_checkout
 
+        refused = _Access(ui).refusal(payload.path, "use")
+        if refused is not None:
+            return refused
         try:
             place = materialize_checkout(
                 Path(ui.store_root),
@@ -1961,7 +2043,10 @@ def create_app(
     ) -> Any:
         ui: UiState = request.app.state.ui
         body = payload or WorkspaceGuidelines()
-        path = body.path or ui.default_workspace
+        path = body.path or ui.shown_workspace() or ui.default_workspace
+        refused = _Access(ui).refusal(str(path), "manage")
+        if refused is not None:
+            return refused
         try:
             save_guidelines(Path(path), body.guidelines)
             ui.set_workspace(path)
@@ -2151,6 +2236,9 @@ def create_app(
     ) -> Any:
         ui: UiState = request.app.state.ui
         body = payload or WorkspaceRolesUpdate()
+        refused = _Access(ui).refusal(str(_workspace_root(ui, body.path)), "manage")
+        if refused is not None:
+            return refused
         try:
             root = _workspace_root(ui, body.path)
             if not root.is_dir():
@@ -2276,6 +2364,9 @@ def create_app(
     @app.post("/api/workspaces/restore")
     def restore_workspace_tab(request: Request, payload: WorkspaceSelect) -> Any:
         ui: UiState = request.app.state.ui
+        refused = _Access(ui).refusal(payload.path, "use")
+        if refused is not None:
+            return refused
         try:
             ui.set_workspace(payload.path)
         except ValueError as exc:
@@ -2294,7 +2385,13 @@ def create_app(
         ui: UiState = request.app.state.ui
         root = Path(ui.store_root)
         sync_runs(root, _task_lookup(ui.manager))
-        schedules = list_schedules(root)
+        access = _Access(ui)
+        # Only the schedules of projects this person can read.
+        schedules = [
+            item
+            for item in list_schedules(root)
+            if access.allows(str(item.get("workspace") or ""), "use")
+        ]
         if workspace and workspace.strip():
             wanted = Path(workspace).expanduser().resolve()
             schedules = [
@@ -2308,6 +2405,10 @@ def create_app(
     @app.post("/api/schedules", response_model=None)
     def create_schedule_route(request: Request, payload: ScheduleWrite) -> Any:
         ui: UiState = request.app.state.ui
+        # A schedule starts jobs in the project, so making one is writing.
+        refused = _Access(ui).refusal(str(payload.workspace or ""), "write")
+        if refused is not None:
+            return refused
         try:
             return upsert_schedule(
                 Path(ui.store_root),
@@ -2320,6 +2421,11 @@ def create_app(
     @app.patch("/api/schedules/{schedule_id}", response_model=None)
     def update_schedule_route(request: Request, schedule_id: str, payload: ScheduleWrite) -> Any:
         ui: UiState = request.app.state.ui
+        refused = _schedule_refusal(ui, schedule_id, "write") or _Access(ui).refusal(
+            str(payload.workspace or ""), "write"
+        )
+        if refused is not None:
+            return refused
         try:
             return upsert_schedule(
                 Path(ui.store_root),
@@ -2335,6 +2441,9 @@ def create_app(
     @app.delete("/api/schedules/{schedule_id}", response_model=None)
     def delete_schedule_route(request: Request, schedule_id: str) -> Any:
         ui: UiState = request.app.state.ui
+        refused = _schedule_refusal(ui, schedule_id, "write")
+        if refused is not None:
+            return refused
         try:
             delete_schedule(
                 Path(ui.store_root),
@@ -2348,6 +2457,9 @@ def create_app(
     @app.get("/api/schedules/{schedule_id}/file", response_model=None)
     def schedule_file(request: Request, schedule_id: str, path: str = "") -> Any:
         ui: UiState = request.app.state.ui
+        refused = _schedule_refusal(ui, schedule_id, "use")
+        if refused is not None:
+            return refused
         try:
             schedule = get_schedule(Path(ui.store_root), schedule_id)
         except KeyError:
@@ -2360,6 +2472,9 @@ def create_app(
     @app.post("/api/schedules/{schedule_id}/run", response_model=None)
     def run_schedule_route(request: Request, schedule_id: str) -> Any:
         ui: UiState = request.app.state.ui
+        refused = _schedule_refusal(ui, schedule_id, "write")
+        if refused is not None:
+            return refused
         root = Path(ui.store_root)
         try:
             schedule = start_run(root, schedule_id, datetime.now().astimezone())
@@ -2572,28 +2687,156 @@ def _model_workspace(ui: UiState, path: str | None) -> Path:
         return raw
 
 
-def _proposal_writer_block(ui: UiState, workspace: str) -> str | None:
-    """A paused proposal continues only for a person with write access."""
+def _signed_in_name(ui: UiState) -> str:
+    """The signed-in person's name, for what a job shows they did."""
     from agent_lbw.runtime.account import load_account
-    from agent_lbw.runtime.db import database, database_configured
-    from agent_lbw.runtime.store.projects import can_access
-    from agent_lbw.runtime.store.recording import project_id_for_checkout
 
-    root = Path(ui.store_root)
-    url = ui.manager.settings.database_url
-    if not database_configured(root, url):
-        return None
     try:
-        account = load_account(root, database_url=url)
+        account = load_account(Path(ui.store_root), database_url=ui.manager.settings.database_url)
     except (OSError, ValueError):
+        return ""
+    person = next(
+        (user for user in account["users"] if user["id"] == account["current_user_id"]), None
+    )
+    return str((person or {}).get("name") or "")
+
+
+def _readable_repos(ui: UiState) -> set[str] | None:
+    """`owner/repo` of each project this person can read, or None for no limit.
+
+    LBW asks GitHub with its own token, so a pull request's state is looked
+    up only for a repository the person could already read.
+    """
+    if _Access(ui).runs_account:
         return None
-    with database(root, url) as db:
-        project_id = project_id_for_checkout(db, account["org"]["id"], Path(workspace))
-        if project_id is None:
+    from agent_lbw.tools.git import parse_github_remote
+
+    found: set[str] = set()
+    for item in ui.visible_workspaces():
+        locator = str(item.get("locator") or "")
+        if locator.count("/") == 1 and not locator.startswith(("/", ".", "~")):
+            found.add(locator.casefold())
+        remote = parse_github_remote(str(item.get("git_remote") or ""))
+        if remote is not None:
+            found.add(f"{remote[0]}/{remote[1]}".casefold())
+    return found
+
+
+def _repo_of(url: str, readable: set[str] | None) -> bool:
+    if readable is None:
+        return True
+    from agent_lbw.runtime.ci_checks import pull_parts
+
+    parts = pull_parts(url)
+    return parts is not None and f"{parts[0]}/{parts[1]}".casefold() in readable
+
+
+def _schedule_refusal(ui: UiState, schedule_id: str, need: str) -> JSONResponse | None:
+    """A schedule belongs to its project: reading it needs `use`, changing it `write`."""
+    try:
+        schedule = get_schedule(Path(ui.store_root), schedule_id)
+    except KeyError:
+        return JSONResponse({"error": "Schedule not found."}, status_code=404)
+    return _Access(ui).refusal(str(schedule.get("workspace") or ""), need)
+
+
+_REFUSED = {
+    "use": "you do not have access to this project",
+    "write": "a person with write access to this project can do that",
+    "manage": "a person who manages this project can change that",
+}
+
+
+class _Access:
+    """What the signed-in person may do in each project, for one request.
+
+    A job or a project is open to someone who can `use` it (read), and
+    changed only by someone who can `write` it, through the project's grants
+    and the person's rank (`can_access`). A job from another account is never
+    open. A folder not recorded as a project yet is open to the account's
+    owners and admins only. Without a database there is one person, who may
+    do everything.
+    """
+
+    def __init__(self, ui: UiState) -> None:
+        from agent_lbw.runtime.db import database, database_configured
+        from agent_lbw.runtime.store.install import read_account
+
+        self.root = Path(ui.store_root)
+        self.url = ui.manager.settings.database_url
+        self.account: dict | None = None
+        if database_configured(self.root, self.url):
+            # Read only: checking access never creates the install's account.
+            try:
+                with database(self.root, self.url) as db:
+                    self.account = read_account(db)
+            except (OSError, ValueError):
+                self.account = None
+        # With no account there is one person, who may do everything.
+        self.active = self.account is not None
+        self._seen: dict[tuple[str, str, str], bool] = {}
+
+    @property
+    def runs_account(self) -> bool:
+        """An owner or admin, who can use every project in the account."""
+        if not self.active:
+            return True
+        account = self.account or {}
+        me = next(
+            (
+                user
+                for user in account.get("users", [])
+                if user["id"] == account.get("current_user_id")
+            ),
+            None,
+        )
+        return me is not None and me.get("role") in {"owner", "admin"}
+
+    def allows(self, workspace: str, need: str, *, tenant_id: str = "") -> bool:
+        if not self.active:
+            return True
+        key = (str(workspace or ""), need, tenant_id or "")
+        if key not in self._seen:
+            self._seen[key] = self._check(*key)
+        return self._seen[key]
+
+    def _check(self, workspace: str, need: str, tenant_id: str) -> bool:
+        from agent_lbw.runtime.db import database
+        from agent_lbw.runtime.store.projects import can_access
+        from agent_lbw.runtime.store.recording import project_id_for_checkout
+
+        account = self.account
+        if account is None:
+            return False
+        tenant = account["org"]["id"]
+        person = account["current_user_id"]
+        if tenant_id and tenant_id != tenant:
+            return False
+        with database(self.root, self.url) as db:
+            project_id = project_id_for_checkout(db, tenant, Path(workspace)) if workspace else None
+            if project_id is not None:
+                return can_access(db, person, project_id, need=need)
+        return self.runs_account
+
+    def refusal(
+        self, workspace: str, need: str, *, tenant_id: str = "", message: str = ""
+    ) -> JSONResponse | None:
+        """None when allowed. Otherwise 404 for reading, so a closed project's
+        job is not even confirmed to exist, and 403 for a change."""
+        if self.allows(workspace, need, tenant_id=tenant_id):
             return None
-        if can_access(db, account["current_user_id"], project_id, need="write"):
-            return None
-    return "a person with write access to this project can continue a proposal"
+        if need == "use" or not self.allows(workspace, "use", tenant_id=tenant_id):
+            # Someone who cannot read the project is not told it exists.
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse({"error": message or _REFUSED[need]}, status_code=403)
+
+    def task_refusal(self, task: Any, need: str, *, message: str = "") -> JSONResponse | None:
+        return self.refusal(
+            str(task.workspace or ""),
+            need,
+            tenant_id=str(getattr(task, "tenant_id", "") or ""),
+            message=message,
+        )
 
 
 def _roles_for_workspace(ui: UiState, root: Path) -> dict:

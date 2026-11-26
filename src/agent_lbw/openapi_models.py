@@ -5,6 +5,33 @@ from pydantic import BaseModel, Field
 # Generated from openapi/lbw.yaml. Run `make openapi` after a spec change.
 
 
+class SignupBody(BaseModel):
+    name: str
+    email: str
+    password: str
+    kind: str = "organization"
+    organization: str = ""
+
+
+class RunnerInboxItem(BaseModel):
+    id: str
+    title: str
+    project: str
+    status: str
+    stage: str
+    waiting_for: str
+    link: str
+    started_by: str = ""
+    model: str = ""
+    on_runner: bool = False
+    since: str = ""
+
+
+class RunnerInbox(BaseModel):
+    waiting: list[RunnerInboxItem] = Field(default_factory=list)
+    running: list[RunnerInboxItem] = Field(default_factory=list)
+
+
 class ScheduleCadence(BaseModel):
     kind: str
     minute: int = 0

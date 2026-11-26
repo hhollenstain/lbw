@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import threading
 import time
 from contextvars import ContextVar, Token
 from typing import Any
@@ -17,6 +18,7 @@ LLM_SNIPPET = 400
 ProgressToken = Token[list[dict[str, Any]] | None]
 
 _events: ContextVar[list[dict[str, Any]] | None] = ContextVar("lbw_progress_events", default=None)
+_stop: ContextVar[threading.Event | None] = ContextVar("lbw_stop", default=None)
 _originals: ContextVar[dict[str, str] | None] = ContextVar("lbw_file_originals", default=None)
 
 
@@ -36,6 +38,35 @@ def reset_progress(token: ProgressToken | None) -> None:
     if token is not None:
         _events.reset(token)
         _originals.set(None)
+
+
+class TaskStopped(BaseException):
+    """A person stopped this task.
+
+    It is a BaseException, like KeyboardInterrupt, so a cycle's broad
+    ``except Exception`` cannot swallow it and carry on. ``finally`` blocks
+    still run, so the checkout is cleaned up as usual.
+    """
+
+
+def bind_stop(event: threading.Event | None) -> Token[threading.Event | None]:
+    """Attach the task's stop signal to this thread's work."""
+    return _stop.set(event)
+
+
+def reset_stop(token: Token[threading.Event | None]) -> None:
+    _stop.reset(token)
+
+
+def stop_requested() -> bool:
+    event = _stop.get()
+    return event is not None and event.is_set()
+
+
+def raise_if_stopped() -> None:
+    """End the task here when a person stopped it. Called before each model call."""
+    if stop_requested():
+        raise TaskStopped()
 
 
 def record_event(kind: str, **fields: Any) -> dict[str, Any]:
@@ -255,6 +286,7 @@ def timed_complete(
     role: str = "",
 ) -> AssistantTurn:
     """Run an LLM completion and record how long the server took to answer."""
+    raise_if_stopped()
     identity = _llm_event_fields(llm, role=role)
     started = time.perf_counter()
     try:

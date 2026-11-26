@@ -310,7 +310,7 @@ def _publish(workspace: Workspace, task, settings, store_root, base: str, reason
     return publish_runner_change(
         workspace.root,
         settings,
-        task.goal or "",
+        task.run_goal() or "",
         task.summary or f"Merged {base}",
         base_sha=None,
         create_pr=True,

@@ -13,7 +13,7 @@ from agent_lbw.runtime.improve import CycleResult
 from agent_lbw.runtime.store.auth import reset_actor, set_actor
 from agent_lbw.runtime.store.favorites import set_favorite
 from agent_lbw.runtime.store.github_sync import collapse_repo_projects, recorded_workspaces
-from agent_lbw.runtime.store.projects import ensure_project
+from agent_lbw.runtime.store.projects import ensure_project, grant_project
 from agent_lbw.runtime.tasks import Task, TaskManager
 from agent_lbw.web_ui import create_app
 
@@ -102,6 +102,14 @@ def test_a_favorite_belongs_to_one_person(tmp_path: Path) -> None:
     coworker = next(user["id"] for user in other["users"] if user["id"] != owner)
     with database(tmp_path) as db:
         project = ensure_project(db, tenant, name="shared", kind="folder", locator=str(folder))
+    # A member without a grant does not see the project at all.
+    token = set_actor(coworker)
+    try:
+        assert project["id"] not in {item["project_id"] for item in recorded_workspaces(tmp_path)}
+    finally:
+        reset_actor(token)
+    with database(tmp_path) as db:
+        grant_project(db, project["id"], subject_type="identity", subject_id=coworker, access="use")
         token = set_actor(owner)
         try:
             assert set_favorite(db, project["id"], favorite=True) == [project["id"]]

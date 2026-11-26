@@ -123,7 +123,7 @@ def test_a_person_investigates_failed_checks_and_the_fix_waits_for_approval(
     def runner(task: Task) -> CycleResult:
         if not task.ci_pr_url:
             return _done(task)
-        seen.update(context=task.ci_context, goal=task.goal)
+        seen.update(context=task.ci_context, goal=task.run_goal())
         return CycleResult(
             status="waiting",
             goal=task.goal,
@@ -170,8 +170,10 @@ def test_a_person_investigates_failed_checks_and_the_fix_waits_for_approval(
         assert (run["attempt_of"], run["attempt"]) == (first, 2)
         assert (run["triage_gate"], run["approval_gate"]) == ("auto", "ask")
         assert (run["ci_pr_url"], run["ci_checks"]) == (PR, ["tests"])
-        assert run["goal"].splitlines()[0] == "Fix failing CI checks on PR #7: tests"
-        assert PR in run["goal"]
+        # The change keeps its name. The run's request is its instruction.
+        assert run["goal"] == "Add the page"
+        assert run["instruction"].splitlines()[0] == "Fix failing CI checks on PR #7: tests"
+        assert PR in run["instruction"]
         for _ in range(100):
             body = client.get(f"/api/tasks/{run['id']}").json()
             if body["status"] == "waiting":
@@ -179,11 +181,14 @@ def test_a_person_investigates_failed_checks_and_the_fix_waits_for_approval(
             time.sleep(0.05)
         assert (body["status"], body["stage"]) == ("waiting", "approval")
         assert "FAILED tests/test_app.py::test_home" in seen["context"]
+        assert seen["goal"].startswith("Fix failing CI checks on PR #7: tests")
         assert "FAILED" not in seen["goal"]
     finally:
         manager.shutdown(wait=True)
     stored = stored_job(tmp_path, "", run["id"])
     assert stored["ci"] == {"pr_url": PR, "checks": ["tests"]}
+    assert stored["goal"] == "Add the page"
+    assert stored["instruction"].startswith("Fix failing CI checks on PR #7")
     assert "FAILED tests/test_app.py" not in str(stored)
 
 
@@ -247,7 +252,8 @@ def test_a_merge_conflict_shows_in_the_checks_and_starts_a_merge_run(
         assert (run["attempt_of"], run["attempt"]) == (first, 2)
         assert (run["merge_base"], run["ci_pr_url"]) == ("main", PR)
         assert (run["triage_gate"], run["approval_gate"]) == ("auto", "ask")
-        assert run["goal"].startswith(f"Merge main into the branch of {PR}")
+        assert run["goal"] == "Add the page"
+        assert run["instruction"].startswith(f"Merge main into the branch of {PR}")
         for _ in range(100):
             body = client.get(f"/api/tasks/{run['id']}").json()
             if body["status"] == "waiting":

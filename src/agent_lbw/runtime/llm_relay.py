@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from agent_lbw.llm.client import OpenAICompatClient
+from agent_lbw.progress import raise_if_stopped, stop_requested
 from agent_lbw.runtime.db import Database
 from agent_lbw.runtime.store.local_models import RELAY_BASE_URL, relay_target
 from agent_lbw.runtime.store.runners import pick_relay_runner
@@ -87,11 +88,16 @@ class LlmRelay:
             self._lock.notify_all()
         try:
             if not self._wait_acked(item, pickup_seconds):
+                raise_if_stopped()
                 raise RelayError(
                     "your runner did not pick up the model call: check that lbw-runner is running"
                 )
-            if not item.done.wait(call_seconds):
-                raise RelayError("your model server did not answer in time")
+            deadline = time.monotonic() + call_seconds
+            # Wait in short steps, so a person who stops the task ends the wait.
+            while not item.done.wait(min(1.0, max(deadline - time.monotonic(), 0.0))):
+                raise_if_stopped()
+                if time.monotonic() >= deadline:
+                    raise RelayError("your model server did not answer in time")
             return dict(item.answer or {})
         finally:
             with self._lock:
@@ -149,9 +155,9 @@ class LlmRelay:
                     item.runner_id = ""
                     self._queues.setdefault(item.identity_id, deque()).appendleft(item)
                     self._lock.notify_all()
-                if now >= deadline:
+                if now >= deadline or stop_requested():
                     return False
-                wait = deadline - now
+                wait = min(deadline - now, 1.0)
                 if item.runner_id:
                     wait = min(wait, item.taken_at + self.ack_seconds - now)
                 self._lock.wait(max(wait, 0.01))

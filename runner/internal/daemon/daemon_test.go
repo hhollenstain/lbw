@@ -19,6 +19,7 @@ import (
 	"github.com/hhollenstain/lbw/runner/internal/client"
 	"github.com/hhollenstain/lbw/runner/internal/config"
 	"github.com/hhollenstain/lbw/runner/internal/job"
+	"github.com/hhollenstain/lbw/runner/internal/monitor"
 	"github.com/hhollenstain/lbw/runner/internal/relay"
 )
 
@@ -199,5 +200,85 @@ func TestAMachineWithoutClaudeCodeOnlyRelays(t *testing.T) {
 	}
 	if polledJobs {
 		t.Fatal("a runner without Claude Code took a job")
+	}
+}
+
+func TestAJobStoppedOnTheDashboardIsReportedAsStoppedByItsOwner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the slow claude is a shell script")
+	}
+	remote, base := repo(t)
+	slow := filepath.Join(t.TempDir(), "slow-claude.sh")
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\n[ \"$1\" = --version ] && { echo 2.0.0; exit 0; }\n# Like Claude Code, it stops on an interrupt.\ntrap 'exit 130' INT TERM\nsleep 30 >/dev/null 2>&1 &\nwait $!\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lbw := &fakeLBW{job: &client.Job{JobID: "job1", TaskID: "t1", Goal: "Add hello", BaseSHA: base, RemoteURL: remote}}
+	server := httptest.NewServer(lbw)
+	defer server.Close()
+	api, _ := client.New(server.URL, "lbwr_test", "")
+	work := monitor.New()
+	d := &Daemon{
+		API:     api,
+		Jobs:    &job.Runner{Config: &config.Config{WorkDir: t.TempDir()}, Claude: slow},
+		Version: "test",
+		Timings: Timings{Heartbeat: time.Hour, Poll: 0, Flush: 20 * time.Millisecond, Retry: 10 * time.Millisecond},
+		Log:     log.New(io.Discard, "", 0),
+		Monitor: work,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() {
+		for ctx.Err() == nil {
+			state := work.Snapshot()
+			if len(state.Jobs) == 1 && state.Jobs[0].Status == "running" {
+				work.StopJob("job1")
+			}
+			lbw.mu.Lock()
+			done := lbw.result != nil
+			lbw.mu.Unlock()
+			if done {
+				cancel()
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	if err := d.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	lbw.mu.Lock()
+	defer lbw.mu.Unlock()
+	if lbw.result == nil || lbw.result.Status != "failed" || lbw.result.Error != StoppedByOwner {
+		t.Fatalf("result = %+v", lbw.result)
+	}
+	if recent := work.Snapshot().Jobs; len(recent) != 1 || recent[0].Status != "failed" {
+		t.Fatalf("dashboard jobs = %+v", recent)
+	}
+}
+
+func TestAPausedRunnerTakesNoNewJob(t *testing.T) {
+	lbw := &fakeLBW{job: &client.Job{JobID: "job1", Goal: "Add hello"}}
+	server := httptest.NewServer(lbw)
+	defer server.Close()
+	api, _ := client.New(server.URL, "lbwr_test", "")
+	work := monitor.New()
+	work.SetPaused(true)
+	d := &Daemon{
+		API:     api,
+		Jobs:    &job.Runner{Config: &config.Config{WorkDir: t.TempDir()}, Claude: "/nonexistent"},
+		Version: "test",
+		Timings: Timings{Heartbeat: time.Hour, Poll: 0, Flush: time.Second, Retry: time.Millisecond},
+		Log:     log.New(io.Discard, "", 0),
+		Monitor: work,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := d.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	lbw.mu.Lock()
+	defer lbw.mu.Unlock()
+	if lbw.job == nil {
+		t.Fatal("a paused runner leased a job")
 	}
 }

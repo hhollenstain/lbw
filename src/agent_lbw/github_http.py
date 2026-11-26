@@ -14,6 +14,7 @@ from agent_lbw.runtime.account import load_account
 from agent_lbw.runtime.db import database
 from agent_lbw.runtime.store.github import (
     GitHubAppError,
+    begin_personal_connect,
     begin_user_connect,
     current_token,
     finish_user_connect,
@@ -111,6 +112,15 @@ def register_github(app: FastAPI) -> None:
             lambda db, root: {"url": begin_user_connect(db, root, redirect_uri=_callback(request))},
         )
 
+    @app.get("/api/github/personal/connect", response_model=None)
+    def connect_personal_github(request: Request) -> object:
+        return _act(
+            request,
+            lambda db, root: {
+                "url": begin_personal_connect(db, root, redirect_uri=_callback(request))
+            },
+        )
+
     @app.delete("/api/github/login", response_model=None)
     def clear_login(request: Request) -> object:
         return _act(request, lambda db, _root: clear_github_login(db))
@@ -141,6 +151,13 @@ def register_github(app: FastAPI) -> None:
             return RedirectResponse(f"/?github={kind}", status_code=303)
         except (GitHubAppError, PermissionError, KeyError):
             return RedirectResponse("/?github=refused", status_code=303)
+        if isinstance(done, dict) and done.get("mode") == "personal":
+            if done.get("install_url"):
+                # The app is not on their GitHub account yet: install it there.
+                return RedirectResponse(str(done["install_url"]), status_code=303)
+            return RedirectResponse(
+                "/?section=organization&tab=github&github=connected", status_code=303
+            )
         response = RedirectResponse("/?github=connected", status_code=303)
         session = done.get("session") if isinstance(done, dict) else None
         if session:

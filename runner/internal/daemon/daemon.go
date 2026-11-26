@@ -14,6 +14,7 @@ import (
 	"github.com/hhollenstain/lbw/runner/internal/claude"
 	"github.com/hhollenstain/lbw/runner/internal/client"
 	"github.com/hhollenstain/lbw/runner/internal/job"
+	"github.com/hhollenstain/lbw/runner/internal/monitor"
 	"github.com/hhollenstain/lbw/runner/internal/relay"
 )
 
@@ -44,6 +45,11 @@ type Daemon struct {
 	Version string
 	Timings Timings
 	Log     *log.Logger
+	// Monitor shows this runner's work on its dashboard, and can pause it or
+	// stop a job. Nil runs without a dashboard.
+	Monitor *monitor.Monitor
+	// OnBeat hears each heartbeat: LBW's answer, or why there was none.
+	OnBeat func(beat *client.Beat, err error)
 
 	mu    sync.Mutex
 	facts client.Facts
@@ -104,9 +110,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return err
 		default:
 		}
-		next, err := d.API.NextJob(ctx, d.Timings.Poll)
+		if d.Monitor.Paused() {
+			sleep(ctx, pausedWait)
+			continue
+		}
+		next, err := d.nextJob(ctx)
 		if errors.Is(err, client.ErrUnauthorized) {
 			return err
+		}
+		if errors.Is(err, errPaused) {
+			continue
 		}
 		if err != nil {
 			if ctx.Err() == nil {
@@ -121,6 +134,30 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.work(ctx, next)
 	}
 	return nil
+}
+
+// pausedWait is how often a paused runner checks whether it was resumed.
+const pausedWait = time.Second
+
+var errPaused = errors.New("paused")
+
+// nextJob waits for a job, and stops waiting as soon as the owner pauses the
+// runner, so it does not take one more job after the pause.
+func (d *Daemon) nextJob(ctx context.Context) (*client.Job, error) {
+	poll, cancel := context.WithCancel(ctx)
+	defer cancel()
+	forget := d.Monitor.OnPause(cancel)
+	defer forget()
+	next, err := d.API.NextJob(poll, d.Timings.Poll)
+	if poll.Err() != nil && ctx.Err() == nil {
+		// A job that arrived as the pause landed is already leased to this
+		// runner, so it runs rather than waiting out its lease.
+		if next != nil {
+			return next, nil
+		}
+		return nil, errPaused
+	}
+	return next, err
 }
 
 func (d *Daemon) heartbeats(ctx context.Context, failed chan<- error) {
@@ -144,6 +181,9 @@ func (d *Daemon) beat(ctx context.Context) error {
 	facts := d.facts
 	d.mu.Unlock()
 	answer, err := d.API.Heartbeat(ctx, facts)
+	if d.OnBeat != nil {
+		d.OnBeat(answer, err)
+	}
 	if err != nil {
 		if !errors.Is(err, client.ErrUnauthorized) {
 			d.Log.Printf("heartbeat failed: %v", err)
@@ -183,9 +223,11 @@ func (d *Daemon) work(parent context.Context, next *client.Job) {
 	d.Log.Printf("job %s: %s", next.JobID, firstLine(next.Goal))
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+	d.Monitor.JobStarted(next, cancel)
 	var mu sync.Mutex
 	var pending []client.Event
 	emit := func(event client.Event) {
+		d.Monitor.JobEvent(next.JobID, event)
 		mu.Lock()
 		pending = append(pending, event)
 		mu.Unlock()
@@ -215,6 +257,11 @@ func (d *Daemon) work(parent context.Context, next *client.Job) {
 	for {
 		select {
 		case result := <-done:
+			if d.Monitor.Stopped(next.JobID) {
+				result = client.Result{Status: "failed", Summary: result.Summary, Error: StoppedByOwner}
+				emit(client.Event{Kind: "step", Message: StoppedByOwner})
+			}
+			d.Monitor.JobFinished(next.JobID, result)
 			flush(parent)
 			if err := d.API.Finish(parent, next.JobID, result); err != nil {
 				d.Log.Printf("job %s: could not report the result: %v", next.JobID, err)
@@ -226,6 +273,9 @@ func (d *Daemon) work(parent context.Context, next *client.Job) {
 		}
 	}
 }
+
+// StoppedByOwner is the error a job reports when its owner stopped it on this machine.
+const StoppedByOwner = "Stopped on the runner by its owner"
 
 func firstLine(text string) string {
 	for i, r := range text {

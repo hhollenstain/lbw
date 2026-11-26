@@ -558,6 +558,83 @@ def test_a_run_that_failed_publishing_restarts_at_the_pull_request(
         manager.shutdown(wait=False)
 
 
+def test_the_runner_inbox_lists_what_waits_on_its_owner_and_stops_their_jobs(
+    settings: Settings, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    _repo(workspace)
+    manager = TaskManager(settings)
+    client = TestClient(create_app(manager, default_workspace=workspace))
+    try:
+        client.get("/api/directory")
+        model_id = _runner_model(client, workspace, workspace)
+        token = _link(client)
+        _beat(client, token)
+        auth = {"Authorization": f"Bearer {token}"}
+        assert client.get("/api/runner/inbox").status_code == 401
+
+        created = client.post(
+            "/api/tasks",
+            json={
+                "workspace": str(workspace),
+                "goal": "Add a hello file",
+                "model_id": model_id,
+                "create_pr": False,
+                "triage_gate": "ask",
+                "approval_gate": "ask",
+            },
+        )
+        assert created.status_code == 201, created.text
+        waiting_id = created.json()["id"]
+        plan = '{"cause": "No file", "steps": [{"do": "Write hello.txt", "file": "hello.txt"}]}'
+        _finish(client, auth, _lease(client, auth), plan)
+        _wait_stage(client, waiting_id, "triage")
+        inbox = client.get("/api/runner/inbox", headers=auth)
+        assert inbox.status_code == 200, inbox.text
+        item = next(entry for entry in inbox.json()["waiting"] if entry["id"] == waiting_id)
+        assert (item["title"], item["waiting_for"], item["status"]) == (
+            "Add a hello file",
+            "Review the plan",
+            "waiting",
+        )
+        assert f"change={waiting_id}" in item["link"] and item["link"].startswith("/?")
+        assert item["on_runner"] is True
+        # Nothing waiting can be stopped: it is continued or handed off in LBW.
+        assert client.post(f"/api/runner/tasks/{waiting_id}/stop", headers=auth).status_code == 409
+
+        created = client.post(
+            "/api/tasks",
+            json={
+                "workspace": str(workspace),
+                "goal": "Write the docs\nwith every flag",
+                "model_id": model_id,
+                "create_pr": False,
+                "triage_gate": "auto",
+                "approval_gate": "auto",
+            },
+        )
+        assert created.status_code == 201, created.text
+        running_id = created.json()["id"]
+        running: list = []
+        for _ in range(100):
+            running = client.get("/api/runner/inbox", headers=auth).json()["running"]
+            if any(entry["id"] == running_id for entry in running):
+                break
+            time.sleep(0.05)
+        listed = next(entry for entry in running if entry["id"] == running_id)
+        assert listed["title"] == "Write the docs"
+        stopped = client.post(f"/api/runner/tasks/{running_id}/stop", headers=auth)
+        assert stopped.status_code == 200, stopped.text
+        failed = _wait(client, running_id, "failed")
+        assert failed["reason"].startswith("Stopped by") and "(from ada-laptop)" in failed["reason"]
+        assert client.post(f"/api/runner/tasks/{running_id}/stop", headers=auth).status_code == 409
+        after = client.get("/api/runner/inbox", headers=auth).json()
+        assert all(entry["id"] != running_id for entry in after["running"])
+    finally:
+        manager.shutdown(wait=False)
+
+
 def test_a_runner_change_that_failed_lbws_tests_reruns_the_tests_on_the_same_commits(
     settings: Settings, tmp_path: Path
 ) -> None:

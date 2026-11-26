@@ -249,18 +249,132 @@ each into an LBW `llm` event, counting input the way LBW does (prompt tokens
 include cache reads and writes, which are also counted on their own). The
 existing rollups, dashboard, and audit summary pick them up unchanged.
 
+### The app and its dashboard
+
+`lbw-runner install-app` adds **LBW Runner** where the platform lists apps:
+`~/Applications/LBW Runner.app` on macOS, a desktop entry on Linux, and a Start
+menu entry on Windows. The app holds its own copy of the runner, which starts at
+login (the LaunchAgent or systemd user unit runs that copy; on Windows, the
+Startup folder). Opening the app runs `lbw-runner open`: it starts the runner
+when it is not running and opens the dashboard, in an app window when Chrome,
+Edge, Brave, or Chromium is installed. `lbw-runner uninstall-app` removes the
+app and stops the login start. Settings and the token stay.
+
+`lbw-runner tray` is the icon in the menu bar (macOS) or system tray (Windows,
+Linux), drawn with `fyne.io/systray`, the runner's one dependency. It is its
+own process, so a problem there never touches a running job, and only one runs
+per person (`tray.pid`). It reads the dashboard on 127.0.0.1 with the dashboard
+key every 3 seconds. Its menu shows the runner's state, **Waiting for you**
+with the first five items, **Running** here and in LBW with the first five
+jobs, local model calls in flight, and **Open dashboard**, **Pause new work**
+(or Resume), **Start runner** when the runner is not running, and **Quit tray
+icon**. A waiting or running item opens that change in LBW. On macOS the icon
+is a template image that follows the menu bar's colors, its dot fills in when
+something waits, and the count sits beside it; it runs inside the app bundle,
+so it has no Dock icon. It starts at login from a second LaunchAgent
+(`dev.lookbothways.lbw-runner.tray`, desktop sessions only) on macOS, the
+autostart folder on Linux, and the Startup folder on Windows. Quitting it keeps
+it closed until the next login or until LBW Runner is opened.
+
+The tray asks the dashboard as the tray (`?from=tray`), so the inbox is read
+from LBW once a minute while only the tray watches, and every 10 seconds while
+the dashboard page is open. With an ETag, most of those reads are an empty 304.
+
+Linux and Windows build without cgo from any machine. macOS needs cgo, because
+the menu bar is drawn through AppKit: `make dist` builds both Mac architectures
+with cgo on a Mac, and without the icon elsewhere, saying so.
+
+`lbw-runner run` serves the dashboard on `127.0.0.1:7317` (`dashboard_port`
+in `config.json`; `no_dashboard: true` or `LBW_RUNNER_DASHBOARD=off` turns it
+off). It shows:
+
+- whether the runner is online, paused, not linked, or disconnected, and the
+  server, machine name, Claude Code version, relay, and sandbox;
+- each running job: its goal, project, step, model, elapsed time, tokens, its
+  progress lines, and a link that opens the change in LBW
+  (`/?section=changes&project=owner/repo&change=<task id>`);
+- the model calls relayed to the person's model server, with the model name,
+  time, and result;
+- recent jobs and the runner's log.
+
+At the top, **Waiting for you** lists the jobs paused for the owner: a spec
+to accept, a plan to review, or a change to approve, in projects they can
+write. Each row opens that change in LBW, where the decision is made. The tab
+title counts them. **Running now** shows this machine's jobs with their
+progress, and under **In LBW** the owner's other queued or running jobs (on
+LBW's models, local models, or another of their machines), each with **Stop**.
+The runner reads `GET /api/runner/inbox` every 10 seconds only while the
+dashboard is open, with an ETag, so an idle runner adds no load and an
+unchanged inbox is an empty 304. Each item carries the goal's first line, not
+the goal. **Stop** there calls `POST /api/runner/tasks/{id}/stop`, which needs
+the same write access as Stop in LBW and is written to the audit log.
+
+From it the person can **Pause new work** (running work goes on, new jobs and
+model calls wait in LBW until they resume), **Stop** a running job (LBW marks it
+failed with "Stopped on the runner by its owner", and it can be rerun), update
+Claude Code, and link the machine when it is not linked. A runner that is not
+linked, or that LBW disconnected, keeps the dashboard up, takes no work, and
+waits to be linked again.
+
+The dashboard's state is memory only: no prompt, answer, or log is written to
+disk or sent to LBW by it. A model call keeps its model name, never its prompt.
+
 ### Maintenance
 
 Each heartbeat reports the runner version, the Claude Code version, and whether
 Claude Code was found. **Update Claude Code** on the profile queues a command
 that the runner runs at its next heartbeat (`claude update`), then reports the
-new version. Runner self-updates come with signed releases (see the plan).
+new version.
+
+### Runner updates
+
+A runner release is a GitHub release tagged `runner-vX.Y.Z`, made by
+`.github/workflows/runner-release.yml` when such a tag is pushed, or when a
+release with such a tag is published on GitHub, which gets the binaries
+attached. CI also builds the macOS binaries with cgo on a Mac for every pull
+request, so a broken tray build is caught before a release. It holds a
+binary per platform, `SHA256SUMS`, and `SHA256SUMS.sig`: an Ed25519 signature
+of `SHA256SUMS` made with the release key in the `RUNNER_SIGNING_KEY` secret.
+The public half is built into the runner (`internal/update/key.go`), and the
+workflow refuses to publish when the signature does not check against it.
+
+A runner built from a release checks GitHub's release list once a day, after a
+random first wait of up to an hour, with an ETag so an unchanged list is a 304.
+It never installs on its own. The dashboard shows **LBW Runner X is
+available** with **Install update** and **What's new**, the tray adds **Install
+update X**, `lbw-runner status` says so, and `lbw-runner update` installs it
+(`--check` only looks). Installing:
+
+1. refuses while a job runs on this machine or a model call is in flight;
+2. downloads `SHA256SUMS`, its signature, and this platform's binary, and
+   continues only when the signature is the release key's and the binary
+   matches its listed sum;
+3. puts the binary in place of the running program (beside it, so it is one
+   rename; on Windows the old one is moved aside first);
+4. restarts the runner on it in place, so launchd or systemd keeps tracking
+   it, and the tray restarts itself when it sees its binary changed.
+
+`releases_url` in `config.json` points at a mirror of the release list, such as
+one inside a company network; the signature check is the same. `no_update_check:
+true` stops the daily check. A build from source (a version that is not
+`X.Y.Z`) does not check or update. To change the release key, run
+`go run ./cmd/lbw-runner-sign keygen PATH`, put the printed key in
+`internal/update/key.go`, and replace the secret. Runners built before then
+trust only the old key, so they are updated by hand once.
 
 ### Safety
 
-- Outbound HTTPS only, so no port is opened on the person's machine.
+- Outbound HTTPS only to LBW. The one port the runner opens is its dashboard,
+  on 127.0.0.1. A random key in the runner folder, readable only by its owner,
+  opens it: `lbw-runner open` passes the key once and the page keeps it as an
+  HttpOnly, SameSite=Strict cookie. The dashboard answers only requests that
+  name 127.0.0.1 or localhost (so a rebound DNS name cannot reach it), takes
+  changes only as JSON from its own page, and cannot be framed. `open` checks
+  the runner's health with an HMAC of a fresh nonce before it sends the key, so
+  another program on the port never sees it.
 - The token is scoped to one person and can be revoked from the profile. A
-  revoked runner stops, and its waiting jobs are cancelled.
+  revoked runner takes no more work, and its waiting jobs are cancelled. With
+  the dashboard on, it waits to be linked again; without it, it exits.
 - Remote URLs sent to the runner have any user name or token removed.
 - Each job runs in its own worktree, removed afterwards. The person's checkout
   is not touched.
@@ -281,9 +395,12 @@ Server:
 - `runtime/improve.py` `publish_runner_change`: tests, push, and pull request.
 - Schema version 10, OpenAPI bodies, and `tests/test_runners.py`.
 
-Runner (`runner/`, Go 1.24, standard library only):
+Runner (`runner/`, Go 1.24, the standard library plus `fyne.io/systray`):
 
-- `lbw-runner login | run | status | doctor | update-claude | install-service | logout`.
+- `lbw-runner install-app | open | tray | login | run | status | doctor | update-claude | install-service | uninstall-app | logout`.
+- `internal/monitor` keeps the dashboard's state, `internal/dashboard` serves
+  it, `internal/app` installs the app and draws its icons, and `internal/tray`
+  is the menu bar or tray icon.
 - `make runner`, `make runner-test`, `make runner-dist` (macOS, Linux, Windows),
   `make runner-image`.
 - Tests use a fake `claude` script and a fake LBW server.
@@ -291,7 +408,6 @@ Runner (`runner/`, Go 1.24, standard library only):
 Known limits of the prototype, each tracked as an issue:
 
 - The hub is in memory: one LBW process, and a restart fails running runner jobs.
-- No signed releases or self-update yet.
 - No organization policy for who may use runners or which tools they allow.
 - No secret scan on the incoming patch before LBW applies it.
 
@@ -304,8 +420,12 @@ runner/bin/lbw-runner login --server https://www-local.lookbothways.dev \
   --ca-file .lbw/certs/ca.crt     # the local dev CA from make certs
 # enter the code under Profile, Integrations, Your machines
 runner/bin/lbw-runner doctor
-runner/bin/lbw-runner run
+runner/bin/lbw-runner run          # or: runner/bin/lbw-runner install-app
 ```
+
+`install-app` copies the runner into the app, starts it at login, and opens
+the dashboard. A machine can also be linked from the dashboard instead of
+`login`.
 
 Then add a Claude endpoint with the sign-in **Each person's machine** under
 Organization, Models, add a model from it, and start a job on that model. To use a checkout you already

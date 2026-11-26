@@ -121,6 +121,36 @@ The install link has the form
 `https://github.com/apps/<slug>/installations/new`. Send them
 [github-organization.md](github-organization.md).
 
+## Personal accounts use this app
+
+Anyone can sign up for a personal account: "Just me" on the sign-up page.
+It is one person and their own repositories, private ones included, with
+no teams. A personal account does not create a GitHub App. It uses this
+one: the app saved for the install's own account. So that it can:
+
+- set "Where can this GitHub App be installed" to Any account;
+- save the private key and the client secret (Save the key, above);
+- keep "Request user authorization (OAuth) during installation" on, so a
+  person who installs the app comes straight back to LBW connected.
+
+The person opens Account, GitHub, and chooses Connect GitHub. They sign in
+with GitHub, and LBW reads which installations of this app their GitHub
+user can reach. It keeps only the one on their own GitHub user account.
+When there is none, LBW sends them to install the app on their account,
+where GitHub asks which repositories it may use, and GitHub brings them
+back connected. Each repository they chose becomes a project, already on.
+To add or remove one, they change the app's repositories on GitHub and
+Sync.
+
+A personal account never sees or picks from the app's list of
+installations, because that list holds every account the app is on. An
+organization's installation is never connected to a personal account,
+even when the person can reach it: an organization connects its own app.
+The GitHub sign-in token is used once and not stored.
+
+Adding a team to a personal account turns it into an organization, which
+keeps its id, its projects, and its jobs.
+
 ## One installation, one LBW organization
 
 Refresh lists the installations of this app. Each LBW organization
