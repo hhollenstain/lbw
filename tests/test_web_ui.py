@@ -1992,8 +1992,19 @@ def test_web_ui_reruns_failed_task(settings: Settings, tmp_path: Path) -> None:
         assert rerun.status_code == 201
         assert rerun.json()["id"] != task_id
         assert rerun.json()["goal"] == "Allow rerun"
+        # Wait for the rerun to finish: rerunning it while it is still queued
+        # is a different refusal, and which one comes would depend on timing.
+        finished = None
+        for _ in range(100):
+            finished = client.get(f"/api/tasks/{rerun.json()['id']}").json()
+            if finished["status"] not in {"queued", "running"}:
+                break
+            time.sleep(0.05)
+        assert finished is not None and finished["status"] == "success"
+        # A finished change runs again only while its pull request is open.
         success = client.post(f"/api/tasks/{rerun.json()['id']}/rerun", json={})
-        assert success.status_code == 400
+        assert success.status_code == 409
+        assert success.json() == {"error": "pull request is not open"}
     finally:
         manager.shutdown(wait=False)
 
