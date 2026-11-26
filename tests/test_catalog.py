@@ -191,6 +191,15 @@ def test_a_model_is_sealed_and_an_agent_needs_a_grant_and_a_person(
     turned = client.put(f"/api/org/models/{model['id']}/enabled", json={"enabled": True})
     assert turned.status_code == 200
     _become(tmp_path, grace["id"])
+    # Reading the project is not enough to put an agent to work on it.
+    reader = client.post(f"/api/tasks/{task_id}/builder", json={"agent_id": worker["id"]})
+    assert reader.status_code == 403
+    _become(tmp_path, owner_id)
+    client.post(
+        f"/api/directory/projects/{project['id']}/grants",
+        json={"subject_type": "identity", "subject_id": grace["id"], "access": "write"},
+    )
+    _become(tmp_path, grace["id"])
     attached = client.post(f"/api/tasks/{task_id}/builder", json={"agent_id": worker["id"]})
     assert attached.status_code == 200
     assert attached.json()["model_id"] == model["id"]

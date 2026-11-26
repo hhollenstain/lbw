@@ -326,6 +326,9 @@ def _job_payload(task) -> dict:
             "approval": str(getattr(task, "approval_gate", "") or ""),
         },
         "ci": _ci_record(task),
+        # A rerun's own request and start phase. The goal stays the change's name.
+        "instruction": str(getattr(task, "instruction", "") or "")[:8000],
+        "started_from": str(getattr(task, "started_from", "") or ""),
     }
 
 
@@ -749,6 +752,8 @@ def _open_record(
         "review_notes": str(result.get("review_notes") or ""),
         "events": [*steps, *file_events_from_diff(diff)],
         "change_base": str(result.get("start") or ""),
+        "instruction": str(result.get("instruction") or saved.get("instruction") or ""),
+        "started_from": str(result.get("started_from") or saved.get("started_from") or ""),
         **_attempt_fields(row),
         "ci": result.get("ci") if isinstance(result.get("ci"), dict) else {},
         "spec": result.get("spec") if isinstance(result.get("spec"), dict) else {},

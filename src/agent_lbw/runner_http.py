@@ -25,10 +25,13 @@ from agent_lbw.openapi_models import (
 )
 from agent_lbw.runtime.account import load_account
 from agent_lbw.runtime.db import database
+from agent_lbw.runtime.inbox import person_inbox
 from agent_lbw.runtime.llm_relay import MAX_BODY_BYTES
 from agent_lbw.runtime.runner_hub import MAX_PATCH_BYTES
-from agent_lbw.runtime.store.audit import record_audit
+from agent_lbw.runtime.store.audit import person_name, record_audit
 from agent_lbw.runtime.store.install import require_account
+from agent_lbw.runtime.store.projects import can_access
+from agent_lbw.runtime.store.recording import project_id_for_checkout
 from agent_lbw.runtime.store.runners import (
     RunnerRequired,
     approve_link,
@@ -93,6 +96,63 @@ def register_runners(app: FastAPI) -> None:
         def apply(db, runner: dict) -> dict:
             commands = heartbeat(db, runner, payload.model_dump())
             return {"runner_id": runner["id"], "name": runner["name"], **commands}
+
+        return _as_runner(request, apply)
+
+    @app.get("/api/runner/inbox", response_model=None)
+    def runner_inbox(request: Request) -> object:
+        manager = request.app.state.ui.manager
+
+        def apply(db, runner: dict) -> dict:
+            inbox = person_inbox(
+                db,
+                manager.list(),
+                tenant_id=runner["tenant_id"],
+                identity_id=runner["identity_id"],
+            )
+            return inbox.model_dump()
+
+        return _as_runner(request, apply)
+
+    @app.post("/api/runner/tasks/{task_id}/stop", response_model=None)
+    def runner_stop_task(task_id: str, request: Request) -> object:
+        request.state.audit_explicit = True
+        manager = request.app.state.ui.manager
+
+        def apply(db, runner: dict) -> object:
+            task = manager.get(task_id)
+            if task is None or (task.tenant_id and task.tenant_id != runner["tenant_id"]):
+                return JSONResponse({"error": "task not found"}, status_code=404)
+            project_id = project_id_for_checkout(db, runner["tenant_id"], Path(task.workspace))
+            if project_id is None or not can_access(
+                db, runner["identity_id"], project_id, need="write"
+            ):
+                return JSONResponse(
+                    {"error": "a person with write access to this project can stop its jobs"},
+                    status_code=403,
+                )
+            who = person_name(db, runner["identity_id"])
+            try:
+                manager.stop(task_id, by=f"{who or 'its owner'} (from {runner['name']})")
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=409)
+            record_audit(
+                db,
+                tenant_id=runner["tenant_id"],
+                actor_id=runner["identity_id"],
+                action="task.stop",
+                summary=f"Stopped a job from the runner {runner['name']}",
+                method="POST",
+                path="/api/runner/tasks/{task_id}/stop",
+                target_type="task",
+                target_id=task_id,
+            )
+            return person_inbox(
+                db,
+                manager.list(),
+                tenant_id=runner["tenant_id"],
+                identity_id=runner["identity_id"],
+            ).model_dump()
 
         return _as_runner(request, apply)
 

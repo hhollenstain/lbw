@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from lbw_shared.directory import request_directory
 from pydantic import BaseModel
 
+from agent_lbw.openapi_models import SignupBody
 from agent_lbw.runtime.account import load_account
 from agent_lbw.runtime.db import Database, database
 from agent_lbw.runtime.store.auth import (
@@ -20,6 +21,7 @@ from agent_lbw.runtime.store.auth import (
     has_password,
     login,
     open_organization,
+    open_personal_account,
     reset_actor,
     reset_tenant,
     session_context,
@@ -44,13 +46,6 @@ class SetupBody(BaseModel):
 class LoginBody(BaseModel):
     email: str
     password: str
-
-
-class SignupBody(BaseModel):
-    name: str
-    email: str
-    password: str
-    organization: str
 
 
 def register_auth(app: FastAPI) -> None:
@@ -128,13 +123,20 @@ def register_auth(app: FastAPI) -> None:
         root, url = _store(request)
         try:
             with database(root, url) as db:
-                session = open_organization(
-                    db,
-                    name=payload.name,
-                    email=payload.email,
-                    password=payload.password,
-                    organization=payload.organization,
-                )
+                if payload.kind == "personal":
+                    session = open_personal_account(
+                        db, name=payload.name, email=payload.email, password=payload.password
+                    )
+                elif payload.kind == "organization":
+                    session = open_organization(
+                        db,
+                        name=payload.name,
+                        email=payload.email,
+                        password=payload.password,
+                        organization=payload.organization,
+                    )
+                else:
+                    raise ValueError("choose a personal account or an organization")
                 account = _account_for_session(db, session)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)

@@ -28,7 +28,9 @@ _CONNECT_TTL = 10 * 60
 _SLUG = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,98})$")
 _CLIENT_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _tokens: dict[tuple[str, str, str], tuple[float, str]] = {}
-_pending: dict[str, tuple[float, str, str, str]] = {}
+# state -> (expires, mode, identity, PKCE verifier, tenant). A personal
+# connect records the tenant, so the callback finishes only for that account.
+_pending: dict[str, tuple] = {}
 
 
 class GitHubAppError(Exception):
@@ -37,6 +39,8 @@ class GitHubAppError(Exception):
 
 def github_app_view(db: Database) -> dict:
     account = require_account(db)
+    if uses_site_app(db, account["org"]["id"]):
+        return personal_github_view(db)
     row = _row(db, account["org"]["id"])
     if row is None:
         view = _view("", "", "")
@@ -92,7 +96,7 @@ def github_app_state(db: Database, root: Path) -> dict:
 def install_url(db: Database, root: Path) -> str:
     """Where an owner installs this app on a GitHub account or organization."""
     try:
-        payload = _app_payload(db, root, require_account(db)["org"]["id"])
+        payload = _app_payload(db, root, _app_tenant(db, require_account(db)["org"]["id"]))
     except (GitHubAppError, ValueError):
         return ""
     slug = str(payload.get("slug") or "")
@@ -105,6 +109,7 @@ def save_github_app(
     db: Database, root: Path, *, app_id: str, private_key: str, client_secret: str = ""
 ) -> dict:
     account = _require_manager(db)
+    _refuse_personal(db, account)
     clean_id = app_id.strip()
     if not clean_id.isdigit() or len(clean_id) > 20:
         raise ValueError("app id is the number GitHub shows for the app")
@@ -245,6 +250,7 @@ def restore_github_app(
 
 def list_installations(db: Database, root: Path) -> list[dict]:
     account = _require_manager(db)
+    _refuse_personal(db, account)
     creds = _credentials(db, root, account["org"]["id"])
     payload = _github_json("GET", "/app/installations", jwt=_jwt(creds))
     if not isinstance(payload, list):
@@ -286,6 +292,7 @@ def list_installations(db: Database, root: Path) -> list[dict]:
 
 def select_installation(db: Database, root: Path, installation_id: str) -> dict:
     account = _require_manager(db)
+    _refuse_personal(db, account)
     chosen_id = installation_id.strip()
     if not chosen_id.isdigit():
         raise ValueError("choose an installation")
@@ -370,6 +377,39 @@ def begin_user_connect(db: Database, root: Path, *, redirect_uri: str) -> str:
     return f"{_AUTHORIZE}?{query}"
 
 
+def begin_personal_connect(db: Database, root: Path, *, redirect_uri: str) -> str:
+    """The GitHub page where a personal account's owner signs in to connect.
+
+    The callback reads which installations of LBW's app this person can reach
+    and keeps the one on their own GitHub account. It never takes one by id.
+    """
+    account = _require_manager(db)
+    tenant_id = account["org"]["id"]
+    if not uses_site_app(db, tenant_id):
+        raise PermissionError("an organization connects its own GitHub App")
+    client_id, _secret = _user_client(db, root, tenant_id)
+    state = secrets.token_urlsafe(24)
+    verifier = secrets.token_urlsafe(48)
+    _pending[state] = (
+        time.time() + _CONNECT_TTL,
+        "personal",
+        account["current_user_id"],
+        verifier,
+        tenant_id,
+    )
+    _drop_expired()
+    query = urlencode(
+        {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "state": state,
+            "code_challenge": _pkce(verifier),
+            "code_challenge_method": "S256",
+        }
+    )
+    return f"{_AUTHORIZE}?{query}"
+
+
 def begin_github_login(db: Database, root: Path, *, redirect_uri: str) -> str:
     """Start GitHub sign-in for a login that is already stored. No session is required."""
     install = db.fetchone("SELECT tenant_id FROM install WHERE id = 1")
@@ -402,7 +442,17 @@ def finish_user_connect(
     pending = _pending.pop(state, None)
     if pending is None or pending[0] < time.time() or len(pending) < 4:
         raise ValueError("that GitHub connection expired. Try again.")
-    _expiry, mode, identity_id, verifier = pending
+    _expiry, mode, identity_id, verifier = pending[:4]
+    if mode == "personal":
+        return _finish_personal_connect(
+            db,
+            root,
+            code=code,
+            redirect_uri=redirect_uri,
+            identity_id=identity_id,
+            verifier=verifier,
+            tenant_id=str(pending[4]),
+        )
     install = db.fetchone("SELECT tenant_id FROM install WHERE id = 1")
     if install is None or not install["tenant_id"]:
         raise ValueError("create the admin account first")
@@ -432,6 +482,190 @@ def finish_user_connect(
     linked = link_github_login(db, user_id=identity_id, github_login=login)
     refresh_access(db, root)
     return linked
+
+
+def _finish_personal_connect(
+    db: Database,
+    root: Path,
+    *,
+    code: str,
+    redirect_uri: str,
+    identity_id: str,
+    verifier: str,
+    tenant_id: str,
+) -> dict:
+    """Keep the installation of LBW's app on this person's own GitHub account.
+
+    Only an installation on the signed-in GitHub user's own account counts.
+    An organization's installation is never taken here, even when this
+    person can reach it: an organization connects its own app.
+    """
+    from agent_lbw.runtime.store.github_sync import link_github_login, sync_access
+
+    account = require_account(db)
+    if account["org"]["id"] != tenant_id or account["current_user_id"] != identity_id:
+        raise ValueError("that GitHub connection expired. Try again.")
+    client_id, secret = _user_client(db, root, tenant_id)
+    token = _exchange_code(
+        client_id=client_id,
+        client_secret=secret,
+        code=code,
+        redirect_uri=redirect_uri,
+        code_verifier=verifier,
+    )
+    try:
+        user = _request("GET", "/user", auth=f"Bearer {token}")
+        reachable = _user_installations(token)
+    finally:
+        del token
+    if not isinstance(user, dict) or not user.get("login"):
+        raise GitHubAppError("GitHub did not complete that sign-in")
+    login = str(user["login"])
+    own = next(
+        (
+            item
+            for item in reachable
+            if item["account_login"].casefold() == login.casefold()
+            and item["account_type"] == "User"
+        ),
+        None,
+    )
+    if own is None:
+        # Not installed on their account yet: send them to install it. GitHub
+        # returns here with this state and a new sign-in code once it is, and
+        # that return finishes the connection for this person and account only.
+        url = install_url(db, root)
+        if not url:
+            raise GitHubAppError("this LBW site's GitHub App cannot be installed right now")
+        state = secrets.token_urlsafe(24)
+        _pending[state] = (time.time() + _CONNECT_TTL, "personal", identity_id, "", tenant_id)
+        return {"mode": "personal", "install_url": f"{url}?{urlencode({'state': state})}"}
+    shared = _app_tenant(db, tenant_id)
+    app_row = _row(db, shared)
+    db.execute(
+        """
+        INSERT INTO github_apps (
+            tenant_id, app_id, private_key_ciphertext, installation_id,
+            account_login, account_type, client_id, client_secret_ciphertext
+        )
+        VALUES (?, ?, '', ?, ?, 'User', NULL, NULL)
+        ON CONFLICT (tenant_id) DO UPDATE SET
+            app_id = excluded.app_id,
+            private_key_ciphertext = '',
+            installation_id = excluded.installation_id,
+            account_login = excluded.account_login,
+            account_type = 'User',
+            client_id = NULL,
+            client_secret_ciphertext = NULL
+        """,
+        (tenant_id, app_row["app_id"], own["id"], own["account_login"]),
+    )
+    _replace_installations(db, tenant_id, [own])
+    link_github_login(db, user_id=identity_id, github_login=login)
+    synced = sync_access(db, root)
+    return {"mode": "personal", "account_login": own["account_login"], "sync": synced}
+
+
+def _user_installations(token: str) -> list[dict]:
+    """Installations of this app the token's user can reach, from GitHub."""
+    found: list[dict] = []
+    path = "/user/installations?per_page=100"
+    for _page in range(10):
+        body, link = _call("GET", path, auth=f"Bearer {token}")
+        items = body.get("installations") if isinstance(body, dict) else None
+        for item in items if isinstance(items, list) else []:
+            owner = item.get("account") if isinstance(item, dict) else None
+            if not isinstance(owner, dict) or not item.get("id"):
+                continue
+            found.append(
+                {
+                    "id": str(item["id"]),
+                    "account_login": str(owner.get("login") or ""),
+                    "account_type": str(owner.get("type") or ""),
+                }
+            )
+        next_url = _next_link(link)
+        if not next_url:
+            break
+        path = next_url
+    return found
+
+
+def _next_link(link: str) -> str:
+    for part in link.split(","):
+        url, _, rel = part.partition(";")
+        if 'rel="next"' in rel:
+            return url.strip().strip("<>")
+    return ""
+
+
+def uses_site_app(db: Database, tenant_id: str) -> bool:
+    """Whether this tenant connects GitHub through this LBW site's own app.
+
+    That is a personal account someone signed up for. The install's own
+    account is personal too, but it holds the site's app, so it keeps its own.
+    """
+    row = db.fetchone("SELECT kind FROM tenants WHERE id = ?", (tenant_id,))
+    if row is None or row["kind"] != "personal":
+        return False
+    install = db.fetchone("SELECT tenant_id FROM install WHERE id = 1")
+    return install is None or str(install["tenant_id"] or "") != tenant_id
+
+
+def shared_app_tenant(db: Database) -> str | None:
+    """The tenant whose GitHub App personal accounts use: this site's own app.
+
+    It is the install's first tenant, and it must hold the app's private key
+    and client secret, as an LBW engineer saves them.
+    """
+    install = db.fetchone("SELECT tenant_id FROM install WHERE id = 1")
+    if install is None or not install["tenant_id"]:
+        return None
+    row = _row(db, str(install["tenant_id"]))
+    if row is None or not row["private_key_ciphertext"] or not row["client_secret_ciphertext"]:
+        return None
+    return str(install["tenant_id"])
+
+
+def personal_github_view(db: Database) -> dict:
+    """A personal account's GitHub: its own installation of this site's app."""
+    account = require_account(db)
+    row = _row(db, account["org"]["id"])
+    shared = shared_app_tenant(db) is not None
+    view = _view(
+        "",
+        str(row["installation_id"] or "") if row is not None else "",
+        str(row["account_login"] or "") if row is not None else "",
+    )
+    view.update(
+        {
+            "personal": True,
+            "configured": shared,
+            "installations": [],
+            "account_type": "User",
+        }
+    )
+    return view
+
+
+def _app_tenant(db: Database, tenant_id: str) -> str:
+    """Whose app credentials this tenant uses: its own, or the site's for a personal one."""
+    if uses_site_app(db, tenant_id):
+        shared = shared_app_tenant(db)
+        if shared is None:
+            raise ValueError(
+                "this LBW site has no GitHub App for personal accounts yet: "
+                "an LBW engineer sets it up"
+            )
+        return shared
+    return tenant_id
+
+
+def _refuse_personal(db: Database, account: dict) -> None:
+    """The app's installation list shows every account it is on, so a
+    personal account never sees or picks from it."""
+    if uses_site_app(db, account["org"]["id"]):
+        raise PermissionError("a personal account connects GitHub with Connect GitHub")
 
 
 def current_token(root: Path, database_url: str = "") -> str | None:
@@ -554,6 +788,7 @@ def _app_payload(db: Database, root: Path, tenant_id: str) -> dict:
 
 
 def _user_client(db: Database, root: Path, tenant_id: str) -> tuple[str, str]:
+    tenant_id = _app_tenant(db, tenant_id)
     row = _row(db, tenant_id)
     if row is None or not row["client_secret_ciphertext"]:
         raise ValueError("paste the GitHub App client secret before people can connect")
@@ -586,16 +821,19 @@ def _exchange_code(
     redirect_uri: str,
     code_verifier: str,
 ) -> str:
+    data = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }
+    # A sign-in GitHub asks for right after an install has no PKCE challenge.
+    if code_verifier:
+        data["code_verifier"] = code_verifier
     try:
         response = httpx.post(
             _TOKEN_URL,
-            data={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "code": code,
-                "redirect_uri": redirect_uri,
-                "code_verifier": code_verifier,
-            },
+            data=data,
             headers={"Accept": "application/json"},
             timeout=20,
         )
@@ -624,6 +862,7 @@ def _drop_expired() -> None:
 
 
 def _credentials(db: Database, root: Path, tenant_id: str) -> tuple[str, str]:
+    tenant_id = _app_tenant(db, tenant_id)
     row = _row(db, tenant_id)
     if row is None:
         raise ValueError("save the GitHub App id and private key first")

@@ -77,6 +77,16 @@ the person glyph on a `--warn` outline. The selected step has a light
 `--navy` fill. In a narrow pane only the working, waiting, or failed step
 keeps its state text.
 
+A rerun keeps the change's title. An info banner between the title and the
+track says how the run differs: Run #2 reruns this change starting at Build,
+or from the start, and under This run, the request when it is not the goal,
+such as fixing failed checks or merging the base. It is `--panel` tinted with
+`--navy`, a `4px` `--navy` left border, an `8px` radius, and a round `--navy`
+info mark.
+
+Stop on a queued or running change is a secondary button with its text in
+`--bad` and a `--bad` tinted border, inside the action card.
+
 One action card sits under the track: `--panel`, `8px` radius, a `4px` left
 border in the state color, a pill badge (Your turn, Working, Queued,
 Failed, Done), and a title. Your turn tints the card with `--warn` and

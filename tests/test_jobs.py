@@ -349,11 +349,134 @@ def test_a_change_that_failed_publishing_restarts_at_publishing(
         assert (again.plan, again.criteria) == (failed.plan, failed.criteria)
         assert again.change_base == "a" * 40
         assert again.resume_branch == "lbw/note"
+        # The rerun keeps the change's name and notes the phase it starts at.
+        assert again.goal == failed.goal
+        assert (again.to_dict()["started_from"], again.to_dict()["instruction"]) == ("publish", "")
         for _ in range(50):
             if seen:
                 break
             time.sleep(0.05)
         assert seen == [("approve", "approval", None, "added the note")]
+    finally:
+        manager.shutdown(wait=False)
+
+
+def test_a_rerun_with_an_edited_goal_keeps_the_change_name(
+    settings: Settings, tmp_path: Path
+) -> None:
+    asked: list[str | None] = []
+
+    def runner(task: Task) -> CycleResult:
+        asked.append(task.run_goal())
+        return _ok(task)
+
+    manager = TaskManager(settings, runner=runner)
+    try:
+        failed = _job(tmp_path, "job-edit", status="failed", reason="tests failed")
+        with manager._lock:
+            manager._tasks[failed.id] = failed
+        edited = manager.rerun(failed.id, goal="Write the note in French")
+        assert edited is not None
+        assert (edited.goal, edited.instruction) == (failed.goal, "Write the note in French")
+        assert edited.started_from == ""
+        for _ in range(100):
+            if asked and edited.status not in {"queued", "running"}:
+                break
+            time.sleep(0.05)
+        assert asked == ["Write the note in French"]
+        # A plain rerun of that run keeps its request.
+        with manager._lock:
+            edited.status = "failed"
+        again = manager.rerun(edited.id)
+        assert again is not None
+        assert (again.goal, again.instruction) == (failed.goal, "Write the note in French")
+    finally:
+        manager.shutdown(wait=False)
+
+
+def test_a_running_job_stops_at_its_next_model_call(settings: Settings, tmp_path: Path) -> None:
+    from agent_lbw.progress import raise_if_stopped
+
+    calls: list[int] = []
+
+    def runner(task: Task) -> CycleResult:
+        # Stands in for the agent loop: each turn checks before its model call.
+        for turn in range(200):
+            raise_if_stopped()
+            calls.append(turn)
+            time.sleep(0.02)
+        return _ok(task)
+
+    manager = TaskManager(settings, runner=runner)
+    try:
+        task = manager.submit(
+            tmp_path,
+            "Tidy the README",
+            auto_commit=False,
+            create_pr=False,
+            model_name="scripted",
+            model_base_url="http://127.0.0.1:9/v1",
+            model_api_key="",
+        )
+        for _ in range(100):
+            if calls:
+                break
+            time.sleep(0.02)
+        stopped = manager.stop(task.id, by="Ada")
+        assert stopped is not None and stopped.stopped_by == "Ada"
+        for _ in range(100):
+            if task.status != "running":
+                break
+            time.sleep(0.02)
+        assert (task.status, task.reason) == ("failed", "Stopped by Ada")
+        assert len(calls) < 200
+        assert task.to_dict()["events"][-1]["message"] == "Stopped by Ada"
+        with pytest.raises(ValueError, match="only a queued or running job"):
+            manager.stop(task.id, by="Ada")
+        # A stopped job can run again.
+        again = manager.rerun(task.id)
+        assert again is not None and again.goal == task.goal
+    finally:
+        manager.shutdown(wait=False)
+
+
+def test_a_queued_job_that_is_stopped_never_runs(settings: Settings, tmp_path: Path) -> None:
+    ran: list[str] = []
+
+    def runner(task: Task) -> CycleResult:
+        ran.append(task.id)
+        return _ok(task)
+
+    manager = TaskManager(settings, runner=runner)
+    try:
+        queued = _job(tmp_path, "job-queued", status="queued")
+        with manager._lock:
+            manager._tasks[queued.id] = queued
+        manager.stop(queued.id, by="Grace")
+        assert (queued.status, queued.reason) == ("failed", "Stopped by Grace")
+        manager._run(queued)
+        assert ran == [] and queued.status == "failed"
+    finally:
+        manager.shutdown(wait=False)
+
+
+def test_stopping_a_job_over_http_needs_a_queued_or_running_job(
+    settings: Settings, tmp_path: Path
+) -> None:
+    manager = TaskManager(settings, runner=_ok)
+    client = TestClient(create_app(manager, default_workspace=tmp_path))
+    try:
+        assert client.post("/api/tasks/nope/stop").status_code == 404
+        done = _job(tmp_path, "job-done", status="success")
+        queued = _job(tmp_path, "job-wait", status="queued")
+        with manager._lock:
+            manager._tasks[done.id] = done
+            manager._tasks[queued.id] = queued
+        assert client.post(f"/api/tasks/{done.id}/stop").status_code == 409
+        stopped = client.post(f"/api/tasks/{queued.id}/stop")
+        assert stopped.status_code == 200, stopped.text
+        assert stopped.json()["status"] == "failed"
+        assert stopped.json()["reason"].startswith("Stopped by")
     finally:
         manager.shutdown(wait=False)
 

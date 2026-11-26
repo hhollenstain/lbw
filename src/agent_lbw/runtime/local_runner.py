@@ -17,7 +17,7 @@ from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 from agent_lbw.config import Settings
-from agent_lbw.progress import record_event
+from agent_lbw.progress import record_event, stop_requested
 from agent_lbw.runtime.db import database
 from agent_lbw.runtime.improve import (
     CycleResult,
@@ -204,7 +204,7 @@ def run_on_runner(
         )
     facts["base_sha"] = base
     triage, approval = resolve_human_gates(task.gate, task.triage_gate, task.approval_gate)
-    goal = task.goal or ""
+    goal = task.run_goal() or ""
     spec_path = ""
     spec_text = ""
     criteria: list[str] = []
@@ -533,8 +533,8 @@ def _publish_approved(workspace: Workspace, task, settings: Settings, store_root
     return publish_runner_change(
         workspace.root,
         settings,
-        task.goal or "",
-        task.summary or task.goal or "",
+        task.run_goal() or "",
+        task.summary or task.run_goal() or "",
         base_sha=_recorded_start(task) or None,
         create_pr=_wants_pr(task, workspace, settings),
         store_root=store_root,
@@ -653,7 +653,7 @@ def _dispatch(extra, task, settings, store_root, hub, facts, job_seconds, pickup
         {
             "job_id": job_id,
             "task_id": task.id,
-            "goal": task.goal or "",
+            "goal": task.run_goal() or "",
             "review_notes": _notes_for_runner(task),
             "base_branch": task.base_branch or facts.get("branch") or "",
             "model": task.model_name if task.model_id else "",
@@ -719,6 +719,10 @@ def _wait(job_id, task, settings, store_root, hub, job_seconds, pickup_seconds) 
                 record_event(kept["kind"], **fields)
         if result is not None:
             return result
+        if stop_requested():
+            # The runner hears this at its next progress update and stops Claude Code.
+            hub.cancel(job_id)
+            return {"status": "failed", "cancelled": True, "error": "the job was stopped"}
         now = time.monotonic()
         if now - started > job_seconds:
             hub.cancel(job_id)

@@ -4,7 +4,8 @@
 FROM golang:1.24-bookworm AS build
 ARG VERSION=dev
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
@@ -23,6 +24,8 @@ ENV LBW_RUNNER_HOME=/home/runner/.lbw-runner
 # The container is the boundary: Claude Code's sandbox needs namespaces Docker
 # does not give by default, so jobs here run without it.
 ENV LBW_RUNNER_SANDBOX=off
+# No one opens the dashboard in a container, and an unlinked container should exit.
+ENV LBW_RUNNER_DASHBOARD=off
 VOLUME ["/home/runner/.lbw-runner"]
 ENTRYPOINT ["lbw-runner"]
 CMD ["run"]

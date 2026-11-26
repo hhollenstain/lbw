@@ -25,10 +25,13 @@ from agent_lbw.llm.client import (
 )
 from agent_lbw.logging import UtcFormatter, utcnow_iso
 from agent_lbw.progress import (
+    TaskStopped,
     bind_progress,
+    bind_stop,
     public_event,
     record_event,
     reset_progress,
+    reset_stop,
     token_usage_from_events,
 )
 from agent_lbw.runtime.improve import CycleResult, SpecRequest, resolve_human_gates, run_cycle
@@ -256,6 +259,19 @@ class Task:
     ci_context: str = field(default="", repr=False)
     # A run that merges this base branch into the open pull request to clear a conflict.
     merge_base: str = ""
+    # What this run was asked to do when that is not the change's goal: fix
+    # failed checks, merge the base, or a goal edited on rerun. The goal stays
+    # the change's name across every run.
+    instruction: str = ""
+    # The phase a rerun started at, when it skipped the earlier ones.
+    started_from: str = ""
+    # Who stopped this job while it was queued or running.
+    stopped_by: str = ""
+    _stop: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
+
+    def run_goal(self) -> str | None:
+        """What the agent works on in this run."""
+        return self.instruction or self.goal
 
     def to_dict(self, *, include_logs: bool = True) -> dict:
         payload = {
@@ -313,6 +329,9 @@ class Task:
             "ci_pr_url": self.ci_pr_url,
             "ci_checks": list(self.ci_checks),
             "merge_base": self.merge_base,
+            "instruction": self.instruction,
+            "started_from": self.started_from,
+            "stopped_by": self.stopped_by,
             "restart_from": restart_phase(
                 status=self.status,
                 decision=self.decision or "",
@@ -325,6 +344,16 @@ class Task:
         if include_logs:
             payload["logs"] = list(self.logs)
         return payload
+
+
+def _mark_stopped(task: Task) -> None:
+    who = task.stopped_by or "someone"
+    # Appended directly: a queued job has no progress list bound to its thread.
+    task.events.append({"kind": "step", "at": utcnow_iso(), "message": f"Stopped by {who}"})
+    task.status = "failed"
+    task.reason = f"Stopped by {who}"
+    task.error = None
+    task.finished_at = _utcnow()
 
 
 _LOGGING_TASK: ContextVar[str | None] = ContextVar("lbw_logging_task", default=None)
@@ -415,6 +444,8 @@ class TaskManager:
         ci_checks: list[str] | None = None,
         resume: dict | None = None,
         merge_base: str = "",
+        instruction: str = "",
+        started_from: str = "",
     ) -> Task:
         """Queue a job. `resume` starts it past phases an earlier run finished.
 
@@ -486,6 +517,8 @@ class TaskManager:
             ci_pr_url=(ci_pr_url or "").strip(),
             ci_checks=list(ci_checks or []),
             merge_base=(merge_base or "").strip(),
+            instruction=(instruction or "").strip(),
+            started_from=(started_from or "").strip(),
         )
         if resume:
             task.decision = str(resume.get("decision") or "") or None
@@ -649,9 +682,15 @@ class TaskManager:
                 for item in self._tasks.values()
                 if item.id == first or item.attempt_of == first
             ]
+        # The goal stays the change's name. A different request for this run is
+        # its instruction, and a plain rerun carries the last run's instruction.
+        old_goal = (old_task.goal or "").strip()
+        instruction = revised if revised and revised != old_goal else old_task.instruction
         return self.submit(
             Path(old_task.workspace),
-            revised or old_task.goal,
+            old_task.goal,
+            instruction=instruction,
+            started_from=phase,
             attempt_of=first,
             attempt=max([old_task.attempt, *numbers]) + 1,
             auto_commit=old_task.auto_commit,
@@ -1004,6 +1043,8 @@ class TaskManager:
             ci_pr_url=str(ci.get("pr_url") or ""),
             ci_checks=[str(name) for name in ci.get("checks") or [] if str(name).strip()],
             merge_base=str(ci.get("merge_base") or ""),
+            instruction=str(record.get("instruction") or ""),
+            started_from=str(record.get("started_from") or ""),
         )
 
     def _checkout_for(self, workspace: str) -> str:
@@ -1015,7 +1056,30 @@ class TaskManager:
         found = local_checkout(self.store_root, workspace)
         return str(found) if found is not None else workspace
 
+    def stop(self, task_id: str, *, by: str) -> Task | None:
+        """Stop a queued or running job. It ends as failed, and can be rerun.
+
+        A queued job ends now. A running one ends at its next model call, or
+        within seconds when it waits on a runner or a relayed model call.
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return None
+            if task.status not in {"queued", "running"}:
+                raise ValueError("only a queued or running job can be stopped")
+            task.stopped_by = by or "someone"
+            task._stop.set()
+            if task.status == "queued":
+                _mark_stopped(task)
+        if task.status != "running":
+            self._sync_stored_task(task)
+        return task
+
     def _run(self, task: Task) -> None:
+        if task._stop.is_set():
+            # Stopped while it waited in the queue: nothing to run.
+            return
         task.status = "running"
         task.started_at = _utcnow()
         if task.decision == "accept_spec" or (
@@ -1053,6 +1117,7 @@ class TaskManager:
         for exchange_log in exchange_logs:
             exchange_log.addHandler(handler)
         progress = bind_progress(task.events)
+        stopping = bind_stop(task._stop)
         log.info("task %s model=%s url=%s", task.id, task.model_name, task.model_base_url)
         try:
             result = self._execute(task)
@@ -1081,6 +1146,13 @@ class TaskManager:
             self._refresh_git_state(task)
             task.finished_at = _utcnow()
             task.status = result.status
+            if task._stop.is_set() and result.status != "success":
+                # Stopped as a runner or a relayed call gave up: say who stopped it.
+                _mark_stopped(task)
+        except TaskStopped:
+            log.info("task %s stopped by %s", task.id, task.stopped_by)
+            self._refresh_git_state(task)
+            _mark_stopped(task)
         except ModelRequestError as exc:
             log.error("task %s failed: %s", task.id, exc)
             task.error = str(exc)
@@ -1094,6 +1166,7 @@ class TaskManager:
             task.finished_at = _utcnow()
             task.status = "error"
         finally:
+            reset_stop(stopping)
             reset_progress(progress)
             lbw_log.removeHandler(handler)
             for exchange_log in exchange_logs:
@@ -1196,7 +1269,9 @@ class TaskManager:
                 Path(task.workspace),
                 settings,
                 llm,
-                task.goal,
+                task.run_goal(),
+                change_goal=task.goal,
+                started_from=task.started_from,
                 cli_create_pr=task.create_pr,
                 continuous=task.continuous,
                 sibling_tasks=sibling_task_records(self, task),

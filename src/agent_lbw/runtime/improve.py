@@ -132,6 +132,9 @@ from agent_lbw.tools.tests import current_test_result, run_project_tests, runner
 log = logging.getLogger("lbw")
 
 _TASK_ID: ContextVar[str | None] = ContextVar("lbw_palace_task_id", default=None)
+# The change this run belongs to, as history records it: its goal, which stays
+# its name, and the phase a rerun started at.
+_CHANGE: ContextVar[dict | None] = ContextVar("lbw_change", default=None)
 _PALACE: ContextVar[object] = ContextVar("lbw_palace", default=None)
 
 
@@ -350,9 +353,20 @@ def run_cycle(
     spec: SpecRequest | None = None,
     extra_context: str = "",
     keep_pull_request: bool = False,
+    change_goal: str | None = None,
+    started_from: str = "",
 ) -> CycleResult:
+    """Run one change. ``goal`` is what the agent works on in this run.
+
+    ``change_goal`` is the change's own goal when this run was asked for
+    something else, such as fixing failed checks. History keeps it as the
+    change's name and the run's request as its instruction.
+    """
     progress = bind_progress()
     token = _TASK_ID.set(task_id)
+    change_token = _CHANGE.set(
+        {"goal": change_goal, "started_from": started_from} if change_goal or started_from else None
+    )
     palace_token = _PALACE.set(None)
     try:
         return _run_cycle(
@@ -382,6 +396,7 @@ def run_cycle(
     finally:
         _PALACE.reset(palace_token)
         _TASK_ID.reset(token)
+        _CHANGE.reset(change_token)
         reset_progress(progress)
 
 
@@ -3790,6 +3805,24 @@ def _remember_cycle(root: Path, result: CycleResult) -> None:
     )
 
 
+def change_fields(run_goal: str | None, change: dict | None) -> dict:
+    """A run's history goal, instruction, and start phase.
+
+    The goal is the change's name. A run asked for something else keeps that
+    request as its instruction.
+    """
+    if not change:
+        return {}
+    fields: dict = {}
+    goal = change.get("goal")
+    if goal and (run_goal or "").strip() != goal.strip():
+        fields["goal"] = goal
+        fields["instruction"] = run_goal or ""
+    if change.get("started_from"):
+        fields["started_from"] = change["started_from"]
+    return fields
+
+
 def _append_to_history(root: Path, result: CycleResult) -> None:
     """Append cycle result to history.json for persistent storage across restarts."""
     history_file = root / "history.json"
@@ -3812,6 +3845,7 @@ def _append_to_history(root: Path, result: CycleResult) -> None:
     task_id = _TASK_ID.get()
     if task_id:
         entry["id"] = task_id
+    entry.update(change_fields(entry.get("goal"), _CHANGE.get()))
     history.insert(0, entry)
 
     # Limit history size to avoid file becoming too large

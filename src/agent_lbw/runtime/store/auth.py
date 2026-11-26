@@ -282,13 +282,37 @@ def open_organization(
     db: Database, *, name: str, email: str, password: str, organization: str
 ) -> str:
     """Create an organization and its owner. The owner is not an LBW engineer."""
+    return _open_account(
+        db,
+        name=name,
+        email=email,
+        password=password,
+        kind="organization",
+        tenant_name=clean_name(organization, "organization"),
+    )
+
+
+def open_personal_account(db: Database, *, name: str, email: str, password: str) -> str:
+    """Create a personal account: one person and their own repositories.
+
+    It has its owner and no teams. Adding a team promotes it to an organization
+    first, which keeps its id, so its projects and jobs stay put.
+    """
+    person = clean_name(name, "name")
+    return _open_account(
+        db, name=name, email=email, password=password, kind="personal", tenant_name=person
+    )
+
+
+def _open_account(
+    db: Database, *, name: str, email: str, password: str, kind: str, tenant_name: str
+) -> str:
     if not has_password(db):
         raise ValueError("create the admin account first")
     clean_email = _email(email)
     _password(password)
     _available(db, clean_email, "")
     person = clean_name(name, "name")
-    org_name = clean_name(organization, "organization")
     user_id = new_id("user")
     tenant_id = new_id("org")
     now = int(time.time())
@@ -302,9 +326,9 @@ def open_organization(
     db.execute(
         """
         INSERT INTO tenants (id, kind, name, slug, mode)
-        VALUES (?, 'organization', ?, ?, 'local')
+        VALUES (?, ?, ?, ?, 'local')
         """,
-        (tenant_id, org_name, slug_for(org_name, tenant_id)),
+        (tenant_id, kind, tenant_name, slug_for(tenant_name, tenant_id)),
     )
     db.execute(
         """

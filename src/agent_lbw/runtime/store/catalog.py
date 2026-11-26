@@ -600,6 +600,8 @@ def attach_builder(db: Database, task_id: str, *, agent_id: str) -> dict:
         raise ValueError("unknown agent")
     identity_id = account["current_user_id"]
     project_id = task["project_id"]
+    if not can_access(db, identity_id, project_id, need="write"):
+        raise PermissionError("a person with write access to this project can do that")
     if not agent_allowed(db, identity_id, project_id, agent["id"]):
         raise PermissionError("that agent is not granted for this project")
     model_id = agent["model_id"] or ""
@@ -623,8 +625,9 @@ def accept_review(db: Database, task_id: str) -> dict:
     if not task["agent_id"]:
         raise ValueError("this task has no agent")
     identity_id = account["current_user_id"]
-    if not can_access(db, identity_id, task["project_id"], need="use"):
-        raise PermissionError("that project is closed to this person")
+    # Accepting built work approves it, so it takes write access.
+    if not can_access(db, identity_id, task["project_id"], need="write"):
+        raise PermissionError("a person with write access to this project can accept this work")
     db.execute("UPDATE tasks SET reviewer_id = ? WHERE id = ?", (identity_id, task_id))
     return _builder_view(db, task_id)
 

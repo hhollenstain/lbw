@@ -29,3 +29,11 @@ func TestLoginNeedsAServer(t *testing.T) {
 		t.Fatalf("code=%d err=%s", code, errOut.String())
 	}
 }
+
+func TestABuildFromSourceDoesNotUpdateItself(t *testing.T) {
+	t.Setenv("LBW_RUNNER_HOME", t.TempDir())
+	var out, errOut bytes.Buffer
+	if code := dispatch(context.Background(), []string{"update"}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "build from source") {
+		t.Fatalf("code=%d err=%s", code, errOut.String())
+	}
+}

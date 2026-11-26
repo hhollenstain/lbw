@@ -1,0 +1,130 @@
+name: Runner release
+
+# Publish LBW Runner either way:
+# - push a tag such as runner-v0.3.0, and this creates the release; or
+# - publish a release on GitHub with a runner-v tag, and this builds macOS,
+#   Linux, and Windows binaries and attaches them to it.
+# Runners find the release through GitHub's releases list and install it only
+# when its SHA256SUMS is signed by the release key (secret RUNNER_SIGNING_KEY,
+# made with `go run ./cmd/lbw-runner-sign keygen PATH`). See docs/runner.md.
+on:
+  push:
+    tags: ["runner-v*"]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+# Publishing a release on GitHub with a new tag can also count as pushing that
+# tag. The runs take turns, and each uploads its binaries and their signed
+# SHA256SUMS together, so a release never mixes files from two builds.
+concurrency:
+  group: runner-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    # The menu bar icon is drawn through AppKit, so macOS builds with cgo on a Mac.
+    if: startsWith(github.ref_name, 'runner-v')
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: runner/go.mod
+          cache-dependency-path: runner/go.sum
+      - name: Build both Mac architectures with the menu bar icon
+        run: |
+          mkdir -p dist
+          for arch in arm64 amd64; do
+            clang_arch=arm64
+            if [ "$arch" = amd64 ]; then clang_arch=x86_64; fi
+            CGO_ENABLED=1 CC="clang -arch $clang_arch" GOOS=darwin GOARCH=$arch \
+              go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "dist/lbw-runner-darwin-$arch" ./cmd/lbw-runner
+            otool -L "dist/lbw-runner-darwin-$arch" | grep -q AppKit
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: runner/dist/
+
+  others:
+    if: startsWith(github.ref_name, 'runner-v')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: runner/go.mod
+          cache-dependency-path: runner/go.sum
+      - name: Vet and test
+        run: |
+          go vet ./...
+          go test ./...
+      - name: Build Linux and Windows
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 windows/amd64; do
+            os=${target%/*}; arch=${target#*/}; ext=""
+            if [ "$os" = windows ]; then ext=".exe"; fi
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch \
+              go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "dist/lbw-runner-$os-$arch$ext" ./cmd/lbw-runner
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: others
+          path: runner/dist/
+
+  publish:
+    needs: [macos, others]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: runner/go.mod
+          cache-dependency-path: runner/go.sum
+      - uses: actions/download-artifact@v4
+        with:
+          path: runner/dist
+          merge-multiple: true
+      - name: Sum and sign
+        env:
+          RUNNER_SIGNING_KEY: ${{ secrets.RUNNER_SIGNING_KEY }}
+        run: |
+          if [ -z "$RUNNER_SIGNING_KEY" ]; then
+            echo "::error::Set the RUNNER_SIGNING_KEY secret: runners install only signed releases."
+            exit 1
+          fi
+          (cd dist && sha256sum lbw-runner-* > SHA256SUMS)
+          go run ./cmd/lbw-runner-sign sign dist/SHA256SUMS
+          # The signature must check against the key built into the runner.
+          go run ./cmd/lbw-runner-sign verify dist/SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A release published on GitHub gets the binaries attached. A pushed
+          # tag gets a new release. A tag pushed for an existing release, or a
+          # rerun, replaces the files.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --title "LBW Runner ${GITHUB_REF_NAME#runner-v}" \
+              --notes "Install it from LBW Runner's dashboard or tray (Install update), or run \`lbw-runner update\`. Each binary is listed in SHA256SUMS, which is signed by LBW's release key."
+          fi

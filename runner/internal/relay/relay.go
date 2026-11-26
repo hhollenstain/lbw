@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/hhollenstain/lbw/runner/internal/client"
+	"github.com/hhollenstain/lbw/runner/internal/monitor"
 )
 
 // MaxBody caps a model call's request and answer, matching LBW's limit.
@@ -54,6 +55,9 @@ type Relay struct {
 	Poll           time.Duration
 	Retry          time.Duration
 	Log            *log.Logger
+	// Monitor shows each call on the dashboard and pauses taking new ones.
+	// Nil runs without it.
+	Monitor *monitor.Monitor
 }
 
 // New builds a relay with a ten-minute limit per model call.
@@ -80,6 +84,10 @@ func New(api *client.Client, hosts []string, logger *log.Logger) *Relay {
 func (r *Relay) Run(ctx context.Context) error {
 	slots := make(chan struct{}, Parallel)
 	for ctx.Err() == nil {
+		if r.Monitor.Paused() {
+			wait(ctx, time.Second)
+			continue
+		}
 		call, err := r.API.NextModelCall(ctx, r.Poll)
 		if errors.Is(err, client.ErrUnauthorized) {
 			return err
@@ -103,9 +111,11 @@ func (r *Relay) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		}
+		r.Monitor.CallStarted(call)
 		go func(call *client.ModelCall) {
 			defer func() { <-slots }()
 			answer := r.Forward(ctx, call)
+			r.Monitor.CallFinished(call.CallID, answer)
 			if err := r.API.AnswerModelCall(ctx, call.CallID, answer); err != nil {
 				r.Log.Printf("model call %s: could not answer LBW: %v", call.CallID, err)
 			}

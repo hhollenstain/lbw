@@ -22,6 +22,7 @@ from agent_lbw.runtime.store.github import (
     github_manager,
     installation_token,
     require_github_manager,
+    uses_site_app,
 )
 from agent_lbw.runtime.store.install import read_account, require_account
 from agent_lbw.runtime.store.projects import ensure_project, grant_project
@@ -109,7 +110,8 @@ def projects_for_person(db: Database, tenant_id: str, identity_id: str) -> list[
 
     A synced GitHub repository is listed when it is turned on, GitHub has not
     archived it, and a linked account granted this person or one of their teams.
-    A local folder, and a checkout that has not been synced yet, stays listed.
+    A local folder, and a checkout that has not been synced yet, is listed for
+    the account's owners and admins, and for a person or team granted it.
     """
     rows = db.fetchall(
         """
@@ -127,6 +129,13 @@ def projects_for_person(db: Database, tenant_id: str, identity_id: str) -> list[
             (identity_id,),
         )
     }
+    rank = db.fetchone(
+        "SELECT rank FROM tenant_memberships WHERE tenant_id = ? AND identity_id = ?",
+        (tenant_id, identity_id),
+    )
+    if rank is None:
+        return []
+    runs_account = rank["rank"] in {"owner", "admin"}
     allowed: set[str] = set()
     for grant in db.fetchall("SELECT project_id, subject_type, subject_id FROM project_grants"):
         subject = str(grant["subject_id"])
@@ -137,14 +146,16 @@ def projects_for_person(db: Database, tenant_id: str, identity_id: str) -> list[
     shown: list[dict] = []
     for row in rows:
         if str(row["kind"]) != "github":
-            shown.append(dict(row))
+            if runs_account or str(row["id"]) in allowed:
+                shown.append(dict(row))
             continue
         if not int(row["enabled"] or 0) or row["archived_at"]:
             continue
         # A checkout opened on this machine has no GitHub id yet. Once sync
         # stores that id, the project list follows the linked account.
         if not str(row["provider_id"] or ""):
-            shown.append(dict(row))
+            if runs_account or str(row["id"]) in allowed:
+                shown.append(dict(row))
             continue
         if str(row["id"]) in allowed:
             shown.append(dict(row))
@@ -161,6 +172,9 @@ def sync_installation_repos(db: Database, account: dict, repos: list[dict]) -> N
     tenant_id = account["org"]["id"]
     collapse_repo_projects(db, tenant_id)
     now = int(time.time())
+    # A personal account chose its repositories when it installed the app on
+    # GitHub, so each one starts on. An organization's admin turns each on.
+    starts_on = 1 if uses_site_app(db, tenant_id) else 0
     for repo in repos:
         full_name = str(repo.get("full_name") or "")
         if not full_name:
@@ -190,10 +204,10 @@ def sync_installation_repos(db: Database, account: dict, repos: list[dict]) -> N
             db.execute(
                 """
                 UPDATE projects
-                SET provider_id = ?, kind = 'github', archived_at = ?, enabled = 0
+                SET provider_id = ?, kind = 'github', archived_at = ?, enabled = ?
                 WHERE id = ?
                 """,
-                (provider, stamp, project["id"]),
+                (provider, stamp, starts_on, project["id"]),
             )
         else:
             db.execute(

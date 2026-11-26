@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,6 +33,10 @@ type Client struct {
 	Server string
 	Token  string
 	HTTP   *http.Client
+
+	inboxMu   sync.Mutex
+	inboxTag  string
+	inboxLast *Inbox
 }
 
 // New builds a client. caFile adds a certificate authority, such as a local dev CA.
@@ -234,6 +240,96 @@ func (c *Client) SendEvents(ctx context.Context, jobID string, events []Event) (
 	return answer.Cancel, err
 }
 
+// APIError is an answer LBW refused, with LBW's own reason.
+type APIError struct {
+	Method  string
+	Path    string
+	Status  int
+	Message string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s %s: %d %s", e.Method, e.Path, e.Status, e.Message)
+}
+
+// InboxItem is one job in the owner's inbox: waiting on them, or running.
+type InboxItem struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Project    string `json:"project"`
+	Status     string `json:"status"`
+	Stage      string `json:"stage"`
+	WaitingFor string `json:"waiting_for"`
+	StartedBy  string `json:"started_by"`
+	Model      string `json:"model"`
+	OnRunner   bool   `json:"on_runner"`
+	Since      string `json:"since"`
+	Link       string `json:"link"`
+}
+
+// Inbox is what waits on the runner's owner, and the jobs they have running.
+type Inbox struct {
+	Waiting []InboxItem `json:"waiting"`
+	Running []InboxItem `json:"running"`
+}
+
+// Inbox reads the owner's inbox. It sends the last ETag, so an unchanged
+// inbox comes back as an empty 304 and the copy it already has is used.
+func (c *Client) Inbox(ctx context.Context) (*Inbox, error) {
+	if c.Token == "" {
+		return nil, ErrUnauthorized
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Server+"/api/runner/inbox", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	c.inboxMu.Lock()
+	tag, last := c.inboxTag, c.inboxLast
+	c.inboxMu.Unlock()
+	if tag != "" && last != nil {
+		req.Header.Set("If-None-Match", tag)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	switch {
+	case resp.StatusCode == http.StatusNotModified && last != nil:
+		return last, nil
+	case resp.StatusCode == http.StatusUnauthorized:
+		return nil, ErrUnauthorized
+	case resp.StatusCode != http.StatusOK:
+		return nil, fmt.Errorf("GET /api/runner/inbox: %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var inbox Inbox
+	if err := json.Unmarshal(data, &inbox); err != nil {
+		return nil, fmt.Errorf("GET /api/runner/inbox: %w", err)
+	}
+	c.inboxMu.Lock()
+	c.inboxTag, c.inboxLast = resp.Header.Get("ETag"), &inbox
+	c.inboxMu.Unlock()
+	return &inbox, nil
+}
+
+// StopTask stops one of the owner's queued or running jobs in LBW, and
+// returns the inbox after it. An error carries LBW's reason.
+func (c *Client) StopTask(ctx context.Context, taskID string) (*Inbox, error) {
+	var inbox Inbox
+	_, err := c.do(ctx, http.MethodPost, "/api/runner/tasks/"+url.PathEscape(taskID)+"/stop", map[string]string{}, &inbox, true)
+	var refused *APIError
+	if errors.As(err, &refused) && refused.Message != "" {
+		return nil, errors.New(refused.Message)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &inbox, nil
+}
+
 // Finish hands the result back to the waiting job.
 func (c *Client) Finish(ctx context.Context, jobID string, result Result) error {
 	_, err := c.do(ctx, http.MethodPost, "/api/runner/jobs/"+jobID+"/finish", result, nil, true)
@@ -285,7 +381,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any, aut
 		if problem.Error == "" {
 			problem.Error = strings.TrimSpace(string(data))
 		}
-		return resp.StatusCode, fmt.Errorf("%s %s: %d %s", method, path, resp.StatusCode, problem.Error)
+		return resp.StatusCode, &APIError{Method: method, Path: path, Status: resp.StatusCode, Message: problem.Error}
 	}
 	if out != nil && len(data) > 0 {
 		if err := json.Unmarshal(data, out); err != nil {

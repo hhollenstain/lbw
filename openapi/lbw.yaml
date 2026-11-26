@@ -603,6 +603,107 @@ paths:
           description: The job cannot be rerun, or the model is not usable here.
         "409":
           description: The model is gone, the pull request is closed, or a runner or link is required.
+  /api/tasks/{task_id}/stop:
+    post:
+      operationId: stopTask
+      description: >-
+        Stop a queued or running job. A queued job ends at once. A running job
+        ends at its next model call, or within seconds while it waits on a
+        runner or a relayed model call. It ends as failed with "Stopped by"
+        the person, and can be rerun. Needs write access to the project.
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The job, now stopped or stopping.
+        "403":
+          description: The person cannot write to this project.
+        "404":
+          description: No such job.
+        "409":
+          description: The job is not queued or running.
+  /api/runner/inbox:
+    get:
+      operationId: runnerInbox
+      description: >-
+        Runner-token auth. What waits on the runner's owner: jobs paused for a
+        person with write access (a spec, a plan, or a change to approve) in
+        projects they can write, and the jobs they started that are queued or
+        running. Each item has the goal's first line, not the goal.
+      responses:
+        "200":
+          description: The owner's inbox.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerInbox"
+        "304":
+          $ref: "#/components/responses/NotModified"
+  /api/runner/tasks/{task_id}/stop:
+    post:
+      operationId: runnerStopTask
+      description: >-
+        Runner-token auth. Stop a queued or running job for the runner's owner,
+        as POST /api/tasks/{task_id}/stop does for a signed-in person, with the
+        same write access.
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The owner's inbox after the stop.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerInbox"
+        "403":
+          description: The owner cannot write to this project.
+        "404":
+          description: No such job.
+        "409":
+          description: The job is not queued or running.
+  /api/auth/signup:
+    post:
+      operationId: signUp
+      description: >-
+        Create an account and sign in as its owner. A personal account is one
+        person and their own repositories, with no teams. An organization has
+        people and teams. Either needs the install's admin account to exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignupBody"
+      responses:
+        "200":
+          description: The new account, signed in.
+        "400":
+          description: A field is missing or the email is taken.
+  /api/github/personal/connect:
+    get:
+      operationId: connectPersonalGitHub
+      description: >-
+        For a personal account's owner: the GitHub sign-in page that connects
+        their own GitHub account through this LBW site's GitHub App. The
+        callback keeps only an installation on the person's own GitHub user
+        account, and sends them to install the app there when it is not.
+      responses:
+        "200":
+          description: "{\"url\": ...}, the GitHub page to open."
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "403":
+          description: Not a personal account, or not its owner.
+        "400":
+          description: This site has no GitHub App for personal accounts yet.
   /api/runner/llm/{call_id}/ack:
     post:
       operationId: ackRunnerModelCall
@@ -803,6 +904,72 @@ components:
         Cache-Control:
           $ref: "#/components/headers/CacheControl"
   schemas:
+    SignupBody:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        password:
+          type: string
+        kind:
+          type: string
+          enum: [personal, organization]
+          default: organization
+          description: personal for one person and their own repositories.
+        organization:
+          type: string
+          default: ""
+          description: The organization's name. Left out for a personal account.
+    RunnerInboxItem:
+      type: object
+      required: [id, title, project, status, stage, waiting_for, link]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+          description: The goal's first line.
+        project:
+          type: string
+        status:
+          type: string
+          description: queued, running, or waiting.
+        stage:
+          type: string
+        waiting_for:
+          type: string
+          description: >-
+            What a person does next, such as "Review the plan", or empty for a
+            running job.
+        started_by:
+          type: string
+        model:
+          type: string
+        on_runner:
+          type: boolean
+          default: false
+          description: The job runs on this person's runner with Claude Code.
+        since:
+          type: string
+          description: When it was queued, started, or began waiting (ISO 8601).
+        link:
+          type: string
+          description: The path that opens the change in LBW.
+    RunnerInbox:
+      type: object
+      required: [waiting, running]
+      properties:
+        waiting:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunnerInboxItem"
+        running:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunnerInboxItem"
     ScheduleCadence:
       type: object
       required: [kind]

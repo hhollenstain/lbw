@@ -2342,13 +2342,18 @@
       <input id="auth-email" type="email" maxlength="200" autocomplete="username" spellcheck="false">
       <label for="auth-password">Password</label>
       <input id="auth-password" type="password" maxlength="200" autocomplete="current-password">
+      <fieldset class="auth-kind" id="auth-kind-row" hidden>
+        <legend>Who is this for?</legend>
+        <label><input type="radio" name="auth-kind" id="auth-kind-personal" value="personal" checked> Just me: my own repositories, private ones too</label>
+        <label><input type="radio" name="auth-kind" id="auth-kind-organization" value="organization"> An organization: people and teams</label>
+      </fieldset>
       <div id="auth-org-row" hidden>
         <label for="auth-org">Organization</label>
         <input id="auth-org" type="text" maxlength="80" spellcheck="false">
       </div>
       <div class="modal-actions">
         <button type="submit" id="auth-submit">Sign in</button>
-        <button type="button" class="secondary" id="auth-signup" hidden>Create an organization</button>
+        <button type="button" class="secondary" id="auth-signup" hidden>Create an account</button>
       </div>
       <p class="error" id="auth-error"></p>
       <p class="auth-links" id="auth-links">
@@ -2731,7 +2736,7 @@
         <div class="section-page" id="organization-settings">
           <p class="ask-kicker">Account</p>
           <h1 class="ask-heading">Organization</h1>
-          <p class="hint">The hierarchy is organization, then teams, then projects. A project shows an organization or team rule, and an organization skill, only when it is assigned there. Agent teams are chosen on the project. An organization admin can enforce a task on every project.</p>
+          <p class="hint" id="organization-intro">The hierarchy is organization, then teams, then projects. A project shows an organization or team rule, and an organization skill, only when it is assigned there. Agent teams are chosen on the project. An organization admin can enforce a task on every project.</p>
           <div class="org-tabs" role="tablist" aria-label="Organization settings">
             <button type="button" class="secondary org-tab" id="org-tab-people" data-org-tab="people" aria-pressed="true">People</button>
             <button type="button" class="secondary org-tab" id="org-tab-teams" data-org-tab="teams" aria-pressed="false">Teams</button>
@@ -2813,7 +2818,14 @@
           <div class="org-panel" id="org-panel-github" data-org-panel="github" hidden>
           <div class="github-app" id="github-app">
             <p class="hint" id="github-app-status">Not connected.</p>
-            <p class="hint">Install the LBW GitHub App on the account that owns this organization's repositories, then choose that account. An LBW engineer saves the app key on the engineer dashboard.</p>
+            <p class="hint" id="github-org-hint">Install the LBW GitHub App on the account that owns this organization's repositories, then choose that account. An LBW engineer saves the app key on the engineer dashboard.</p>
+            <div id="github-personal" hidden>
+              <p class="hint">Connect your GitHub account to work on your own repositories, private ones included. GitHub asks which repositories LBW may use; each one you choose shows up as a project.</p>
+              <div class="modal-actions">
+                <button type="button" id="connect-personal-github">Connect GitHub</button>
+                <a class="button-link" id="manage-personal-github" href="https://github.com/settings/installations" target="_blank" rel="noopener noreferrer" hidden>Choose repositories on GitHub</a>
+              </div>
+            </div>
             <p class="hint" id="github-app-install-row" hidden><a id="github-app-install" href="https://github.com/apps" target="_blank" rel="noopener noreferrer">Install on GitHub</a></p>
             <div class="notice-slot" id="github-app-error"></div>
             <div id="github-app-edit">
@@ -3375,7 +3387,27 @@
       return "Member";
     }
 
+    // A personal account is one person's own: its settings read as "Account".
+    function applyAccountKind(account) {
+      const personal = Boolean(account.org && account.org.kind === "personal");
+      const label = personal ? "Account" : "Organization";
+      const menu = document.getElementById("open-organization-page");
+      if (menu) menu.textContent = label;
+      const heading = document.querySelector("#organization-settings .ask-heading");
+      if (heading) heading.textContent = label;
+      const orgLabel = document.querySelector('label[for="org-name"]');
+      if (orgLabel) orgLabel.textContent = personal ? "Account name" : "Organization";
+      const intro = document.getElementById("organization-intro");
+      if (intro) {
+        if (!intro.dataset.organization) intro.dataset.organization = intro.textContent;
+        intro.textContent = personal
+          ? "Your account: the models, rules, and skills your projects use, and the GitHub account they come from. Adding a team turns it into an organization."
+          : intro.dataset.organization;
+      }
+    }
+
     function renderAccount(account) {
+      applyAccountKind(account);
       const orgEl = document.getElementById("org-name");
       const nameEl = document.getElementById("profile-name");
       const peopleEl = document.getElementById("account-users");
@@ -3471,6 +3503,20 @@
     }
 
     function renderGitHubApp(app) {
+      const personal = Boolean(app.personal);
+      for (const id of ["github-org-hint", "github-app-edit"]) {
+        const el = document.getElementById(id);
+        if (el) el.hidden = personal;
+      }
+      const personalCard = document.getElementById("github-personal");
+      if (personalCard) personalCard.hidden = !personal;
+      const connectEl = document.getElementById("connect-personal-github");
+      if (connectEl) {
+        connectEl.textContent = app.account_login ? "Connect again" : "Connect GitHub";
+        connectEl.disabled = !app.configured;
+      }
+      const manageEl = document.getElementById("manage-personal-github");
+      if (manageEl) manageEl.hidden = !(personal && app.account_login);
       const idEl = document.getElementById("github-app-id");
       const statusEl = document.getElementById("github-app-status");
       const installEl = document.getElementById("github-app-install");
@@ -3497,13 +3543,26 @@
           ? "Client secret saved. Paste a new one to replace it."
           : "Paste the client secret. It is stored sealed and is not shown again.";
       }
-      if (app.account_login) {
+      if (personal) {
+        statusEl.textContent = app.account_login
+          ? "Connected to " + app.account_login + ". Your repositories are projects. To add or remove one, choose repositories on GitHub, then Sync."
+          : (app.configured
+            ? "Not connected."
+            : "This LBW site has no GitHub App for personal accounts yet. An LBW engineer sets it up.");
+      } else if (app.account_login) {
         statusEl.textContent = "Connected to " + app.account_login + ". People connect GitHub from Personal, then sync.";
       } else if (app.configured) {
         statusEl.textContent = "Saved. Install the app on the GitHub account or organization that owns the repositories, then refresh.";
       } else {
         statusEl.textContent = "Not connected.";
       }
+    }
+
+    async function connectPersonalGitHub() {
+      const res = await fetch("/api/github/personal/connect");
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "could not start connecting GitHub");
+      window.location.assign(body.url);
     }
 
     async function loadGitHubApp() {
@@ -4736,6 +4795,19 @@
 
     const linkedPage = new URLSearchParams(window.location.search);
     let linkedProjectApplied = !linkedPage.get("project");
+    // ?change=<task id> opens that change once the project's jobs load, as the
+    // runner's dashboard links to it.
+    let linkedChange = linkedPage.get("change") || "";
+
+    function applyLinkedChange() {
+      if (!linkedChange) return;
+      const found = state.tasks.find((task) => task.id === linkedChange);
+      if (!found) return;
+      linkedChange = "";
+      state.selectedRunKey = `task:${found.id}`;
+      if (state.section !== "changes") showSection("changes");
+      writePageUrl();
+    }
 
     function sameProject(item, token) {
       const want = String(token || "").toLowerCase();
@@ -4770,6 +4842,7 @@
       const token = projectLink(item);
       if (token) params.set("project", token);
       else if (linkedProjectApplied) params.delete("project");
+      if (!linkedChange) params.delete("change");
       const query = params.toString();
       const next = window.location.pathname + (query ? "?" + query : "") + window.location.hash;
       const current = window.location.pathname + window.location.search + window.location.hash;
@@ -5761,6 +5834,9 @@
     });
     document.getElementById("check-github-installations").addEventListener("click", () => {
       loadGitHubInstallations().catch(showGitHubError);
+    });
+    document.getElementById("connect-personal-github").addEventListener("click", () => {
+      connectPersonalGitHub().catch(showGitHubError);
     });
     document.getElementById("use-github-installation").addEventListener("click", () => {
       useGitHubInstallation().catch(showGitHubError);
@@ -7738,6 +7814,30 @@
       return `<p class="callout-copy callout-estimate" data-build-estimate="${escapeHtml(key)}">${buildEstimateBody(buildEstimates[key])}</p>`;
     }
 
+    // Stop a queued or running job. It ends as failed and can be rerun.
+    function stopButtonHtml(item) {
+      if (!item || !item.id) return "";
+      if (item.stopped_by) {
+        return `<p class="callout-copy">Stopping: ${escapeHtml(item.stopped_by)} stopped it. It ends at its next step.</p>`;
+      }
+      return `<div class="change-actions"><button type="button" class="secondary stop-button" data-stop-task="${escapeHtml(item.id)}">Stop</button></div>`;
+    }
+
+    async function stopTask(taskId, button) {
+      if (!window.confirm("Stop this job? It ends as failed, and you can rerun it.")) return;
+      button.disabled = true;
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/stop`, { method: "POST" });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "Could not stop this job");
+        notify("queued", goalHeadline(body), { title: body.status === "running" ? "Stopping" : "Stopped" });
+        await refresh();
+      } catch (err) {
+        button.disabled = false;
+        notify("error", err.message, { title: "Could not stop this job" });
+      }
+    }
+
     function calloutHtml(tone, badge, title, body) {
       return `<section class="change-callout callout-${tone}" data-decision-scope aria-live="polite"><div class="callout-head"><span class="callout-badge">${escapeHtml(badge)}</span><p class="callout-title">${escapeHtml(title)}</p></div>${body}</section>`;
     }
@@ -8016,12 +8116,12 @@
         callout = calloutHtml("muted", "Handed off", "A person took this over", `<p class="callout-copy">Nothing was built. ${escapeHtml(reason)}</p>`);
       } else if (queued) {
         calloutStep = focus;
-        callout = calloutHtml("muted", "Queued", "Waiting for a worker", `<p class="callout-copy">This change starts as soon as a worker is free.</p>`);
+        callout = calloutHtml("muted", "Queued", "Waiting for a worker", `<p class="callout-copy">This change starts as soon as a worker is free.</p>${stopButtonHtml(item)}`);
       } else if (running) {
         const last = (item.events || []).filter((event) => event && event.kind !== "llm").pop();
         const lastLine = last ? `<p class="callout-copy callout-activity">${escapeHtml(eventTitle(last))}</p>` : "";
         const elapsed = metrics[focus] && metrics[focus].ms > 0 ? ` · ${formatElapsedMs(metrics[focus].ms)}` : "";
-        callout = calloutHtml("now", "Working", `${workingLabel(focus)}${elapsed}`, `${lastLine}<p class="callout-copy">Nothing is needed from you right now.${!triageAuto && rank < 2 ? " You review the plan next." : ""}${!approvalAuto && rank >= 2 && rank < 5 ? " You approve the change next." : ""}</p>`);
+        callout = calloutHtml("now", "Working", `${workingLabel(focus)}${elapsed}`, `${lastLine}<p class="callout-copy">Nothing is needed from you right now.${!triageAuto && rank < 2 ? " You review the plan next." : ""}${!approvalAuto && rank >= 2 && rank < 5 ? " You approve the change next." : ""}</p>${stopButtonHtml(item)}`);
       } else if (failed) {
         const stuck = String(item.fault || "").trim();
         const phase = !stuck && item.id ? restartPhaseLabel(item.restart_from) : "";
@@ -8717,6 +8817,7 @@
       const metaHover = selected ? [selected.workspace || "", selected.base_url || ""].filter(Boolean).join(" · ") : "";
       const prHtml = prLinkHtml(prUrl(selected || selectedHistory));
       const attemptsHtml = attemptPickerHtml(selectedRun);
+      const bannerHtml = rerunBannerHtml(selected || selectedHistory);
       const target = runDetailEl;
       const root = target.querySelector("[data-progress-root]");
       const sameItem = Boolean(root && itemKey && root.dataset.itemKey === itemKey);
@@ -8727,6 +8828,7 @@
         setText(metaEl, metaText);
         setText(root.querySelector("[data-progress-title]"), titleText);
         setHtml(root.querySelector("[data-progress-pr]"), prHtml);
+        setHtml(root.querySelector("[data-progress-banner]"), bannerHtml);
         const attemptsEl = root.querySelector("[data-progress-attempts]");
         const picking = attemptsEl && attemptsEl.contains(document.activeElement);
         if (attemptsEl && !picking && lastAttemptsHtml !== attemptsHtml) {
@@ -8753,6 +8855,7 @@
                 <p class="task-tokens" id="task-tokens" data-task-tokens title="${escapeHtml(tokenHover)}" aria-label="${escapeHtml(tokenHover)}">${renderTokenBar(tokenUsage.used, tokenUsage.window)}</p>
               </div>
             </header>
+            <div data-progress-banner>${bannerHtml}</div>
             <div data-progress-body>${progressHtml}</div>
           </div>
         `);
@@ -8789,7 +8892,7 @@
       const token = state.historyToken ? `&token=${encodeURIComponent(state.historyToken)}` : "";
       const [tasksRes, historyRes, inboxRes] = await Promise.all([
         fetch(`/api/tasks?workspace=${workspace}`),
-        fetch(`/api/history?page=1&page_size=100${token}`),
+        fetch(`/api/history?page=1&page_size=100&workspace=${workspace}${token}`),
         fetch("/api/tasks"),
       ]);
       const tasksData = await tasksRes.json();
@@ -8810,6 +8913,7 @@
         state.historyToken = historyData.token || "";
       }
 
+      applyLinkedChange();
       renderLive();
       syncKeepImproving();
       quickenPoll();
@@ -9247,6 +9351,33 @@
       if (phase === "publish") return "Tests and pull request";
       if (phase === "build") return "Build";
       return "";
+    }
+
+    // A rerun keeps the change's name. This says how the run differs: the step
+    // it started at, and what it was asked to do when that is not the goal.
+    function rerunBannerHtml(item) {
+      if (!item) return "";
+      const number = Number(item.attempt) || 1;
+      const phase = restartPhaseLabel(item.started_from);
+      const asked = String(item.instruction || "").split("\n").find((line) => line.trim()) || "";
+      let text = "";
+      if (phase) {
+        text = `Run #${number} reruns this change starting at ${phase}. The earlier steps carry over.`;
+      } else if (asked && number > 1) {
+        text = `Run #${number} of this change.`;
+      } else if (number > 1) {
+        text = `Run #${number} reruns this change from the start.`;
+      }
+      if (!text && !asked) return "";
+      const detail = asked
+        ? `<span class="change-banner-ask"><span class="change-banner-label">This run</span> ${escapeHtml(asked.trim())}</span>`
+        : "";
+      return `
+        <div class="change-banner" role="status">
+          <span class="change-banner-icon" aria-hidden="true">i</span>
+          <p class="change-banner-text">${text ? `<span>${escapeHtml(text)}</span>` : ""}${detail}</p>
+        </div>
+      `;
     }
 
     async function restartFromPhase(button) {
@@ -9946,6 +10077,11 @@
     });
 
     runDetailEl.addEventListener("click", (event) => {
+      const stop = event.target.closest("[data-stop-task]");
+      if (stop) {
+        stopTask(stop.dataset.stopTask, stop);
+        return;
+      }
       const refreshButton = event.target.closest("[data-ci-refresh]");
       if (refreshButton) {
         loadCiChecks(refreshButton.dataset.ciRefresh, true);
@@ -10938,6 +11074,7 @@
       const submit = document.getElementById("auth-submit");
       const error = document.getElementById("auth-error");
       const orgRow = document.getElementById("auth-org-row");
+      const kindRow = document.getElementById("auth-kind-row");
       const signup = document.getElementById("auth-signup");
       let creating = false;
       if (gate) gate.hidden = false;
@@ -10960,18 +11097,27 @@
       if (ssoLink) ssoLink.hidden = setup || !status.provider || status.provider === "password";
       if (githubLink) githubLink.hidden = setup || !status.github;
       if (error && githubMessage) error.textContent = githubMessage;
+      function signupKind() {
+        const chosen = document.querySelector("input[name=auth-kind]:checked");
+        return chosen ? chosen.value : "personal";
+      }
       function showSignup(next) {
         creating = next;
+        const personal = signupKind() === "personal";
         if (nameRow) nameRow.hidden = setup ? false : !creating;
-        if (orgRow) orgRow.hidden = !creating;
-        if (title) title.textContent = creating ? "Create an organization" : "Sign in";
+        if (kindRow) kindRow.hidden = !creating;
+        if (orgRow) orgRow.hidden = !creating || personal;
+        if (title) title.textContent = creating ? "Create an account" : "Sign in";
         if (hint && !setup) {
-          hint.textContent = creating
-            ? "This creates an organization and its owner. The owner is not an LBW engineer."
-            : "Use the email and password for this install.";
+          if (!creating) hint.textContent = "Use the email and password for this install.";
+          else if (personal) hint.textContent = "An account for you and your own GitHub repositories. You can add a team later, which turns it into an organization.";
+          else hint.textContent = "This creates an organization and its owner. The owner is not an LBW engineer.";
         }
-        if (submit) submit.textContent = creating ? "Create organization" : "Sign in";
-        if (signup) signup.textContent = creating ? "Sign in instead" : "Create an organization";
+        if (submit) submit.textContent = creating ? "Create account" : "Sign in";
+        if (signup) signup.textContent = creating ? "Sign in instead" : "Create an account";
+      }
+      for (const option of document.querySelectorAll("input[name=auth-kind]")) {
+        option.addEventListener("change", function () { showSignup(true); });
       }
       if (signup) {
         signup.addEventListener("click", () => {
@@ -10993,7 +11139,8 @@
             path = "/api/auth/setup";
           } else if (creating) {
             payload.name = document.getElementById("auth-name").value;
-            payload.organization = document.getElementById("auth-org").value;
+            payload.kind = signupKind();
+            if (payload.kind === "organization") payload.organization = document.getElementById("auth-org").value;
             path = "/api/auth/signup";
           }
           const res = await fetch(path, {

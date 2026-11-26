@@ -94,7 +94,17 @@ scheduler call.
 
 - Every shared row carries a tenant id. A tenant is `personal` or `organization`.
   A personal tenant has its owner and no teams. Promote it before adding a team.
-  Promotion keeps the tenant id, so projects and tasks stay put.
+  Promotion keeps the tenant id, so projects and tasks stay put. Anyone can
+  sign up for a personal account ("Just me", `POST /api/auth/signup` with
+  `kind: personal`). Its settings read as Account. It connects GitHub through
+  this site's own app, the one saved for the install's tenant
+  (`uses_site_app`, `shared_app_tenant`), with Connect GitHub
+  (`/api/github/personal/connect`). The callback keeps only an installation
+  on the person's own GitHub user account, read with their GitHub sign-in,
+  and sends them to install the app when there is none. A personal account
+  never lists or picks from the app's installations, and never takes an
+  organization's. Its repositories start on, since the person chose them on
+  GitHub. The install's own tenant is personal too, and keeps its own app.
 - A person is an identity, separate from a membership. Rank is `owner`, `admin`,
   or `member`, once on the tenant and once on a team. The first password is
   the owner's, created on the setup page when no password exists. Later sign-in
@@ -144,6 +154,11 @@ scheduler call.
   tenant, project, requester, status, branch, pull request, `run_ref`,
   `goal_ciphertext`, and `result_ciphertext`. A rerun is another run of the
   same proposal: `attempt_of` is the first run's id and `attempt` its number.
+  A rerun keeps the goal, which is the change's name. A request for that run
+  alone, such as fixing failed checks, merging the base, or a goal edited on
+  rerun, is its `instruction`, and the phase it started at is `started_from`.
+  The agent works on `instruction` when there is one. The change view shows
+  both in an info banner, and the title never changes.
   The change list shows the latest run, and the change view picks among them.
   A failed run can rerun every phase, or start the next run at the phase that
   failed (`from_phase`, rules in `runtime/restart.py`). A run that failed
@@ -253,7 +268,38 @@ scheduler call.
   and the runner runs Claude Code's shell commands in its sandbox, which a
   command can never leave. The goal,
   events, and patch pass through `runtime/runner_hub.py` in memory, not the
-  database. The runner is Go in `runner/`, standard library only.
+  database. The runner is Go in `runner/`: the standard library plus
+  `fyne.io/systray` for the tray icon, and no other dependency. Linux and
+  Windows build without cgo; macOS builds with cgo on a Mac, because the menu
+  bar is drawn through AppKit (`make dist` does this). `lbw-runner install-app`
+  adds the LBW Runner app (a `.app` on macOS, a desktop entry on Linux, a Start
+  menu entry on Windows) that starts the runner at login and opens its
+  dashboard. `lbw-runner tray` is the menu bar or tray icon, its own process
+  that reads the dashboard: what waits on the person, what runs, model calls,
+  Open dashboard, and Pause. It starts at login with the app, and the inbox is
+  read once a minute while only the tray watches. Runner releases are GitHub
+  releases tagged `runner-vX.Y.Z` (`.github/workflows/runner-release.yml`).
+  Each one's `SHA256SUMS` is signed with the release key (`RUNNER_SIGNING_KEY`,
+  `lbw-runner-sign`), whose public half is built into the runner
+  (`internal/update/key.go`). The runner checks once a day and only says an
+  update is available. It installs when the person asks (dashboard, tray,
+  `lbw-runner update`), never while a job runs, and only a release whose
+  signature and sum check out. A build from source does not update itself. The dashboard
+  (`runner/internal/dashboard`) listens on 127.0.0.1 only behind a key in the
+  runner folder. It shows running jobs, relayed model calls, recent jobs, and
+  the log, and it can link the machine, pause new work, stop a job, and update
+  Claude Code. Its state is memory only. `?change=<task id>` opens a change.
+  The dashboard's inbox (`GET /api/runner/inbox`, `runtime/inbox.py`) lists
+  jobs waiting at a gate in projects the owner can write, and the owner's
+  queued or running jobs. It is read only while the dashboard is open, with an
+  ETag. Each item carries the goal's first line, never the goal.
+- A person with write access stops a queued or running job
+  (`POST /api/tasks/{id}/stop`, or `POST /api/runner/tasks/{id}/stop` from the
+  runner app). A queued job ends at once. A running one ends at its next model
+  call, or within seconds while it waits on a runner or a relayed call
+  (`progress.TaskStopped`, a BaseException so a cycle cannot swallow it). It
+  ends as failed with "Stopped by" that person and can be rerun. The audit
+  notes `task.stop`.
 - A local model is a person's own model server, such as Ollama, reached
   through their own runner (`runtime/store/local_models.py`,
   `runtime/llm_relay.py`). An organization owner or admin sets
@@ -288,6 +334,19 @@ scheduler call.
 - Usage lives in daily rollups, never per model call: see `docs/usage.md`.
   Reports read only those rollups, inside a bounded range, behind a 60-second
   cache. Add a breakdown through the registry in `runtime/store/usage.py`.
+- Every route that reads or changes a project or its jobs checks the person
+  through `_Access` in `web_ui.py` (`can_access` underneath). Reading a job,
+  its checks, history, branches, screenshots, schedules, or pull request
+  states needs `use`. Starting, continuing, rerunning, stopping, or merging
+  needs `write`: a job pushes a branch with LBW's token, so starting one is
+  writing. Project guidelines and roles need `manage`. A job from another
+  account is never shown. Someone who cannot read a project gets 404, never
+  403, so a closed project is not confirmed to exist. A member merges only
+  the pull requests of the project's own repository. The project list shows
+  a folder, or an unsynced checkout, to the account's owners and admins and
+  to people granted it. An owner or admin can use every project. The page
+  names its project on each request (`workspace`); the server's current
+  project is shared and is never shown to someone who cannot see it.
 - Extend these checks when adding access. Do not add a second permission table.
 
 ## Git

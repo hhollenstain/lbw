@@ -215,6 +215,8 @@ An open pull request's CI checks list a merge conflict with its base branch
 when GitHub reports one, with Fix merge conflict to start a merge run.
 A failed later run of a proposal whose pull request is still open shows that
 pull request's link and checks under the failure.
+A queued or running change has Stop in its action card. It asks first, and
+the change ends as failed with who stopped it, so Rerun is offered.
 Do not put a decision only inside one step's detail, where a reader has to
 find the right step first. At plan review the card shows what building
 should cost, above Build it, and says what the estimate is based on. Selecting a step loads its detail under the
